@@ -29,8 +29,8 @@ Answer `y` to add the marketplace, then pick a scope.
 ## Develop
 
 ```
-claude --plugin-dir plugins/session-pane   # loads it; the first load lays .claude-plugin/types/
-tsc -p plugins/session-pane                # type-check, once the types are laid
+claude --plugin-dir plugins/session-pane   # loads it from source
+tsc -p plugins                             # type-checks every plugin against plugins/types/
 claude plugin test plugins/session-pane    # tests
 claude plugin validate plugins/session-pane
 ```

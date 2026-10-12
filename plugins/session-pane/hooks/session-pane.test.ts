@@ -56,7 +56,7 @@ test('events fold into the pane; /session-pane opens it, nothing opens it unaske
   expect(await p.find({ text: /late\.ts/ })).toBe(undefined) // written after the call ended: not its doing either
   expect(await p.find({ text: /Browser review: not done/ })).toBeDefined()
   await p.press({ key: 'f-/w/confirm.tsx' })
-  expect(await p.find({ type: 'Code' })).toBeDefined()
+  expect((await p.find({ type: 'Code' }))?.props.source).toBe('@@ -0,0 +1,1 @@\n+x') // counted: Code's diff format parses no other header
   await p.press({ key: 'back' })
   await p.press({ key: 'back' })
 
@@ -168,13 +168,13 @@ test('details: the cost off a subscription, the plan limits on one', async ($, o
   await clock.advance(2000)
   const p = await $.ui.mount({ plugin: 'session-pane', surface: 'terminal', component: 'Pane', requestId: 'session-pane', props: PROPS(44) })
   await p.press({ key: 'details' })
-  expect(await p.find({ text: /Model: claude-opus-5-5/ })).toBeDefined()
-  expect(await p.find({ text: /Started: / })).toBeDefined()
-  expect(await p.find({ text: /Cost so far: \$1\.20/ })).toBeDefined()
-  limits = [{ kind: 'five_hour', percentUsed: 10 }]
+  expect(await p.find({ text: /claude-opus-5-5/ })).toBeDefined()
+  expect(await p.find({ text: /ago$/ })).toBeDefined()
+  expect(await p.find({ text: /\$1\.20 so far/ })).toBeDefined()
+  limits = [{ kind: 'five_hour', percentUsed: 10, resetsAt: new Date(Date.now() + 61 * 60_000).toISOString() }]
   await p.press({ key: 'back' })
   await p.press({ key: 'details' })
-  expect(await p.find({ text: /Plan limit \(five_hour\): 10% used/ })).toBeDefined()
-  expect(await p.find({ text: /On a subscription/ })).toBeDefined()
-  expect(await p.find({ text: /Cost so far/ })).toBe(undefined)
+  expect(await p.find({ text: /5-hour limit/ })).toBeDefined()
+  expect(await p.find({ text: /^10% used · resets in 1 hour$/ })).toBeDefined()
+  expect(await p.find({ text: /so far/ })).toBe(undefined)
 })
