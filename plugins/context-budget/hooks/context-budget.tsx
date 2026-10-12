@@ -168,7 +168,7 @@ export const register: Register = on => {
         <Box flexDirection="column" marginTop={1}>
           <Text bold>Growth after each turn</Text>
           {shown.length
-            ? <Text><Text color="cyan">{spark(shown, usage!.context.window)}</Text><Text dimColor>  {now != null && `now ${k(now)}`}{history.length > 1 && `, first ${k(history[0])}`}</Text></Text>
+            ? <Text><Text color="cyan">{spark(shown, usage!.context.window)}</Text><Text dimColor>  {now != null && `now ${k(now)}`}{history.length > 1 && `, first ${k(history[0]!)}`}</Text></Text>
             : <Text dimColor>Shows up after Claude's first reply.</Text>}
           {notes && shown.length > 0 && <Text dimColor>Each bar is one turn, out of the whole window. A drop is a compaction or a /clear.</Text>}
         </Box>
