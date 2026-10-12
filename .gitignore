@@ -1,3 +1,5 @@
-# laid by Claude Code each time it loads a plugin from this folder
+# laid by Claude Code each time it loads a plugin from this folder, with a tsconfig.json beside it when the plugin has
+# none; plugins/tsconfig.json and plugins/types/ type-check them all instead
 **/.claude-plugin/types/
+plugins/*/tsconfig.json
 .plans/

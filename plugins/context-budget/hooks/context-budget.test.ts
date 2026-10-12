@@ -43,7 +43,7 @@ test('the growth line is scaled to the window, so a half-full window draws a mid
 test('a grid row merges same-colour squares, draws a partial square hollow, free space dim', () => {
   const b = breakdown()
   const kindOf = (n: string) => b.categories.find(c => c.name === n)?.kind
-  expect(runsOf(b.gridRows[0], kindOf)).toEqual([
+  expect(runsOf(b.gridRows[0]!, kindOf)).toEqual([
     { s: '■', color: 'promptBorder', dim: false },
     { s: ' ■ □', color: 'permission', dim: false },
     { s: ' ·', color: undefined, dim: true },
