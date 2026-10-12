@@ -1,4 +1,4 @@
-import { test, expect } from 'claude-code/testing'
+import { test, expect, mock } from 'claude-code/testing'
 import type { ContextGridSquare, SessionContextBreakdown } from 'claude-code'
 import { k, payersOf, runsOf, spark } from './context-budget'
 
@@ -71,4 +71,44 @@ test('the pane explains each category, lists what every request pays, and record
   expect(await m.find({ text: /Counted with the token-count API/ })).toBeDefined()
   await m.press({ key: 'notes' })
   expect(await m.find({ text: /This is the part that fills up/ })).toBe(undefined)
+})
+
+test('r counts once at a time, a turn overtakes a slow exact count, a failed refresh keeps the last figures', async ($, on) => {
+  const clock = mock.clock(on)
+  const asks: string[] = []
+  let release = () => {}
+  let offline = false
+  on('session.usage', async (_$, e: any) => {
+    asks.push(e?.breakdown)
+    if (offline) return { deny: 'offline' } as any
+    if (e?.breakdown === 'full') await new Promise<void>(r => { release = r })
+    const totalTokens = e?.breakdown === 'full' ? 11000 : 55000 // the exact count is the pre-turn figure
+    return { value: { startedAt: 0, rateLimits: [], context: { tokens: totalTokens, window: 200000, percent: 0, breakdown: breakdown({ totalTokens }) } } } as any
+  })
+  on('ui.panes', () => ({ value: [{ id: 'context-budget' }] }) as any)
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  const turn = () => $.session.measure({ context: { tokens: 55000, window: 200000 }, rateLimits: [], changed: ['context'] } as any)
+  const m = await $.ui.mount({ plugin: 'context-budget', surface: 'terminal', component: 'Pane', requestId: 'context-budget', props: { title: 'Context budget', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 } } as any })
+  await turn()
+  await clock.settle()
+  expect(await m.find({ text: /55k of 200k tokens/ })).toBeDefined()
+
+  await m.press({ key: 'exact' })
+  await m.press({ key: 'exact' })
+  expect(asks.filter(a => a === 'full').length).toBe(1)
+  await clock.settle()
+  expect(await m.find({ text: /Counting exactly/ })).toBeDefined()
+
+  await turn() // a turn ends while the count is still out
+  release()
+  await clock.settle()
+  expect(await m.find({ text: /11k of 200k/ })).toBe(undefined)
+  expect(await m.find({ text: /55k of 200k tokens/ })).toBeDefined()
+  expect(await m.find({ text: /Counted with the token-count API/ })).toBe(undefined)
+
+  offline = true
+  await turn()
+  await clock.settle()
+  expect(await m.find({ text: /55k of 200k tokens/ })).toBeDefined()
+  expect(await m.find({ text: /Could not refresh, showing the last figures: .*offline/ })).toBeDefined()
 })

@@ -66,20 +66,27 @@ let cols = 60
 // context.tokens after each main turn, from session.measure: the API's own figure, so the growth line is what the model
 // actually read. Module state: a reload of this plugin starts the line over
 let history: number[] = []
+// Each refresh's number. A reply a newer refresh overtook is dropped, so a slow exact count that a turn's estimate
+// passed can't land pre-turn figures labelled as counted
+let seq = 0
+let counting = false // an exact count is in flight: r waits for it rather than paying for a second one
 
 async function refresh($: EngineInterface, detail: ContextBreakdownDetail = 'summary') {
+  const mine = ++seq
+  if (detail === 'full') { counting = true; $.ui.invalidate('ui.render') }
   try {
-    usage = await $.session.usage({ breakdown: detail, columns: cols }) // `full` sends a token-count request per tool and file: only on the reader's ask
-    exact = detail === 'full'
-    failed = ''
-  } catch (err) { failed = String((err as Error)?.message ?? err) }
+    const u = await $.session.usage({ breakdown: detail, columns: cols }) // `full` sends a token-count request per tool and file: only on the reader's ask
+    if (mine === seq) { usage = u; exact = detail === 'full'; failed = '' }
+  } catch (err) { if (mine === seq) failed = String((err as Error)?.message ?? err) }
+  finally { if (detail === 'full') counting = false }
   $.ui.invalidate('ui.render')
 }
-const isUp = async ($: EngineInterface) => (await $.ui.panes()).some((p: any) => p.id === PANE)
+const isUp = async ($: EngineInterface) => (await $.ui.panes()).some(p => p.id === PANE)
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    try { await $.command.register({ name: 'contextbudget', description: 'Toggle a pane that explains what fills the context window and how it grows.' }) } catch {} // throws on hot reload: no session bound yet
+    try { await $.command.register({ name: 'contextbudget', description: 'Toggle a pane that explains what fills the context window and how it grows.' }) }
+    catch (err) { $.ui.log(`context-budget: /contextbudget not registered: ${(err as Error)?.message ?? err}`, { to: 'debug' }) } // throws on hot reload (no session bound yet); anything else should be findable
     return next(e)
   })
 
@@ -104,7 +111,8 @@ export const register: Register = on => {
     const w = e.props.bodyColumns ?? 60
     const narrow = (w < 80) !== (cols < 80) // the grid is 5 wide under 80 columns: refetch when the pane crosses that
     cols = w
-    if (!tried || (narrow && usage)) { tried = true; await refresh($) }
+    // not awaited: the pane draws "Measuring…" at once and the reply draws it again
+    if (!tried || (narrow && usage)) { tried = true; void refresh($) }
     const b = usage?.context.breakdown
     if (!b) return <Text dimColor>{failed ? `Could not measure the context: ${failed}` : 'Measuring the context window…'}</Text>
 
@@ -126,15 +134,17 @@ export const register: Register = on => {
               <Text color={c.kind === 'free' ? undefined : c.color} dimColor={c.kind === 'free'}>{mark}</Text>
               <Text dimColor={deferred}> {c.name.padEnd(19)}{k(c.tokens).padStart(6)}</Text>
               <Text dimColor>{deferred ? '  not in window' : `  ${pct(c.tokens).padStart(4)}`}</Text>
-              {c.kind === 'used' && (ABOUT[c.name]?.grows ? <Text color="yellow">  grows</Text> : <Text dimColor>  per request</Text>)}
+              {/* a label ABOUT lacks gets no tag: guessing "per request" would be wrong if it is the conversation */}
+              {c.kind === 'used' && ABOUT[c.name] && (ABOUT[c.name]!.grows ? <Text color="yellow">  grows</Text> : <Text dimColor>  per request</Text>)}
             </Text>
           )
         })}
       </Box>
     )
     const payers = payersOf(b)
-    const shown = history.slice(-Math.max(8, w - 4))
     const now = history.at(-1)
+    const tail = `  ${now != null ? `now ${k(now)}` : ''}${history.length > 1 ? `, first ${k(history[0]!)}` : ''}`
+    const shown = history.slice(-Math.max(8, w - tail.length)) // bars and tail share one line: together they fit the pane
 
     return (
       <Box flexDirection="column">
@@ -168,7 +178,7 @@ export const register: Register = on => {
         <Box flexDirection="column" marginTop={1}>
           <Text bold>Growth after each turn</Text>
           {shown.length
-            ? <Text><Text color="cyan">{spark(shown, usage!.context.window)}</Text><Text dimColor>  {now != null && `now ${k(now)}`}{history.length > 1 && `, first ${k(history[0]!)}`}</Text></Text>
+            ? <Text><Text color="cyan">{spark(shown, usage!.context.window)}</Text><Text dimColor>{tail}</Text></Text>
             : <Text dimColor>Shows up after Claude's first reply.</Text>}
           {notes && shown.length > 0 && <Text dimColor>Each bar is one turn, out of the whole window. A drop is a compaction or a /clear.</Text>}
         </Box>
@@ -183,11 +193,12 @@ export const register: Register = on => {
         </Box>
 
         <Box marginTop={1}>
-          <Button key="exact" label="Count exactly" hotkey="r" plain onPress={() => { void refresh($, 'full') }} />
+          <Button key="exact" label="Count exactly" hotkey="r" plain onPress={() => { if (!counting) void refresh($, 'full') }} />
           <Text>  </Text>
           <Button key="notes" label={notes ? 'Hide notes' : 'Show notes'} hotkey="n" plain dimColor onPress={() => { notes = !notes; $.ui.invalidate('ui.render') }} />
         </Box>
-        <Text dimColor>{exact ? 'Counted with the token-count API.' : 'Estimated locally; r counts exactly (one request per tool and file).'}</Text>
+        <Text dimColor>{counting ? 'Counting exactly…' : exact ? 'Counted with the token-count API.' : 'Estimated locally; r counts exactly (one request per tool and file).'}</Text>
+        {failed && <Text color="red">Could not refresh, showing the last figures: {failed}</Text>}
       </Box>
     )
   })
