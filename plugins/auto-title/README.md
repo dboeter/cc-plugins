@@ -6,6 +6,14 @@ Names the current Claude Code session from your first prompt, so the session lis
 - **After `/compact`**: a session that already has a title keeps it; only an untitled one is named.
 - **How**: Haiku condenses the prompt to a title of at most 5 words and 40 characters, then hands it back as the hook's `sessionTitle`. Unlike `/rename`, that tells the model nothing: no "The user named this session" note enters the conversation.
 
+## Install
+
+```
+/plugin install auto-title --marketplace dboeter/cc-plugins
+```
+
+Answer `y` to add the marketplace, then pick a scope.
+
 ## Use
 
 Nothing to do: it runs on its own. Rename by hand with `/rename` at any time.
@@ -20,8 +28,8 @@ Nothing to do: it runs on its own. Rename by hand with `/rename` at any time.
 ## Develop
 
 ```
-claude --plugin-dir plugins/auto-title   # loads it; the first load lays .claude-plugin/types/
-tsc -p plugins/auto-title                # type-check, once the types are laid
+claude --plugin-dir plugins/auto-title   # loads it from source
+tsc -p plugins                           # type-checks every plugin against plugins/types/
 claude plugin test plugins/auto-title    # tests
 claude plugin validate plugins/auto-title
 ```
