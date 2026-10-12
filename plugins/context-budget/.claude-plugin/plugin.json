@@ -1,0 +1,7 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "context-budget",
+  "version": "0.1.0",
+  "description": "Pane that explains the context window for people new to Claude Code: the /context grid in category colours, what each category is and whether it grows, what you pay on every request (memory files, MCP schemas, skills, agents), a per-turn growth line and where auto-compact starts. /contextbudget toggles it.",
+  "author": { "name": "dboeter", "email": "daan.boeter@hotmail.com" }
+}

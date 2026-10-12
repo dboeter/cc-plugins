@@ -1,0 +1,9 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "auto-title",
+  "version": "0.1.0",
+  "description": "Names the session with Haiku from the first prompt after start, /clear or /compact.",
+  "author": { "name": "dboeter", "email": "daan.boeter@hotmail.com" },
+  "license": "MIT",
+  "repository": "https://github.com/dboeter/cc-plugins"
+}

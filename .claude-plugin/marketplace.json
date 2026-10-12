@@ -1,0 +1,10 @@
+{
+  "name": "dboeter",
+  "owner": { "name": "dboeter", "email": "daan.boeter@hotmail.com" },
+  "description": "Claude Code mods by dboeter: panes and hooks for following a session.",
+  "plugins": [
+    { "name": "session-pane", "source": "./plugins/session-pane" },
+    { "name": "auto-title", "source": "./plugins/auto-title" },
+    { "name": "context-budget", "source": "./plugins/context-budget" }
+  ]
+}
