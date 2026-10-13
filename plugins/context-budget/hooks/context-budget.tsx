@@ -1,7 +1,7 @@
-import type { ContextBreakdownDetail, ContextGridSquare, EngineInterface, Register, SessionContextBreakdown, SessionUsage } from 'claude-code'
+import type { ContextBreakdownDetail, EngineInterface, Register, SessionContextBreakdown, SessionUsage } from 'claude-code'
 
 // A teaching view of the context window for people new to Claude Code: the same breakdown /context prints
-// ($.session.usage({ breakdown })), with a plain-language note per category, what is paid on every request, how the
+// ($.session.usage({ breakdown })), with a plain-language note per category, what each request carries, how the
 // window filled turn by turn, and where auto-compact starts
 
 const PANE = 'context-budget'
@@ -9,7 +9,7 @@ const TITLE = 'Context budget'
 
 // What each /context row is, keyed by its label as /context prints it. Only this prose is keyed on a name: what a row does
 // (counts toward the window, free, compaction reserve, loaded on demand) is read from its `kind`. A label not here draws
-// without a note. grows: the row gets bigger as you work; every other row is paid once and resent with each request
+// without a note. grows: the row gets bigger as you work; every other row is set once and resent with each request
 export const ABOUT: Record<string, { text: string; grows?: boolean }> = {
   'System prompt': { text: "Claude Code's built-in instructions. Sent with every request; you can't change them." },
   'System tools': { text: 'How to call the built-in tools (Bash, Read, Edit and the rest). Fixed for the session.' },
@@ -38,22 +38,37 @@ export const payersOf = (b: SessionContextBreakdown, n = 5): Payer[] => {
   return out.filter(p => p.tokens > 0).sort((x, y) => y.tokens - x.tokens).slice(0, n)
 }
 
-// One bar per turn, scaled to the whole window rather than to the highest turn, so a full bar means a full window
-const BARS = '▁▂▃▄▅▆▇█'
-export const spark = (xs: number[], max: number) => xs.map(x => BARS[Math.min(7, Math.max(0, Math.round((x / max) * 7)))]).join('')
+// A step's tool calls as one label: `Read ×3, Bash`, an MCP tool as `server tool`
+export const toolsLabel = (names: string[]) => {
+  const n = new Map<string, number>()
+  for (const x of names) { const t = x.replace(/^mcp__/, '').replace(/__/g, ' '); n.set(t, (n.get(t) ?? 0) + 1) }
+  return [...n].map(([t, c]) => c > 1 ? `${t} ×${c}` : t).join(', ')
+}
 
-// A grid row as runs of one colour, so a row is a few Text elements rather than one per square. Glyphs follow /context's
-// reading: a row's last square draws hollow under 0.7 full; free space and the compaction reserve get their own marks
-export const runsOf = (row: ContextGridSquare[], kindOf: (name: string) => string | undefined): { s: string; color?: string; dim?: boolean }[] => {
-  const out: { s: string; color?: string; dim?: boolean }[] = []
-  for (const q of row) {
-    const kind = kindOf(q.categoryName)
-    const ch = kind === 'free' ? '·' : kind === 'buffer' ? '▒' : q.squareFullness >= 0.7 ? '■' : '□'
-    const color = kind === 'free' ? undefined : q.color
-    const last = out.at(-1)
-    if (last && last.color === color) last.s += ` ${ch}`
-    else out.push({ s: `${out.length ? ' ' : ''}${ch}`, color, dim: kind === 'free' })
-  }
+// What the model read for one request: the uncached input plus what the prompt cache served and wrote
+const readOf = (u: { input_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }) =>
+  u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
+
+// Context growth per step of a main turn, live: each request's size is known when its response ends, so the growth from
+// one request to the next is what the step between added (its tool results and reply). A row's label is the tools that
+// caused it; the first row of a turn is the prompt plus the previous turn's reply. `pending`: the latest step's tools,
+// whose growth shows once the next request is answered
+const STEPS = 12 // rows drawn for one turn
+export type StepRow = { label: string; delta: number }
+export type TurnRows = { id: string; rows: StepRow[]; pending?: string }
+
+// The window as one stacked bar, `width` cells, in breakdown order. Every
+// non-empty row gets at least one cell so a small one stays visible; free space takes up the rounding (and gives way
+// first when those minimum cells overflow)
+export const barOf = (b: SessionContextBreakdown, width: number): { s: string; color?: string; dim?: boolean }[] => {
+  const rows = b.categories.filter(c => c.kind !== 'deferred' && c.kind !== 'free' && c.tokens > 0)
+    .map(c => ({ c, n: Math.max(1, Math.round((c.tokens / b.rawMaxTokens) * width)) }))
+  const free = b.categories.find(c => c.kind === 'free')
+  const left = Math.max(0, width - rows.reduce((s, r) => s + r.n, 0))
+  const out: { s: string; color?: string; dim?: boolean }[] = rows.map(({ c, n }) => ({ s: (c.kind === 'buffer' ? '▒' : '█').repeat(n), color: c.color }))
+  // free space sits before the reserve, as in the window: the reserve is its last stretch
+  const at = rows.findIndex(r => r.c.kind === 'buffer')
+  if (free && left) out.splice(at < 0 ? out.length : at, 0, { s: '·'.repeat(left), color: undefined, dim: true })
   return out
 }
 
@@ -62,10 +77,9 @@ let failed = ''
 let tried = false // the first draw fetched once; a failed fetch must not redraw-and-refetch forever
 let exact = false // the shown breakdown was counted with the token-count API (`full`), not estimated
 let notes = true // the per-category notes; an experienced reader hides them
-let cols = 60
-// context.tokens after each main turn, from session.measure: the API's own figure, so the growth line is what the model
-// actually read. Module state: a reload of this plugin starts the line over
-let history: number[] = []
+// The last turns' growth, newest last, and the size of the latest main request. Module state: a reload starts it over
+let turns: TurnRows[] = []
+let lastRead: number | undefined
 // Each refresh's number. A reply a newer refresh overtook is dropped, so a slow exact count that a turn's estimate
 // passed can't land pre-turn figures labelled as counted
 let seq = 0
@@ -75,7 +89,7 @@ async function refresh($: EngineInterface, detail: ContextBreakdownDetail = 'sum
   const mine = ++seq
   if (detail === 'full') { counting = true; $.ui.invalidate('ui.render') }
   try {
-    const u = await $.session.usage({ breakdown: detail, columns: cols }) // `full` sends a token-count request per tool and file: only on the reader's ask
+    const u = await $.session.usage({ breakdown: detail }) // `full` sends a token-count request per tool and file: only on the reader's ask
     if (mine === seq) { usage = u; exact = detail === 'full'; failed = '' }
   } catch (err) { if (mine === seq) failed = String((err as Error)?.message ?? err) }
   finally { if (detail === 'full') counting = false }
@@ -97,54 +111,73 @@ export const register: Register = on => {
     return { text: up ? 'context budget hidden' : 'context budget shown' }
   })
 
-  // after each main turn: record the fill, and while the pane is up re-estimate the breakdown (local, no request)
+  // after each main turn, while the pane is up: re-estimate the breakdown (local, no request)
   on('session.measure', async ($, e, next) => {
     const r = await next(e)
-    if (!e.changed.includes('context')) return r
-    if (e.context.tokens != null) history = [...history, e.context.tokens].slice(-200)
-    if (await isUp($).catch(() => false)) await refresh($)
+    if (e.changed.includes('context') && await isUp($).catch(() => false)) await refresh($)
+    return r
+  })
+
+  // each main request as its response ends: how much the context grew since the last one, and which tools to blame.
+  // A subagent's requests are its own window, not this one
+  on('turn.step', async function* ($, e, next) {
+    const r = yield* next(e)
+    if (e.agentId || !r.usage) return r
+    const read = readOf(r.usage)
+    let t = turns.at(-1)
+    if (t?.id !== e.turnId) { t = { id: e.turnId, rows: [] }; turns = [...turns, t].slice(-9) }
+    if (lastRead != null) {
+      const delta = read - lastRead
+      t.rows.push({ label: delta < 0 ? 'compacted or cleared' : e.index === 0 ? 'prompt + last reply' : t.pending ?? 'reply', delta })
+    }
+    lastRead = read
+    t.pending = toolsLabel([...r.toolUses.map(u => u.name), ...(r.serverToolUses ?? []).map(u => u.name)]) || undefined
+    if (await isUp($).catch(() => false)) $.ui.invalidate('ui.render')
     return r
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const w = e.props.bodyColumns ?? 60
-    const narrow = (w < 80) !== (cols < 80) // the grid is 5 wide under 80 columns: refetch when the pane crosses that
-    cols = w
     // not awaited: the pane draws "Measuring…" at once and the reply draws it again
-    if (!tried || (narrow && usage)) { tried = true; void refresh($) }
+    if (!tried) { tried = true; void refresh($) }
     const b = usage?.context.breakdown
     if (!b) return <Text dimColor>{failed ? `Could not measure the context: ${failed}` : 'Measuring the context window…'}</Text>
 
-    const kindOf = (name: string) => b.categories.find(c => c.name === name)?.kind
     const pct = (n: number) => `${Math.round((n / b.rawMaxTokens) * 100)}%`
-    const side = w >= 64 // grid and legend side by side; narrower, stacked
-    const grid = (
-      <Box flexDirection="column" marginRight={side ? 3 : 0}>
-        {b.gridRows.map(row => <Text>{runsOf(row, kindOf).map(r => <Text color={r.color} dimColor={r.dim}>{r.s}</Text>)}</Text>)}
-      </Box>
-    )
     const legend = (
       <Box flexDirection="column">
-        {b.categories.map(c => {
-          const deferred = c.kind === 'deferred'
-          const mark = c.kind === 'free' ? '·' : c.kind === 'buffer' ? '▒' : '■'
+        {b.categories.filter(c => c.kind !== 'deferred').map(c => {
+          const mark = c.kind === 'free' ? '·' : c.kind === 'buffer' ? '▒' : '█'
           return (
             <Text>
               <Text color={c.kind === 'free' ? undefined : c.color} dimColor={c.kind === 'free'}>{mark}</Text>
-              <Text dimColor={deferred}> {c.name.padEnd(19)}{k(c.tokens).padStart(6)}</Text>
-              <Text dimColor>{deferred ? '  not in window' : `  ${pct(c.tokens).padStart(4)}`}</Text>
-              {/* a label ABOUT lacks gets no tag: guessing "per request" would be wrong if it is the conversation */}
-              {c.kind === 'used' && ABOUT[c.name] && (ABOUT[c.name]!.grows ? <Text color="yellow">  grows</Text> : <Text dimColor>  per request</Text>)}
+              <Text> {c.name.padEnd(19)}{k(c.tokens).padStart(6)}</Text>
+              <Text dimColor>{`  ${pct(c.tokens).padStart(4)}`}</Text>
+              {/* a label ABOUT lacks gets no tag: guessing "each request" would be wrong if it is the conversation */}
+              {c.kind === 'used' && ABOUT[c.name] && (ABOUT[c.name]!.grows ? <Text color="yellow">  grows</Text> : <Text dimColor>  each request</Text>)}
+              {c.kind === 'buffer' && <Text dimColor>  reserved for compaction</Text>}
             </Text>
           )
         })}
       </Box>
     )
     const payers = payersOf(b)
-    const now = history.at(-1)
-    const tail = `  ${now != null ? `now ${k(now)}` : ''}${history.length > 1 ? `, first ${k(history[0]!)}` : ''}`
-    const shown = history.slice(-Math.max(8, w - tail.length)) // bars and tail share one line: together they fit the pane
+    const deferred = b.categories.filter(c => c.kind === 'deferred')
+    // The free row is already measured against the threshold (window - used - compaction reserve), so it is the room
+    // before auto-compact as it stands; free plus the reserve is the room left in the whole window
+    const free = b.categories.find(c => c.kind === 'free')?.tokens ?? 0
+    const buffer = b.categories.find(c => c.kind === 'buffer')?.tokens ?? 0
+    const compacts = b.isAutoCompactEnabled && b.autoCompactThreshold
+    const grows = b.categories.find(c => c.kind === 'used' && ABOUT[c.name]?.grows)
+    // Growth is read from the API's request sizes, never the header's estimate: it states changes, not a second "now"
+    // that would disagree with the header
+    const turn = turns.at(-1)
+    const sum = (t: TurnRows) => t.rows.reduce((s, x) => s + x.delta, 0)
+    const signed = (n: number) => `${n < 0 ? '-' : '+'}${k(Math.abs(n))}`
+    const most = Math.max(1, ...(turn?.rows ?? []).map(x => Math.abs(x.delta)))
+    const span = Math.max(4, Math.min(w, 100) - 34) // label 24, number 7, gaps: the bar takes what is left
+    const earlier = turns.slice(0, -1).filter(t => t.rows.length).reverse().map(sum) // the first turn measured has no before
 
     return (
       <Box flexDirection="column">
@@ -152,35 +185,62 @@ export const register: Register = on => {
           <Text bold>{k(b.totalTokens)} of {k(b.rawMaxTokens)} tokens</Text>
           <Text dimColor> · {b.percentage}% used · {b.model}</Text>
         </Text>
-        {notes && <Text dimColor>Everything Claude reads on each request. Each ■ is about {k(Math.round(b.rawMaxTokens / b.gridRows.flat().length))} tokens.</Text>}
+        {compacts
+          ? <Text><Text bold color="green">{k(free)} left before auto-compact</Text><Text dimColor> at {k(b.autoCompactThreshold!)} · {k(free + buffer)} in the window</Text></Text>
+          : <Text><Text bold color="green">{k(free)} left in the window</Text><Text dimColor> · auto-compact is off</Text></Text>}
+        {grows && b.totalTokens > 0 && <Text><Text color={grows.color}>{grows.name} {k(grows.tokens)}</Text><Text dimColor> is {Math.round((grows.tokens / b.totalTokens) * 100)}% of what is used, and the part that grows</Text></Text>}
+        {notes && <Text dimColor>The bar is the whole window, in the colours below. Every part gets at least one cell, however small.</Text>}
         <Text> </Text>
-        <Box flexDirection={side ? 'row' : 'column'}>{grid}{!side && <Text> </Text>}{legend}</Box>
+        <Text>{barOf(b, Math.min(w, 100)).map(r => <Text color={r.color} dimColor={r.dim}>{r.s}</Text>)}</Text>
+        <Text> </Text>
+        {legend}
 
         {notes && (
           <Box flexDirection="column" marginTop={1}>
             <Text bold>What each part is</Text>
-            {b.categories.map(c => {
+            {b.categories.filter(c => c.kind !== 'deferred').map(c => {
               // a label this table lacks (a new engine row, or a renamed one) says so, rather than vanishing from the list
-              const text = c.kind === 'deferred' ? DEFERRED : ABOUT[c.name]?.text ?? (c.kind === 'used' ? 'no note for this row yet' : undefined)
+              const text = ABOUT[c.name]?.text ?? (c.kind === 'used' ? 'no note for this row yet' : undefined)
               return text ?<Text><Text color={c.kind === 'free' ? undefined : c.color}>{c.name}</Text><Text dimColor>: {text}</Text></Text> : null
             })}
           </Box>
         )}
 
+        {/* apart from the breakdown so nobody adds these to the total: they are not in the window */}
+        {deferred.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold>Available tools outside context</Text>
+            {notes && <Text dimColor>{DEFERRED}</Text>}
+            {deferred.map(c => <Text dimColor>  {k(c.tokens).padStart(6)}  {c.name}</Text>)}
+          </Box>
+        )}
+
         {payers.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
-            <Text bold>Paid on every request</Text>
+            <Text bold>Context included in each request</Text>
             {notes && <Text dimColor>Sent again with each message before the conversation even starts. The biggest are the easiest wins.</Text>}
             {payers.map(p => <Text>  {k(p.tokens).padStart(6)}  {p.label}</Text>)}
           </Box>
         )}
 
         <Box flexDirection="column" marginTop={1}>
-          <Text bold>Growth after each turn</Text>
-          {shown.length
-            ? <Text><Text color="cyan">{spark(shown, usage!.context.window)}</Text><Text dimColor>{tail}</Text></Text>
-            : <Text dimColor>Shows up after Claude's first reply.</Text>}
-          {notes && shown.length > 0 && <Text dimColor>Each bar is one turn, out of the whole window. A drop is a compaction or a /clear.</Text>}
+          <Text><Text bold>Growth this turn</Text>{turn && <Text dimColor>  {signed(sum(turn))}</Text>}</Text>
+          {notes && <Text dimColor>What each step added, live: the tools' results and Claude's text. Bars are scaled to the biggest step.</Text>}
+          {turn && (turn.rows.length || turn.pending) ? (
+            <Box flexDirection="column">
+              {/* a long agentic turn runs to hundreds of steps: draw the latest, the total still counts them all */}
+              {turn.rows.length > STEPS ? <Text dimColor>  …{turn.rows.length - STEPS} earlier steps</Text> : null}
+              {turn.rows.slice(-STEPS).map(x => (
+                <Text>
+                  <Text>  {x.label.slice(0, 24).padEnd(24)}</Text>
+                  <Text dimColor>{signed(x.delta).padStart(6)}  </Text>
+                  <Text color={x.delta < 0 ? 'green' : 'cyan'}>{'█'.repeat(Math.max(1, Math.round((Math.abs(x.delta) / most) * span)))}</Text>
+                </Text>
+              ))}
+              {turn.pending ? <Text dimColor>  {turn.pending.slice(0, 24).padEnd(24)}       …</Text> : null}
+            </Box>
+          ) : <Text dimColor>Shows up once Claude has answered twice.</Text>}
+          {earlier.length > 0 && <Text dimColor>Earlier turns: {earlier.map(signed).join('  ')}</Text>}
         </Box>
 
         <Box flexDirection="column" marginTop={1}>
