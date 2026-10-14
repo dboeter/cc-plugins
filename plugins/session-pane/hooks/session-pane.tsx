@@ -218,7 +218,9 @@ export const register: Register = on => {
     const up = (await $.ui.panes()).some(p => p.id === PANE)
     if (up) { await $.ui.close({ id: PANE }); return { text: 'Session pane hidden' } }
     await flush($).catch(() => {})
-    await $.ui.open({ id: PANE, title: TITLE, focus: true })
+    // docked, the default share is far wider than the ~44 columns the pages are laid out for and squeezes the transcript;
+    // 48 leaves a few over, so a long label wraps less. A request only: a width the person dragged the dock to wins
+    await $.ui.open({ id: PANE, title: TITLE, focus: true, columns: 48 })
     return { text: 'Session pane shown' }
   })
 

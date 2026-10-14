@@ -38,31 +38,27 @@ export const payersOf = (b: SessionContextBreakdown, n = 5): Payer[] => {
   return out.filter(p => p.tokens > 0).sort((x, y) => y.tokens - x.tokens).slice(0, n)
 }
 
-// A step's tool calls as one label: `Read ×3, Bash`, an MCP tool as `server tool`
-export const toolsLabel = (names: string[]) => {
-  const n = new Map<string, number>()
-  for (const x of names) { const t = x.replace(/^mcp__/, '').replace(/__/g, ' '); n.set(t, (n.get(t) ?? 0) + 1) }
-  return [...n].map(([t, c]) => c > 1 ? `${t} ×${c}` : t).join(', ')
-}
-
-// What the model read for one request: the uncached input plus what the prompt cache served and wrote
-const readOf = (u: { input_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }) =>
-  u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
-
-// Context growth per step of a main turn, live: each request's size is known when its response ends, so the growth from
-// one request to the next is what the step between added (its tool results and reply). A row's label is the tools that
-// caused it; the first row of a turn is the prompt plus the previous turn's reply. `pending`: the latest step's tools,
-// whose growth shows once the next request is answered
-const STEPS = 12 // rows drawn for one turn
-export type StepRow = { label: string; delta: number }
-export type TurnRows = { id: string; rows: StepRow[]; pending?: string }
+// One turn's window as it stood when the turn ended: the counted rows only, for the per-turn bars and totals
+// `delta` is taken against the turn before when recorded, so the oldest row kept still has one
+export type TurnSnap = Pick<SessionContextBreakdown, 'categories' | 'rawMaxTokens' | 'totalTokens'> & { turn: number; delta?: number }
+const TURNS = 10 // turns drawn
+const snapOf = (b: SessionContextBreakdown, turn: number, before?: TurnSnap): TurnSnap => ({
+  turn, totalTokens: b.totalTokens, rawMaxTokens: b.rawMaxTokens, categories: b.categories.filter(c => c.kind === 'used'),
+  delta: before && b.totalTokens - before.totalTokens,
+})
 
 // The window as one stacked bar, `width` cells, in breakdown order. Every
 // non-empty row gets at least one cell so a small one stays visible; free space takes up the rounding (and gives way
-// first when those minimum cells overflow)
-export const barOf = (b: SessionContextBreakdown, width: number): { s: string; color?: string; dim?: boolean }[] => {
+// first when those minimum cells overflow, then the biggest rows give a cell each until the bar fits)
+export const barOf = (b: Pick<SessionContextBreakdown, 'categories' | 'rawMaxTokens'>, width: number): { s: string; color?: string; dim?: boolean }[] => {
   const rows = b.categories.filter(c => c.kind !== 'deferred' && c.kind !== 'free' && c.tokens > 0)
     .map(c => ({ c, n: Math.max(1, Math.round((c.tokens / b.rawMaxTokens) * width)) }))
+  // a full or over-full window, or many small rows: still too wide once free space is gone
+  for (let over = rows.reduce((s, r) => s + r.n, 0) - width; over > 0; over--) {
+    const big = rows.reduce((m, r) => r.n > m.n ? r : m)
+    if (big.n <= 1) break // every row at its one cell: wider than `width` cannot be helped
+    big.n--
+  }
   const free = b.categories.find(c => c.kind === 'free')
   const left = Math.max(0, width - rows.reduce((s, r) => s + r.n, 0))
   const out: { s: string; color?: string; dim?: boolean }[] = rows.map(({ c, n }) => ({ s: (c.kind === 'buffer' ? '▒' : '█').repeat(n), color: c.color }))
@@ -76,10 +72,13 @@ let usage: SessionUsage | undefined
 let failed = ''
 let tried = false // the first draw fetched once; a failed fetch must not redraw-and-refetch forever
 let exact = false // the shown breakdown was counted with the token-count API (`full`), not estimated
-let notes = true // the per-category notes; an experienced reader hides them
-// The last turns' growth, newest last, and the size of the latest main request. Module state: a reload starts it over
-let turns: TurnRows[] = []
-let lastRead: number | undefined
+let notes = false // the per-category notes: off by default, n shows them
+// The window after each main turn, newest last. Module state: a reload starts it over
+let turns: TurnSnap[] = []
+let turnNo = 0
+// A turn ended and its row waits for the next breakdown that lands, whichever refresh brings it: one that `e` or `r`
+// overtook, or that failed, must not lose the turn
+let owed = false
 // Each refresh's number. A reply a newer refresh overtook is dropped, so a slow exact count that a turn's estimate
 // passed can't land pre-turn figures labelled as counted
 let seq = 0
@@ -90,15 +89,18 @@ async function refresh($: EngineInterface, detail: ContextBreakdownDetail = 'sum
   if (detail === 'full') { counting = true; $.ui.invalidate('ui.render') }
   try {
     const u = await $.session.usage({ breakdown: detail }) // `full` sends a token-count request per tool and file: only on the reader's ask
-    if (mine === seq) { usage = u; exact = detail === 'full'; failed = '' }
+    if (mine === seq) {
+      usage = u; exact = detail === 'full'; failed = ''
+      if (owed && u.context.breakdown) { owed = false; turns = [...turns, snapOf(u.context.breakdown, ++turnNo, turns.at(-1))].slice(-TURNS) }
+    }
   } catch (err) { if (mine === seq) failed = String((err as Error)?.message ?? err) }
-  finally { if (detail === 'full') counting = false }
-  $.ui.invalidate('ui.render')
+  finally { if (detail === 'full') counting = false; $.ui.invalidate('ui.render') }
 }
 const isUp = async ($: EngineInterface) => (await $.ui.panes()).some(p => p.id === PANE)
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    turns = []; turnNo = 0; owed = false // another session's turns are not this one's
     try { await $.command.register({ name: 'contextbudget', description: 'Toggle a pane that explains what fills the context window and how it grows.' }) }
     catch (err) { $.ui.log(`context-budget: /contextbudget not registered: ${(err as Error)?.message ?? err}`, { to: 'debug' }) } // throws on hot reload (no session bound yet); anything else should be findable
     return next(e)
@@ -111,28 +113,13 @@ export const register: Register = on => {
     return { text: up ? 'context budget hidden' : 'context budget shown' }
   })
 
-  // after each main turn, while the pane is up: re-estimate the breakdown (local, no request)
+  // after each main turn: re-estimate the breakdown (local, no request) and keep it as that turn's row, pane open or
+  // not, so the per-turn rows reach back past when the pane was opened
   on('session.measure', async ($, e, next) => {
     const r = await next(e)
-    if (e.changed.includes('context') && await isUp($).catch(() => false)) await refresh($)
-    return r
-  })
-
-  // each main request as its response ends: how much the context grew since the last one, and which tools to blame.
-  // A subagent's requests are its own window, not this one
-  on('turn.step', async function* ($, e, next) {
-    const r = yield* next(e)
-    if (e.agentId || !r.usage) return r
-    const read = readOf(r.usage)
-    let t = turns.at(-1)
-    if (t?.id !== e.turnId) { t = { id: e.turnId, rows: [] }; turns = [...turns, t].slice(-9) }
-    if (lastRead != null) {
-      const delta = read - lastRead
-      t.rows.push({ label: delta < 0 ? 'compacted or cleared' : e.index === 0 ? 'prompt + last reply' : t.pending ?? 'reply', delta })
-    }
-    lastRead = read
-    t.pending = toolsLabel([...r.toolUses.map(u => u.name), ...(r.serverToolUses ?? []).map(u => u.name)]) || undefined
-    if (await isUp($).catch(() => false)) $.ui.invalidate('ui.render')
+    if (!e.changed.includes('context')) return r
+    owed = true
+    await refresh($)
     return r
   })
 
@@ -150,7 +137,7 @@ export const register: Register = on => {
         {b.categories.filter(c => c.kind !== 'deferred').map(c => {
           const mark = c.kind === 'free' ? '·' : c.kind === 'buffer' ? '▒' : '█'
           return (
-            <Text>
+            <Text key={`l-${c.name}`}>
               <Text color={c.kind === 'free' ? undefined : c.color} dimColor={c.kind === 'free'}>{mark}</Text>
               <Text> {c.name.padEnd(19)}{k(c.tokens).padStart(6)}</Text>
               <Text dimColor>{`  ${pct(c.tokens).padStart(4)}`}</Text>
@@ -169,15 +156,14 @@ export const register: Register = on => {
     const free = b.categories.find(c => c.kind === 'free')?.tokens ?? 0
     const buffer = b.categories.find(c => c.kind === 'buffer')?.tokens ?? 0
     const compacts = b.isAutoCompactEnabled && b.autoCompactThreshold
+    const roomColor = free / b.rawMaxTokens < 0.1 ? 'red' : free / b.rawMaxTokens < 0.25 ? 'yellow' : 'green' // headroom, by its share of the window
     const grows = b.categories.find(c => c.kind === 'used' && ABOUT[c.name]?.grows)
-    // Growth is read from the API's request sizes, never the header's estimate: it states changes, not a second "now"
-    // that would disagree with the header
-    const turn = turns.at(-1)
-    const sum = (t: TurnRows) => t.rows.reduce((s, x) => s + x.delta, 0)
+    // The heading shows the header's total, which `e` and `r` move on from the latest row's after-turn estimate
     const signed = (n: number) => `${n < 0 ? '-' : '+'}${k(Math.abs(n))}`
-    const most = Math.max(1, ...(turn?.rows ?? []).map(x => Math.abs(x.delta)))
-    const span = Math.max(4, Math.min(w, 100) - 34) // label 24, number 7, gaps: the bar takes what is left
-    const earlier = turns.slice(0, -1).filter(t => t.rows.length).reverse().map(sum) // the first turn measured has no before
+    const deltaColor = (n: number) => n < 0 ? 'green' : 'yellow'
+    const last = turns.at(-1)
+    const span = Math.max(8, Math.min(w, 100) - 22) // turn 5, total 6, delta 7, gaps: the bar takes what is left
+    const newestFirst = [...turns].reverse()
 
     return (
       <Box flexDirection="column">
@@ -186,12 +172,12 @@ export const register: Register = on => {
           <Text dimColor> · {b.percentage}% used · {b.model}</Text>
         </Text>
         {compacts
-          ? <Text><Text bold color="green">{k(free)} left before auto-compact</Text><Text dimColor> at {k(b.autoCompactThreshold!)} · {k(free + buffer)} in the window</Text></Text>
-          : <Text><Text bold color="green">{k(free)} left in the window</Text><Text dimColor> · auto-compact is off</Text></Text>}
+          ? <Text><Text bold color={roomColor}>{k(free)} left before auto-compact</Text><Text dimColor> at {k(b.autoCompactThreshold!)} · {k(free + buffer)} in the window</Text></Text>
+          : <Text><Text bold color={roomColor}>{k(free)} left in the window</Text><Text dimColor> · auto-compact is off</Text></Text>}
         {grows && b.totalTokens > 0 && <Text><Text color={grows.color}>{grows.name} {k(grows.tokens)}</Text><Text dimColor> is {Math.round((grows.tokens / b.totalTokens) * 100)}% of what is used, and the part that grows</Text></Text>}
         {notes && <Text dimColor>The bar is the whole window, in the colours below. Every part gets at least one cell, however small.</Text>}
         <Text> </Text>
-        <Text>{barOf(b, Math.min(w, 100)).map(r => <Text color={r.color} dimColor={r.dim}>{r.s}</Text>)}</Text>
+        <Text>{barOf(b, Math.min(w, 100)).map((r, i) => <Text key={`b${i}`} color={r.color} dimColor={r.dim}>{r.s}</Text>)}</Text>
         <Text> </Text>
         {legend}
 
@@ -201,7 +187,7 @@ export const register: Register = on => {
             {b.categories.filter(c => c.kind !== 'deferred').map(c => {
               // a label this table lacks (a new engine row, or a renamed one) says so, rather than vanishing from the list
               const text = ABOUT[c.name]?.text ?? (c.kind === 'used' ? 'no note for this row yet' : undefined)
-              return text ?<Text><Text color={c.kind === 'free' ? undefined : c.color}>{c.name}</Text><Text dimColor>: {text}</Text></Text> : null
+              return text ? <Text key={`a-${c.name}`}><Text color={c.kind === 'free' ? undefined : c.color}>{c.name}</Text><Text dimColor>: {text}</Text></Text> : null
             })}
           </Box>
         )}
@@ -211,7 +197,7 @@ export const register: Register = on => {
           <Box flexDirection="column" marginTop={1}>
             <Text bold>Available tools outside context</Text>
             {notes && <Text dimColor>{DEFERRED}</Text>}
-            {deferred.map(c => <Text dimColor>  {k(c.tokens).padStart(6)}  {c.name}</Text>)}
+            {deferred.map(c => <Text key={`d-${c.name}`} dimColor>  {k(c.tokens).padStart(6)}  {c.name}</Text>)}
           </Box>
         )}
 
@@ -219,28 +205,26 @@ export const register: Register = on => {
           <Box flexDirection="column" marginTop={1}>
             <Text bold>Context included in each request</Text>
             {notes && <Text dimColor>Sent again with each message before the conversation even starts. The biggest are the easiest wins.</Text>}
-            {payers.map(p => <Text>  {k(p.tokens).padStart(6)}  {p.label}</Text>)}
+            {payers.map(p => <Text key={`p-${p.label}`}>  {k(p.tokens).padStart(6)}  {p.label}</Text>)}
           </Box>
         )}
 
         <Box flexDirection="column" marginTop={1}>
-          <Text><Text bold>Growth this turn</Text>{turn && <Text dimColor>  {signed(sum(turn))}</Text>}</Text>
-          {notes && <Text dimColor>What each step added, live: the tools' results and Claude's text. Bars are scaled to the biggest step.</Text>}
-          {turn && (turn.rows.length || turn.pending) ? (
-            <Box flexDirection="column">
-              {/* a long agentic turn runs to hundreds of steps: draw the latest, the total still counts them all */}
-              {turn.rows.length > STEPS ? <Text dimColor>  …{turn.rows.length - STEPS} earlier steps</Text> : null}
-              {turn.rows.slice(-STEPS).map(x => (
-                <Text>
-                  <Text>  {x.label.slice(0, 24).padEnd(24)}</Text>
-                  <Text dimColor>{signed(x.delta).padStart(6)}  </Text>
-                  <Text color={x.delta < 0 ? 'green' : 'cyan'}>{'█'.repeat(Math.max(1, Math.round((Math.abs(x.delta) / most) * span)))}</Text>
-                </Text>
-              ))}
-              {turn.pending ? <Text dimColor>  {turn.pending.slice(0, 24).padEnd(24)}       …</Text> : null}
-            </Box>
-          ) : <Text dimColor>Shows up once Claude has answered twice.</Text>}
-          {earlier.length > 0 && <Text dimColor>Earlier turns: {earlier.map(signed).join('  ')}</Text>}
+          <Text>
+            <Text bold>Per turn</Text>
+            <Text>  {k(b.totalTokens)}</Text>
+            {last?.delta != null && <Text color={deltaColor(last.delta)}> {signed(last.delta)}</Text>}
+            {last?.delta != null && <Text dimColor> in the last turn</Text>}
+          </Text>
+          {notes && <Text dimColor>The window after each turn, newest first, in the colours above: the bar grows as the conversation does. A drop is a compaction or a /clear.</Text>}
+          {newestFirst.length ? newestFirst.map(t => (
+            <Text key={`t${t.turn}`}>
+              <Text dimColor>  #{String(t.turn).padEnd(4)}</Text>
+              <Text>{k(t.totalTokens).padStart(6)}</Text>
+              <Text color={t.delta == null ? undefined : deltaColor(t.delta)}>{(t.delta == null ? '' : signed(t.delta)).padStart(7)}  </Text>
+              {barOf(t, span).map((r, i) => <Text key={`t${t.turn}-${i}`} color={r.color}>{r.s}</Text>)}
+            </Text>
+          )) : <Text dimColor>Shows up after Claude's first reply.</Text>}
         </Box>
 
         <Box flexDirection="column" marginTop={1}>
@@ -255,9 +239,11 @@ export const register: Register = on => {
         <Box marginTop={1}>
           <Button key="exact" label="Count exactly" hotkey="r" plain onPress={() => { if (!counting) void refresh($, 'full') }} />
           <Text>  </Text>
+          <Button key="estimate" label="Estimate again" hotkey="e" plain onPress={() => { void refresh($) }} />
+          <Text>  </Text>
           <Button key="notes" label={notes ? 'Hide notes' : 'Show notes'} hotkey="n" plain dimColor onPress={() => { notes = !notes; $.ui.invalidate('ui.render') }} />
         </Box>
-        <Text dimColor>{counting ? 'Counting exactly…' : exact ? 'Counted with the token-count API.' : 'Estimated locally; r counts exactly (one request per tool and file).'}</Text>
+        <Text dimColor>{counting ? 'Counting exactly…' : exact ? 'Counted with the token-count API; e estimates again, locally.' : 'Estimated locally (e again, no requests); r counts exactly (one request per tool and file).'}</Text>
         {failed && <Text color="red">Could not refresh, showing the last figures: {failed}</Text>}
       </Box>
     )

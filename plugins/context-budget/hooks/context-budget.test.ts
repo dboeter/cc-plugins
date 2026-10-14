@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
 import type { SessionContextBreakdown } from 'claude-code'
-import { barOf, k, payersOf, toolsLabel } from './context-budget'
+import { barOf, k, payersOf } from './context-budget'
 
 const cat = (name: string, tokens: number, kind: 'used' | 'free' | 'buffer' | 'deferred', color = 'c') => ({ name, tokens, kind, color, isDeferred: kind === 'deferred' })
 const breakdown = (over: Partial<SessionContextBreakdown> = {}): SessionContextBreakdown => ({
@@ -35,10 +35,6 @@ test('per-request payers: MCP schemas summed per server, unloaded ones left out,
   expect(payersOf(b, 2).length).toBe(2)
 })
 
-test('the tools of a step read as one label, repeats counted, MCP names spaced', () => {
-  expect(toolsLabel(['Read', 'Bash', 'Read', 'mcp__ctx__search'])).toBe('Read ×2, Bash, ctx search')
-})
-
 test('the stacked bar spans the width, keeps a tiny row visible, and puts free space before the reserve', () => {
   const b = breakdown({ categories: [cat('System prompt', 50, 'used', 'p'), cat('Messages', 100000, 'used', 'm'), cat('Free space', 66950, 'free'), cat('Autocompact buffer', 33000, 'buffer', 'w'), cat('MCP tools', 9000, 'deferred')] })
   expect(barOf(b, 20)).toEqual([
@@ -55,7 +51,7 @@ test('the pane explains each category, lists what each request carries', async (
   on('ui.panes', () => ({ value: [{ id: 'context-budget' }] }) as any)
   const m = await $.ui.mount({ plugin: 'context-budget', surface: 'terminal', component: 'Pane', requestId: 'context-budget', props: { title: 'Context budget', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 } } as any })
   expect(await m.find({ text: /43k of 200k tokens/ })).toBeDefined()
-  expect(await m.find({ text: /This is the part that fills up/ })).toBeDefined()
+  expect(await m.find({ text: /This is the part that fills up/ })).toBe(undefined) // notes start hidden
   expect(await m.find({ text: /User r\/CLAUDE\.md/ })).toBeDefined()
   expect(await m.find({ text: /124k left before auto-compact/ })).toBeDefined() // the free row, not threshold minus the reserve again
   expect(await m.find({ text: /at 167k · 157k in the window/ })).toBeDefined()
@@ -72,7 +68,7 @@ test('the pane explains each category, lists what each request carries', async (
   expect(counted.at(-1)).toBe('full')
   expect(await m.find({ text: /Counted with the token-count API/ })).toBeDefined()
   await m.press({ key: 'notes' })
-  expect(await m.find({ text: /This is the part that fills up/ })).toBe(undefined)
+  expect(await m.find({ text: /This is the part that fills up/ })).toBeDefined()
 })
 
 test('r counts once at a time, a turn overtakes a slow exact count, a failed refresh keeps the last figures', async ($, on) => {
@@ -115,37 +111,61 @@ test('r counts once at a time, a turn overtakes a slow exact count, a failed ref
   expect(await m.find({ text: /Could not refresh, showing the last figures: .*offline/ })).toBeDefined()
 })
 
-test('growth fills in per step while a turn runs: each row blames the tools before it, subagents left out', async ($, on) => {
-  on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { tokens: 43000, window: 200000, percent: 22, breakdown: breakdown() } } }) as any)
+test('the bar never runs past its width: once free space is gone the biggest rows give way, every row keeps a cell', () => {
+  const small = ['System prompt', 'System tools', 'MCP tools', 'Custom agents', 'Memory files', 'Skills'].map((n, i) => cat(n, 600, 'used', `s${i}`))
+  const b = breakdown({ categories: [...small, cat('Messages', 190000, 'used', 'm'), cat('Free space', 0, 'free'), cat('Autocompact buffer', 33000, 'buffer', 'w')], totalTokens: 226600 })
+  const bar = barOf(b, 20)
+  expect(bar.reduce((s, r) => s + r.s.length, 0)).toBe(20)
+  expect(bar.every(r => r.s.length >= 1)).toBe(true)
+  expect(bar.length).toBe(8) // no free-space run: there is none
+})
+
+test('e estimates again for free; the headroom turns red when little is left', async ($, on) => {
+  const asks: string[] = []
+  on('session.usage', (_$, e: any) => { asks.push(e?.breakdown); return { value: { startedAt: 0, rateLimits: [], context: { tokens: 170000, window: 200000, percent: 85, breakdown: breakdown({ totalTokens: 160000, categories: [cat('Messages', 160000, 'used', 'm'), cat('Free space', 7000, 'free'), cat('Autocompact buffer', 33000, 'buffer', 'w')] }) } } } as any })
   on('ui.panes', () => ({ value: [{ id: 'context-budget' }] }) as any)
-  // core: answers each step with the usage and tool calls the test queued for it
-  const answers: { read: number; tools?: string[] }[] = []
-  on('turn.step', async function* (_$, e) {
-    const a = answers.shift()!
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: (a.tools ?? []).map(name => ({ name })), stopReason: 'end_turn', usage: { input_tokens: 100, cache_read_input_tokens: a.read - 300, cache_creation_input_tokens: 200, output_tokens: 50, model: 'm' } } as any
-  })
-  const step = async (turnId: string, index: number, read: number, tools?: string[], agentId?: string) => {
-    answers.push({ read, tools })
-    const s = $.turn.step({ turnId, index, model: 'm', messageCount: 1, agentId } as any)
-    for await (const _ of s);
-    await s.result
-  }
-  await step('t1', 0, 20000)
-  await step('t2', 0, 23000, ['Read', 'Read'])
-  await step('t2', 1, 999999, ['Bash'], 'sub') // a subagent's own window
+  const m = await $.ui.mount({ plugin: 'context-budget', surface: 'terminal', component: 'Pane', requestId: 'context-budget', props: { title: 'Context budget', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 } } as any })
+  const headroom = await m.findAll({ type: 'Text', text: /7\.0k left before auto-compact/ })
+  expect(headroom.some(t => t.props.color === 'red')).toBe(true)
+  const before = asks.length
+  await m.press({ key: 'estimate' })
+  expect(asks.length).toBe(before + 1)
+  expect(asks.at(-1)).not.toBe('full')
+})
+
+test('per turn: the window after each turn, newest first, its total and the change since the turn before, bars in category colours', async ($, on) => {
+  let messages = 40000
+  on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { tokens: 0, window: 200000, percent: 0, breakdown: breakdown({ totalTokens: 3000 + messages, categories: [cat('System prompt', 3000, 'used', 'promptBorder'), cat('Messages', messages, 'used', 'permission'), cat('Free space', 124000, 'free'), cat('Autocompact buffer', 33000, 'buffer', 'warning')] }) } } }) as any)
+  on('ui.panes', () => ({ value: [] }) as any) // pane closed: turns are still kept
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  const turn = async (m: number) => { messages = m; await $.session.measure({ context: { tokens: 0, window: 200000 }, rateLimits: [], changed: ['context'] } as any) }
+  await turn(40000)
+  await turn(44000)
+  await turn(20000) // compacted
+  await $.session.measure({ context: { tokens: 0, window: 200000 }, rateLimits: [], changed: ['rateLimits'] } as any) // not a turn
   const m = await $.ui.mount({ plugin: 'context-budget', surface: 'terminal', component: 'Pane', requestId: 'context-budget', props: { title: 'Context budget', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 80 } } as any })
-  expect(await m.find({ text: /prompt \+ last reply\s+\+3\.0k/ })).toBeDefined()
-  expect(await m.find({ text: /Read ×2\s+…/ })).toBeDefined() // its growth is known once the next request is answered
+  expect(await m.find({ text: /Per turn\s+23k -24k in the last turn/ })).toBeDefined()
+  const rows = await m.findAll({ type: 'Text', text: /^\s+#\d+\s+\d+k\s+[+-]?/ })
+  expect(rows.map(r => r.text.replace(/█+/g, '').trim().replace(/\s+/g, ' '))).toEqual(['#3 23k -24k', '#2 47k +4.0k', '#1 43k'])
+  const bars = await m.findAll({ type: 'Text', text: /^█+$/ })
+  expect(bars.some(t => t.props.color === 'permission')).toBe(true) // Messages in its own colour, as in the top bar
 
-  await step('t2', 1, 37000)
-  expect(await m.find({ text: /Read ×2\s+\+14k/ })).toBeDefined()
-  expect(await m.find({ text: /Growth this turn\s+\+17k/ })).toBeDefined()
+  for (let i = 1; i <= 10; i++) await turn(20000 + i * 1000) // past the ten rows kept
+  const kept = await m.findAll({ type: 'Text', text: /^\s+#\d+\s+\d+k/ })
+  expect(kept.length).toBe(10)
+  expect(kept.at(-1)!.text.replace(/█+/g, '').trim().replace(/\s+/g, ' ')).toBe('#4 24k +1.0k') // the oldest kept row keeps its change, against #3 (23k) now dropped
+})
 
-  await step('t3', 0, 5000) // a /clear or compaction between turns
-  expect(await m.find({ text: /compacted or cleared\s+-32k/ })).toBeDefined()
-  expect(await m.find({ text: /Earlier turns: \+17k$/ })).toBeDefined()
-
-  for (let i = 1; i <= 14; i++) await step('t3', i, 5000 + i * 1000, ['Grep']) // a long turn draws its latest 12 of 15 rows
-  expect(await m.find({ text: /…3 earlier steps/ })).toBeDefined()
-  expect(await m.find({ text: /Growth this turn\s+-18k/ })).toBeDefined() // the total still counts them all: -32k + 14 × 1k
+test('a turn whose estimate fails or is overtaken still gets its row, from the next breakdown that lands', async ($, on) => {
+  let offline = false
+  on('session.usage', () => offline ? { deny: 'offline' } as any : ({ value: { startedAt: 0, rateLimits: [], context: { tokens: 0, window: 200000, percent: 0, breakdown: breakdown() } } }) as any)
+  on('ui.panes', () => ({ value: [{ id: 'context-budget' }] }) as any)
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  const m = await $.ui.mount({ plugin: 'context-budget', surface: 'terminal', component: 'Pane', requestId: 'context-budget', props: { title: 'Context budget', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 80 } } as any })
+  offline = true
+  await $.session.measure({ context: { tokens: 0, window: 200000 }, rateLimits: [], changed: ['context'] } as any)
+  expect(await m.find({ text: /^\s+#1\s/ })).toBe(undefined)
+  offline = false
+  await m.press({ key: 'estimate' })
+  expect(await m.find({ text: /^\s+#1\s+43k/ })).toBeDefined()
 })

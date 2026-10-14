@@ -41,7 +41,7 @@ test('text helpers: scrub, title, program, check name', () => {
 test('insight: what failed, in one to three lines', () => {
   const ts = insightOf('npx tsc -p .', 'Exit code 2\nsrc/a.ts(4,7): error TS2322: Type x\nsrc/b.ts(1,1): error TS2304: Cannot find y')
   expect(ts.exit).toBe(2)
-  expect(ts.text).toBe('tsc · 2 errors in 2 files\na.ts(4,7)  TS2322 Type x\nb.ts(1,1)  TS2304 Cannot find y')
+  expect(ts.text).toBe('tsc: 2 errors in 2 files\na.ts(4,7)  TS2322 Type x\nb.ts(1,1)  TS2304 Cannot find y')
   expect(insightOf('npm test', 'Exit code 1\n FAIL src/a.test.ts\nTests: 1 failed, 3 passed').text).toMatch(/^npm test\nFAIL src\/a\.test\.ts/)
 })
 
@@ -119,7 +119,7 @@ test('changes: Write create is New, Edit is Edited, later edits keep New; failed
   expect(m.files.map(f => [f.path, f.isNew])).toEqual([['/w/new.tsx', true], ['/w/old.ts', false]])
   expect(m.files[1]!.hunks?.[0]!.lines).toEqual(['-a', '+b'])
   m.running = false
-  expect(statusOf(m)).toEqual({ kind: 'review', label: 'Ready for your review', detail: 'Review changes' })
+  expect(statusOf(m)).toEqual({ kind: 'review', label: 'Waiting for you', detail: 'Changes available to review', next: undefined })
   expect(checksOf(m).line).toBe("Checks haven't run yet")
 })
 
@@ -157,14 +157,19 @@ test('checks: pass, fail with what failed, stale after an edit', () => {
   const m = fold(empty(), seen('prompt.submit', 'exit', { text: 'go' }, {}, 'you'), call('Edit', { file_path: '/w/a.ts' }, { result: { filePath: '/w/a.ts', structuredPatch: [] }, text: 'ok' }),
     call('Bash', { command: 'npm test' }, { result: {}, text: 'Exit code 1\n FAIL src/a.test.ts', isError: true }))
   expect(checksOf(m).line).toBe('Tests failed')
-  expect(statusOf(m)).toEqual({ kind: 'failed', label: 'Tests failed · needs your input', detail: 'npm test\nFAIL src/a.test.ts' })
+  expect(statusOf(m)).toEqual({ kind: 'failed', label: 'Tests failed, needs your input', detail: 'npm test\nFAIL src/a.test.ts' })
   m.running = true
-  expect(statusOf(m).label).toBe('Tests failed · Claude is investigating')
+  expect(statusOf(m).label).toBe('Tests failed, Claude is investigating')
   reduce(m, call('Edit', { file_path: '/w/a.ts' }, { result: { filePath: '/w/a.ts', structuredPatch: [] }, text: 'ok' })[1]!)
-  expect(checksOf(m)).toEqual({ line: "Checks haven't run since the last change", stale: true })
+  expect(checksOf(m)).toEqual({ line: '', failed: false, rerun: 'Rerun needed: Tests' })
   expect(statusOf(m).kind).toBe('working') // a stale failure is not the current state
   fold(m, call('Bash', { command: 'npm test' }, { result: {}, text: 'ok' }), call('Bash', { command: 'npx tsc' }, { result: {}, text: '' }))
-  expect(checksOf(m).line).toBe('Type check, Tests passed')
+  expect(checksOf(m)).toEqual({ line: 'Type check, Tests passed', failed: false, rerun: '' })
+  reduce(m, call('Edit', { file_path: '/w/a.ts' }, { result: { filePath: '/w/a.ts', structuredPatch: [] }, text: 'ok' })[1]!)
+  fold(m, call('Bash', { command: 'npx tsc' }, { result: {}, text: '' }))
+  expect(checksOf(m)).toEqual({ line: 'Type check passed', failed: false, rerun: 'Rerun needed: Tests' }) // named, not "others"
+  fold(m, call('Bash', { command: 'npm test' }, { result: {}, text: 'Exit code 1\n FAIL a.test.ts', isError: true }))
+  expect(checksOf(m)).toEqual({ line: 'Tests failed; Type check passed', failed: true, rerun: '' }) // a failure never hides a pass
 })
 
 test("checks: a pipeline's exit code is its last program's, so a check followed by another is judged by its output", () => {

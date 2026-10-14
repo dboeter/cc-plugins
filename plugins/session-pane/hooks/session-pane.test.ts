@@ -39,15 +39,12 @@ test('events fold into the pane; /session-pane opens it, nothing opens it unaske
   expect(opened.length).toBe(1)
 
   const p = await $.ui.mount({ plugin: 'session-pane', surface: 'terminal', component: 'Pane', requestId: 'session-pane', props: PROPS(44) })
-  expect(await p.find({ text: /Confirm before deleting ›/ })).toBeDefined()
-  expect(await p.find({ text: /Tests failed · needs your input/ })).toBeDefined()
-  expect(await p.find({ text: /2 files changed ›/ })).toBeDefined()
+  expect(await p.find({ text: /Confirm before deleting/ })).toBeDefined()
+  expect(await p.find({ text: /Tests failed, needs your input/ })).toBeDefined()
+  expect(await p.find({ text: /Review 2 changed files/ })).toBeDefined()
   expect(await p.find({ text: /tokens/i })).toBe(undefined) // no token counts on the overview
 
-  await p.press({ key: 'goal' })
-  expect(await p.find({ text: /No new dependencies/ })).toBeDefined()
-  expect(await p.find({ text: /From: Your opening message/ })).toBeDefined()
-  await p.press({ key: 'back' })
+  expect(await p.find({ text: /• No new dependencies/ })).toBeDefined() // the goal's constraints, on the overview itself
 
   await p.press({ key: 'chg' })
   expect(await p.find({ text: /New\s+\/w\/confirm\.tsx/ })).toBeDefined()
@@ -84,7 +81,8 @@ test('nearly full: a recap is drafted by a fork, reviewed, then handed to the co
   await $.session.measure({ context: { window: 1000, tokens: 900, percent: 90 }, rateLimits: [{ kind: 'five_hour', percentUsed: 10 }], changed: ['context'] } as any).catch(() => {})
   await clock.advance(2000)
   const p = await $.ui.mount({ plugin: 'session-pane', surface: 'terminal', component: 'Pane', requestId: 'session-pane', props: PROPS(44) })
-  expect(await p.find({ text: /Nearly full · 90%/ })).toBeDefined()
+  expect(await p.find({ text: /90% used, nearly full/ })).toBeDefined()
+  expect((await p.find({ type: 'Text', text: /^[█░]+  90% used, nearly full$/ }))?.text.length).toBeLessThanOrEqual(44 - 9) // bar and figure fit the value column
   await p.press({ key: 'recap' })
   await p.press({ key: 'draft' })
   expect(await p.find({ text: /Still to do: tests/ })).toBeDefined()
@@ -117,14 +115,14 @@ test('a /clear starts the pane over on the new session; a real exit stops the cl
   await clock.advance(2000)
   await clock.advance(2000)
   const p = await $.ui.mount({ plugin: 'session-pane', surface: 'terminal', component: 'Pane', requestId: 'session-pane', props: PROPS(44) })
-  expect(await p.find({ text: /First goal ›/ })).toBeDefined()
+  expect(await p.find({ text: /First goal/ })).toBeDefined()
 
   await $.session.end({ reason: 'clear', sessionId: 'S1', resume: { id: 'S1' } } as any) // no session.start follows
   id = 'S2'
   await say('Second session goal entirely different')
   await clock.advance(2000) // restores S2
   await clock.advance(2000) // its goal call's answer lands
-  expect(await p.find({ text: /Second goal ›/ })).toBeDefined()
+  expect(await p.find({ text: /Second goal/ })).toBeDefined()
   expect(await p.find({ text: /First goal/ })).toBe(undefined)
   expect(store['snap:S1']?.goal?.title).toBe('First goal')
   expect(store['snap:S2']?.prompts).toBe(1)
@@ -150,7 +148,7 @@ test("a resumed session with no snapshot is rebuilt from its transcript, and its
   await clock.advance(2000)
   expect(asked).toBe(1)
   const p = await $.ui.mount({ plugin: 'session-pane', surface: 'terminal', component: 'Pane', requestId: 'session-pane', props: PROPS(44) })
-  expect(await p.find({ text: /Confirm before deleting ›/ })).toBeDefined()
+  expect(await p.find({ text: /Confirm before deleting/ })).toBeDefined()
 })
 
 test('details: the cost off a subscription, the plan limits on one', async ($, on) => {
@@ -175,6 +173,6 @@ test('details: the cost off a subscription, the plan limits on one', async ($, o
   await p.press({ key: 'back' })
   await p.press({ key: 'details' })
   expect(await p.find({ text: /5-hour limit/ })).toBeDefined()
-  expect(await p.find({ text: /^10% used · resets in 1 hour$/ })).toBeDefined()
+  expect(await p.find({ text: /^10% used, resets in 1 hour$/ })).toBeDefined()
   expect(await p.find({ text: /so far/ })).toBe(undefined)
 })

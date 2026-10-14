@@ -36,7 +36,7 @@ export type SessionModel = {
   cost?: number // USD
   onPlan: boolean // rateLimits reported: a subscription, where a dollar figure means nothing to the person
 }
-export type View = 'overview' | 'goal' | 'context' | 'changes' | 'diff' | 'recap' | 'details'
+export type View = 'overview' | 'context' | 'changes' | 'diff' | 'recap' | 'details'
 export type Recap = { status: 'idle' | 'drafting' | 'ready' | 'applying' | 'applied' | 'failed'; text: string; note?: string }
 
 declare module 'claude-code' {

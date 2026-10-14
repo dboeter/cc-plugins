@@ -1,6 +1,6 @@
 import type { Elements, RenderChildren, SessionUsage } from 'claude-code'
 import type { Recap, View } from '../types'
-import { checksOf, contextLabel, NEARLY_FULL, segmentsOf, statusOf, type FileChange, type Segment, type SessionModel, type Source, type Status } from './model'
+import { checksOf, contextLabel, splitChecks, NEARLY_FULL, segmentsOf, statusOf, type FileChange, type Segment, type SessionModel, type Source, type Status } from './model'
 
 // The pane's pages as trees. Pure: everything they draw comes in through Page, and every press goes out through Act.
 // Words before metrics: no token counts on the overview, a label beside every colour, nothing that animates
@@ -23,7 +23,7 @@ const tail = (p: string, n: number) => p.length <= n ? p : `…${p.slice(p.lengt
 
 // The status mark and its colour; the label beside it always says the same in words
 const MARK: Record<Status['kind'], [string, string | undefined]> = {
-  new: ['○', undefined], working: ['●', 'claude'], input: ['?', 'warning'], failed: ['✗', 'error'], review: ['◆', 'suggestion'], idle: ['○', undefined],
+  new: ['○', undefined], working: ['●', 'claude'], input: ['?', 'warning'], failed: ['✗', 'error'], review: ['○', undefined], idle: ['○', undefined],
 }
 
 const NOTE: Record<Source['note'], string> = {
@@ -35,7 +35,7 @@ const HELP: Record<string, string> = {
   goal: 'What this session is for, condensed from your messages. To change it, say so in the conversation.',
   now: 'What Claude is doing at this moment, and its next planned step when it has a plan.',
   context: 'How much of the space for this conversation is in use. When it fills, older details get summarised.',
-  changes: 'Files Claude changed in this session, and whether checks such as tests ran after the last change.',
+  changes: 'Files Claude changed in this session, and whether checks such as tests passed since the last change or need rerunning.',
 }
 
 // rate-limit windows by the engine's kind; one not listed shows its kind with spaces
@@ -52,7 +52,10 @@ const hunkHead = (h: { oldStart: number; newStart: number; lines: string[] }) =>
   return `@@ -${h.oldStart},${n(' -')} +${h.newStart},${n(' +')} @@`
 }
 
-const UI_FILE =/\.(tsx|jsx|vue|svelte|css|scss|html)$/
+// how full the context is, in words after the figure: '62% used, filling up'
+const usedLine = (percent?: number) => percent == null ? '' : `${Math.round(percent)}% used, ${contextLabel(percent).label.toLowerCase()}`
+
+const UI_FILE = /\.(tsx|jsx|vue|svelte|css|scss|html)$/
 
 export function draw(el: Els, p: Page, act: Act) {
   const { Box, Text, Button } = el
@@ -84,73 +87,70 @@ export function draw(el: Els, p: Page, act: Act) {
   const checks = checksOf(m)
 
   // === OVERVIEW ===
+  // Goal, then what is happening, then what changed and whether it is verified (what a review needs, together), then context.
+  // One loud element: 'Right now' sits in a frame drawn in its status colour, so the state reads from the corner of an eye.
+  // Everything else is quiet: the goal as a plain line above, Changes and Context as label rows below
   if (p.view === 'overview') {
     const [mark, color] = MARK[st.kind]
-    const bw = Math.min(w, 30)
-    const filled = m.context.percent == null ? 0 : Math.max(1, Math.round((m.context.percent / 100) * bw))
-    // each section: its heading flush left, its body indented under it, a blank line before the next
-    const section = (k: string, title: string, body: RenderChildren[], right?: string) => (
-      <Box key={k} flexDirection="column">
-        {head(`${k}-h`, title, right)}
-        <Box key={`${k}-b`} flexDirection="column" paddingLeft={2}>{helpLine(k)}{body}</Box>
+    const LABEL = 9 // 'Changes' and two spaces: the value column starts here
+    const used = usedLine(m.context.percent)
+    // the bar takes what the figure leaves of the value column, so the two never wrap apart
+    const bw = Math.max(0, Math.min(20, w - LABEL - 2 - used.length))
+    const filled = m.context.percent == null || !bw ? 0 : Math.max(1, Math.round((m.context.percent / 100) * bw))
+    // a dim label, its value column beside it; the help line opens the column
+    const row = (k: string, label: string, body: RenderChildren[]) => (
+      <Box key={k} flexDirection="row">
+        <Box key="l" width={LABEL} flexShrink={0}><Text dimColor>{label}</Text></Box>
+        <Box key="v" flexDirection="column" flexShrink={1}>{helpLine(k)}{body}</Box>
       </Box>
     )
     return (
       <Box flexDirection="column" width={w} gap={1}>
-        {section('goal', 'Your goal', [m.goal
-          ? <Button key="goal" label={`${m.goal.title} ›`} hotkey="g" plain onPress={() => act.go('goal')} />
-          : <Text key="goal-none" dimColor wrap="wrap">Your goal appears here after your first message.</Text>])}
-        {section('now', 'Right now', [
-          <Text key="now"><Text color={color}>{mark}</Text> <Text bold>{st.label}</Text></Text>,
-          // a review's detail is the button under it in other words
-          st.detail && st.kind !== 'review' ? <Text key="now-d" wrap="wrap">{st.detail}</Text> : null,
-          st.kind === 'input' ? <Text key="now-a" dimColor>Answer in the dialog</Text> : null,
-          st.next ? <Text key="now-n" dimColor wrap="truncate-end">Next: {st.next}</Text> : null,
-          st.kind === 'review' ? <Button key="review" label="Review changes ›" hotkey="r" variant="primary" onPress={() => act.go('changes')} /> : null,
-        ])}
-        {section('context', 'Context', [
-          bar('ctx-bar', [{ n: filled, color: nearly ? 'warning' : 'claude' }], bw),
-          // the 'Plenty of room' and 'Filling up' texts only restate the heading; the context page keeps them
-          m.context.percent == null || nearly ? <Text key="ctx-t" dimColor wrap="wrap">{ctx.text}</Text> : null,
-          nearly ? <Button key="recap" label="Prepare a recap" hotkey="p" variant="primary" onPress={() => act.go('recap')} /> : null,
-          <Button key="ctx" label="What's included ›" hotkey="c" plain onPress={() => act.go('context')} />,
-        ], m.context.percent == null ? ctx.label : `${ctx.label} · ${Math.round(m.context.percent)}%`)}
-        {section('changes', 'Changes so far', [
-          m.files.length
-            ? <Button key="chg" label={`${plural(m.files.length, 'file')} changed ›`} hotkey="f" plain onPress={() => act.go('changes')} />
-            : <Text key="chg-none" dimColor>No files changed yet</Text>,
-          // a failed check already heads 'Right now'
-          checks.line && st.kind !== 'failed' ? <Text key="chk" color={checks.line.endsWith('failed') ? 'error' : undefined} dimColor={checks.stale}>{checks.line}</Text> : null,
-        ])}
+        <Box key="goal" flexDirection="column">
+          {helpLine('goal')}
+          {/* the whole goal, no page of its own: what it adds under the title is a few short lines. Your message is in the
+              transcript, so the pane does not quote it */}
+          {m.goal
+            ? [<Text key="goal-t" bold wrap="wrap">{m.goal.title}</Text>,
+              <Box key="goal-b" flexDirection="column" paddingLeft={2}>
+                {m.goal.isDraft ? <Text key="draft" dimColor wrap="wrap">Taken from your message; a shorter title follows.</Text> : null}
+                {m.goal.keep.map((k, i) => <Text key={`k${i}`} wrap="wrap">• {k.text}</Text>)}
+                {m.goal.done ? <Text key="done" dimColor wrap="wrap">Done when: {m.goal.done}</Text> : null}
+              </Box>]
+            : <Text key="goal-none" dimColor wrap="wrap">Your goal appears here after your first message.</Text>}
+        </Box>
+        {/* no colour (ready, idle): a dim frame, so only a state worth a look lights it */}
+        <Box key="now" flexDirection="column" width={w} borderStyle="round" borderColor={color} borderDimColor={!color} paddingX={1}>
+          {helpLine('now')}
+          <Text key="now-l"><Text color={color}>{mark}</Text> <Text bold>{st.label}</Text></Text>
+          {st.detail ? <Box key="now-d" paddingLeft={2}><Text wrap="wrap">{st.detail}</Text></Box> : null}
+          {st.kind === 'input' ? <Box key="now-a" paddingLeft={2}><Text dimColor>Answer in the dialog</Text></Box> : null}
+          {st.next ? <Box key="now-n" paddingLeft={2}><Text dimColor wrap="truncate-end">Next: {st.next}</Text></Box> : null}
+        </Box>
+        <Box key="rows" flexDirection="column">
+          {row('changes', 'Changes', [
+            // one way in: plain like every other link, so its key shows as theirs do
+            m.files.length
+              ? <Button key="chg" label={`Review ${plural(m.files.length, 'changed file')}`} hotkey="r" plain onPress={() => act.go('changes')} />
+              : <Text key="chg-none" dimColor>No files changed yet</Text>,
+            // every check, though 'Right now' names the first failure: the rest are only here
+            checks.line ? <Text key="chk" color={checks.failed ? 'error' : undefined} wrap="wrap">{checks.line}</Text> : null,
+            checks.rerun ? <Text key="chk-r" wrap="wrap">{checks.rerun}</Text> : null,
+          ])}
+          {row('context', 'Context', [
+            // bar and figure on one line; no colour until nearly full, so a near-empty bar reads as no warning
+            m.context.percent == null
+              ? <Text key="ctx-t" dimColor wrap="wrap">{ctx.text}</Text>
+              : <Text key="ctx-l">{bw ? bar('ctx-bar', [{ n: filled, color: nearly ? 'warning' : undefined }], bw) : null}{bw ? '  ' : ''}{used}</Text>,
+            nearly ? <Text key="ctx-n" dimColor wrap="wrap">{ctx.text}</Text> : null,
+            nearly ? <Button key="recap" label="Prepare a recap" hotkey="p" variant="primary" onPress={() => act.go('recap')} /> : null,
+            <Button key="ctx" label="What's included" hotkey="c" plain onPress={() => act.go('context')} />,
+          ])}
+        </Box>
         <Box key="foot" flexDirection="row" gap={2}>
           <Button key="details" label="Session details" hotkey="d" plain onPress={() => act.go('details')} />
           <Button key="help" label={p.help ? 'ⓘ Hide help' : 'ⓘ Help'} hotkey="h" plain onPress={act.help} />
         </Box>
-      </Box>
-    )
-  }
-
-  // === GOAL ===
-  if (p.view === 'goal') {
-    const g = m.goal
-    return (
-      <Box flexDirection="column" width={w}>
-        {back}
-        {head('h', 'Your goal')}
-        {!g ? <Text key="none" dimColor wrap="wrap">Your goal appears here after your first message.</Text> : null}
-        {/* not bold: two bold lines back to back read as one heading */}
-        {g ? <Text key="t" color="claude" wrap="wrap">{g.title}</Text> : null}
-        {g?.isDraft ? <Text key="draft" dimColor>Taken from your message; a shorter title follows.</Text> : null}
-        {g ? <Text key="from" dimColor>From: {g.from}</Text> : null}
-        {g ? <Text key="text" wrap="wrap">“{g.text.length > 600 ? `${g.text.slice(0, 599)}…` : g.text}”</Text> : null}
-        {g?.keep.length ? rule('r1') : null}
-        {g?.keep.length ? <Text key="keep-h" bold>Keep in mind</Text> : null}
-        {g?.keep.map((k, i) => <Text key={`k${i}`} wrap="wrap">• {k.text} <Text dimColor>({k.from})</Text></Text>)}
-        {g?.done ? rule('r2') : null}
-        {g?.done ? <Text key="done-h" bold>Finished means</Text> : null}
-        {g?.done ? <Text key="done" wrap="wrap">{g.done}</Text> : null}
-        {rule('r3')}
-        <Text key="how" dimColor wrap="wrap">To change the goal, say so in the conversation.</Text>
       </Box>
     )
   }
@@ -176,7 +176,7 @@ export function draw(el: Els, p: Page, act: Act) {
         ...(first ? [<Text key={`${k}-0`} dimColor wrap="wrap">{first}</Text>] : []),
         // label and note on one line when both fit, else the note goes under it: a path cut to fit a long note says nothing
         ...shown.flatMap(x => x.label.length + NOTE[x.note].length + 3 <= w - 2
-          ? [<Text key={`${k}-${x.key}`}>{x.label} <Text dimColor>· {NOTE[x.note]}</Text></Text>]
+          ? [<Text key={`${k}-${x.key}`}>{x.label} <Text dimColor>({NOTE[x.note]})</Text></Text>]
           : [<Text key={`${k}-${x.key}`}>{tail(x.label, w - 2)}</Text>, <Text key={`${k}-${x.key}-n`} dimColor wrap="wrap">  {NOTE[x.note]}</Text>]),
         ...(items.length > shown.length ? [<Text key={`${k}-more`} dimColor>and {items.length - shown.length} more</Text>] : []),
         ...(!items.length && !first ? [<Text key={`${k}-none`} dimColor>None yet</Text>] : []),
@@ -194,7 +194,7 @@ export function draw(el: Els, p: Page, act: Act) {
       <Box flexDirection="column" width={w} gap={1}>
         <Box key="top" flexDirection="column">
           {back}
-          {head('h', 'Context', m.context.percent == null ? ctx.label : `${ctx.label} · ${Math.round(m.context.percent)}%`)}
+          {head('h', 'Context', usedLine(m.context.percent) || ctx.label)}
           <Text key="t" dimColor wrap="wrap">{ctx.text}</Text>
           {rows ? bar('bar', runs, bw) : null}
           {nearly ? <Button key="recap" label="Prepare a recap" hotkey="p" variant="primary" onPress={() => act.go('recap')} /> : null}
@@ -217,8 +217,7 @@ export function draw(el: Els, p: Page, act: Act) {
 
   // === CHANGES ===
   if (p.view === 'changes') {
-    const fresh = m.checks.filter(c => c.t >= m.lastEdit)
-    const stale = m.checks.filter(c => c.t < m.lastEdit)
+    const { fresh, stale } = splitChecks(m)
     const ui = m.files.some(f => UI_FILE.test(f.path))
     const row = (f: FileChange) => {
       const label = `${f.isNew ? 'New   ' : 'Edited'} ${tail(f.path, Math.max(12, w - 10))}${f.byShell ? ' (by a command)' : ''}`
@@ -303,11 +302,11 @@ export function draw(el: Els, p: Page, act: Act) {
       {head('h', 'Session details')}
       {p.model ? kv('model', 'Model', p.model) : null}
       {u?.startedAt ? kv('start', 'Started', ago(u.startedAt)) : null}
-      {kv('prompts', 'Messages', `${m.prompts}${m.compactions ? ` · ${plural(m.compactions, 'summary', 'summaries')}` : ''}`)}
+      {kv('prompts', 'Messages', `${m.prompts}${m.compactions ? ` (${plural(m.compactions, 'summary', 'summaries')})` : ''}`)}
       {rule('r1')}
       <Text key="u-h" bold>Usage</Text>
       {kv('ctx', 'Context', m.context.percent == null ? 'not measured yet' : `${Math.round(m.context.percent)}% in use`)}
-      {limits.map(l => kv(`l-${l.kind}`, LIMIT[l.kind] ?? l.kind.replace(/_/g, ' '), <Text>{Math.round(l.percentUsed)}% used{l.resetsAt ? <Text dimColor> · resets {ago(Date.parse(l.resetsAt))}</Text> : null}</Text>))}
+      {limits.map(l => kv(`l-${l.kind}`, LIMIT[l.kind] ?? l.kind.replace(/_/g, ' '), <Text>{Math.round(l.percentUsed)}% used{l.resetsAt ? <Text dimColor>, resets {ago(Date.parse(l.resetsAt))}</Text> : null}</Text>))}
       {/* money only where it means something: off a subscription, the session's cost is what the person pays */}
       {!limits.length && !m.onPlan && cost != null ? kv('cost', 'Cost', `$${cost.toFixed(2)} so far`) : null}
     </Box>

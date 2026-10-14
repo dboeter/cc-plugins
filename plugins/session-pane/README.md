@@ -4,8 +4,8 @@ A pane that answers four questions about the current Claude Code session:
 
 - **Goal**: what you're trying to get done, condensed from your messages, with the constraints you stated.
 - **Now**: what Claude is doing, what's next on its todo list, and whether it's waiting on you.
+- **Changes**: the files changed this session (by tools and by shell commands), their diffs, the checks run since and which ones need rerunning.
 - **Context**: how full the context window is and what it holds; when it's nearly full, a recap you can review before compacting.
-- **Changes**: the files changed this session (by tools and by shell commands), their diffs, and the checks run since.
 
 ## Install
 

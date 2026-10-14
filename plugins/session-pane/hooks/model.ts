@@ -70,7 +70,7 @@ export function insightOf(cmd: string | undefined, raw: string): { exit?: number
   const ts = lines.filter(l => /error TS\d+/.test(l))
   if (ts.length) {
     const files = new Set(ts.map(l => l.split('(')[0]))
-    head = `${known || 'tsc'} · ${ts.length} error${ts.length > 1 ? 's' : ''} in ${files.size} file${files.size > 1 ? 's' : ''}`
+    head = `${known || 'tsc'}: ${ts.length} error${ts.length > 1 ? 's' : ''} in ${files.size} file${files.size > 1 ? 's' : ''}`
     pick = ts.map(l => l.replace(/^[^(]*\//, '').replace(/:\s*error (TS\d+):\s*/, '  $1 ')) // `src/x.ts(4,7): error TS2322: msg` -> `x.ts(4,7)  TS2322 msg`
   } else if (/test|vitest|jest|pytest/.test(known)) pick = lines.filter(l => /^\s*(FAIL|FAILED|✗|×|●)\s|\b\d+ failed\b|^\(fail\)/.test(l))
   else if (known === 'git') pick = lines.filter(l => /^(fatal|error):|\[rejected\]|^CONFLICT/.test(l))
@@ -314,7 +314,12 @@ export function mergeShellEdits(m: SessionModel, paths: string[], t: number): bo
 
 // === READINGS ===
 export type Status = { kind: 'new' | 'working' | 'input' | 'failed' | 'review' | 'idle'; label: string; detail?: string; next?: string }
-const failing = (m: SessionModel) => m.checks.find(c => !c.ok && c.t >= m.lastEdit)
+type Check = SessionModel['checks'][number]
+// fresh: run since the last change, so its verdict holds; stale: run before it, so it says nothing about the code now
+export function splitChecks(m: SessionModel): { fresh: Check[]; stale: Check[] } {
+  return { fresh: m.checks.filter(c => c.t >= m.lastEdit), stale: m.checks.filter(c => c.t < m.lastEdit) }
+}
+const failing = (m: SessionModel) => splitChecks(m).fresh.find(c => !c.ok)
 
 export function statusOf(m: SessionModel): Status {
   const ask = Object.values(m.waits).at(-1)
@@ -322,25 +327,29 @@ export function statusOf(m: SessionModel): Status {
   const doing = m.todos.find(d => d.status === 'in_progress')?.activeForm || m.activity
   const next = m.todos.find(d => d.status === 'pending')?.content // no todo list, no Next: never invent one
   const bad = failing(m)
-  if (m.running) return bad ? { kind: 'failed', label: `${bad.name} failed · Claude is investigating`, detail: doing ?? bad.line, next } : { kind: 'working', label: 'Working', detail: doing ?? 'Thinking', next }
+  if (m.running) return bad ? { kind: 'failed', label: `${bad.name} failed, Claude is investigating`, detail: doing ?? bad.line, next } : { kind: 'working', label: 'Working', detail: doing ?? 'Thinking', next }
   if (!m.prompts && !m.files.length) return { kind: 'new', label: 'Ready when you are' }
-  if (bad) return { kind: 'failed', label: `${bad.name} failed · needs your input`, detail: bad.line }
+  if (bad) return { kind: 'failed', label: `${bad.name} failed, needs your input`, detail: bad.line }
   if (m.ended === 'aborted') return { kind: 'idle', label: 'Stopped', detail: 'You interrupted the last response' }
   if (m.ended === 'error') return { kind: 'idle', label: 'Stopped by an error', detail: 'The last response ended with an error' }
   if (m.ended === 'refusal') return { kind: 'idle', label: 'Stopped', detail: 'Claude declined the last request' }
-  // never "Done": a finished turn with changes is work waiting for your review
-  if (m.files.length) return { kind: 'review', label: 'Ready for your review', detail: 'Review changes' }
+  // never "Done" or "Ready": a stopped turn with changes proves neither that the goal is met nor that the checks are
+  // fresh, so it only says there is something to look at, and keeps any unfinished todo in view
+  if (m.files.length) return { kind: 'review', label: 'Waiting for you', detail: 'Changes available to review', next }
   return { kind: 'idle', label: 'Waiting for you' }
 }
 
-// Checks as words: never a blank checkmark
-export function checksOf(m: SessionModel): { line: string; stale: boolean } {
-  if (!m.checks.length) return { line: m.files.length ? "Checks haven't run yet" : '', stale: false }
-  const fresh = m.checks.filter(c => c.t >= m.lastEdit)
-  if (!fresh.length) return { line: "Checks haven't run since the last change", stale: true }
+// Checks as words: never a blank checkmark. line: the verdict of those run since the last change, failures first;
+// rerun: the ones run before it, by name, on a line of their own so the doubt is not buried behind a pass. Worded
+// "Rerun needed: …" so it reads the same for one name or several
+export function checksOf(m: SessionModel): { line: string; failed: boolean; rerun: string } {
+  if (!m.checks.length) return { line: m.files.length ? "Checks haven't run yet" : '', failed: false, rerun: '' }
+  const { fresh, stale } = splitChecks(m)
+  const names = (cs: Check[]) => cs.map(c => c.name).join(', ')
   const bad = fresh.filter(c => !c.ok)
-  if (bad.length) return { line: `${bad.map(c => c.name).join(', ')} failed`, stale: false }
-  return { line: `${fresh.map(c => c.name).join(', ')} passed${fresh.length < m.checks.length ? ' · others not rerun since the last change' : ''}`, stale: false }
+  const good = fresh.filter(c => c.ok)
+  const line = [bad.length ? `${names(bad)} failed` : '', good.length ? `${names(good)} passed` : ''].filter(Boolean).join('; ')
+  return { line, failed: bad.length > 0, rerun: stale.length ? `Rerun needed: ${names(stale)}` : '' }
 }
 
 // Nearly full: past this the pane offers a recap. Set below the point where the engine compacts on its own, so there is
