@@ -1,5 +1,5 @@
 // The pane's state contract: the reduced session (model), which page is shown (view), whether the help lines are open
-// (help), the path the diff page shows (diff) and the recap being drafted (recap). Self-contained: model.ts imports these
+// (help), the path the diff page shows (diff), the recap being drafted (recap) and whether the pane is open (shown). Self-contained: model.ts imports these
 export type Hunk = { oldStart: number; newStart: number; lines: string[] }
 export type FileChange = { path: string; isNew: boolean; t: number; hunks?: Hunk[]; byShell?: true }
 export type Check = { name: string; ok: boolean; line: string; t: number; cmd: string }
@@ -29,6 +29,10 @@ export type SessionModel = {
   checks: Check[] // the newest of each name
   lastEdit: number // when the newest file change landed; a check older than it is stale
   context: { percent?: number; window?: number; tokens?: number }
+  // the window's tokens as each of your turns ended, since the last summary, newest last; and where auto-compact starts,
+  // absent when it is off or not yet read. Together they predict the turns left before auto-compact (turnsLeft)
+  turnTokens: number[]
+  compactAt?: number
   est: Est
   sources: Source[]
   summary?: string // the newest compaction's summary text
@@ -41,6 +45,6 @@ export type Recap = { status: 'idle' | 'drafting' | 'ready' | 'applying' | 'appl
 
 declare module 'claude-code' {
   interface PluginState {
-    'session-pane': { model: SessionModel; view: View; help: boolean; diff: string; recap: Recap }
+    'session-pane': { model: SessionModel; view: View; help: boolean; diff: string; recap: Recap; shown: boolean }
   }
 }

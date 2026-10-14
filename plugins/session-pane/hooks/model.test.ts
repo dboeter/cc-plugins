@@ -1,5 +1,5 @@
 import { test, expect } from 'claude-code/testing'
-import { applyGoal, checkOf, goalPrompt, checksOf, contextLabel, doingOf, empty, insightOf, isNoise, isQuery, mergeShellEdits, NEARLY_FULL, progOf, recapNotes, questionOf, reduce, replay, scrub, segmentsOf, snapshotOf, statusOf, titleOf, whoOf, type Seen } from './model'
+import { alertsOf, applyGoal, bandOf, checkOf, goalPrompt, checksOf, contextLabel, doingOf, empty, insightOf, isNoise, isQuery, mergeShellEdits, NEARLY_FULL, progOf, recapNotes, questionOf, recordTurn, reduce, replay, scrub, segmentsOf, snapshotOf, statusOf, titleOf, turnsLeft, whoOf, type Seen } from './model'
 
 const ENGINE = { plugin: 'engine', tier: 'core' }
 let t = 0
@@ -270,4 +270,38 @@ test('goal: the small model condenses the opening message, later messages add co
   expect(m.goal?.from).toBe('Your message 4')
   expect(m.goal?.keep.length).toBe(2) // constraints carry over to a new goal; you can say otherwise in the conversation
   expect(goalPrompt(m, 'hi')).toMatch(/^Current goal: Fix the login page/)
+})
+
+test('turns left: median growth to the threshold; nothing when it cannot say; a summary starts it over', () => {
+  const m = empty()
+  recordTurn(m, 10_000, 100_000)
+  recordTurn(m, 20_000, 100_000)
+  expect(turnsLeft(m)).toBe(undefined) // one growth seen: too early
+  recordTurn(m, 70_000, 100_000) // one big read: growths 10k and 50k
+  recordTurn(m, 80_000, 100_000) // 10k, 50k, 10k: median 10k
+  expect(turnsLeft(m)).toBe(2)
+  recordTurn(m, 99_000, 100_000)
+  expect(turnsLeft(m)).toBe(0) // under a turn's growth left: any moment, from a real estimate
+  recordTurn(m, 99_500, undefined)
+  expect(turnsLeft(m)).toBe(undefined) // auto-compact off: no estimate, never 0
+  const flat = empty()
+  for (const t of [50_000, 50_000, 50_000]) recordTurn(flat, t, 100_000)
+  expect(turnsLeft(flat)).toBe(undefined) // not growing: no estimate
+  reduce(m, { ev: 'session.compact', ph: 'exit', who: 'engine', e: { trigger: 'auto' }, r: { messages: [{ text: 'Summary' }] }, t: 1 })
+  expect(m.turnTokens).toEqual([])
+})
+
+test('ambient: the band names failed and stale checks and a nearly full window; alerts key each failure once', () => {
+  const m = empty()
+  expect(bandOf(m)).toEqual([])
+  m.checks = [{ name: 'Tests', ok: false, line: 'FAIL', t: 10, cmd: 'npm test' }, { name: 'Types', ok: true, line: '', t: 2, cmd: 'tsc' }]
+  m.lastEdit = 5
+  expect(bandOf(m).map(p => p.text)).toEqual(['✗ Tests failed', 'Rerun needed: Types'])
+  expect([...alertsOf(m).keys()]).toEqual(['fail:Tests'])
+  m.context.percent = NEARLY_FULL + 2
+  expect(bandOf(m).at(-1)!.text).toBe(`Context ${NEARLY_FULL + 2}%: prepare a recap`)
+  expect([...alertsOf(m).keys()]).toEqual(['fail:Tests', 'full'])
+  m.lastEdit = 20 // edited since: the failure says nothing now, so it is no alert, only a rerun
+  expect([...alertsOf(m).keys()]).toEqual(['full'])
+  expect(bandOf(m)[0]!.text).toBe('Rerun needed: Tests, Types')
 })

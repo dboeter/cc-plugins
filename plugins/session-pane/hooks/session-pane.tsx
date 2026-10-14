@@ -1,13 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 import type { Recap, View } from '../types'
-import { applyGoal, empty, GOAL_SYSTEM, goalPrompt, isNoise, isQuery, mergeShellEdits, recapNotes, reduce, replay, snapshotOf, whoOf, type SessionModel, type Seen } from './model'
+import { alertsOf, applyGoal, bandOf, compactIn, empty, GOAL_SYSTEM, goalPrompt, isNoise, isQuery, mergeShellEdits, recapNotes, recordTurn, reduce, replay, snapshotOf, turnsLeft, whoOf, type SessionModel, type Seen } from './model'
 import { draw, type Act, type Els } from './views'
 
 // A pane that answers four questions about the session: what are we trying to do, what is Claude doing, what can it
 // see, and what has changed. One `*` hook folds every event into a SessionModel (model.ts); a 2 s clock writes it to
 // $.state, which redraws the pane, and to $.store, so a reload or a resume shows the same pane.
-// Sections, in order (search `// ===`): STATE, CAPTURE, FLUSH, GOAL, RECAP, HOOKS
+// While the pane is hidden, the band above the prompt, toasts and the spinner carry what needs the person (AMBIENT).
+// Sections, in order (search `// ===`): STATE, CAPTURE, FLUSH, GOAL, RECAP, AMBIENT, HOOKS
 
 // === STATE ===
 const PANE = 'session-pane'
@@ -17,6 +18,7 @@ const viewAtom = atom({ plugin: 'session-pane', key: 'view' } as const, 'overvie
 const helpAtom = atom({ plugin: 'session-pane', key: 'help' } as const, false)
 const diffAtom = atom({ plugin: 'session-pane', key: 'diff' } as const, '')
 const recapAtom = atom({ plugin: 'session-pane', key: 'recap' } as const, { status: 'idle', text: '' } as Recap)
+const shownAtom = atom({ plugin: 'session-pane', key: 'shown' } as const, false) // the pane is open: the band and toasts stay quiet
 
 let m: SessionModel = empty()
 let dirty = false // an event changed m since the last flush
@@ -29,6 +31,8 @@ let endedSid: string | undefined // the session a /clear or a resume ended: rest
 let cleared = false // the session being restored began with a /clear: empty, so every event since is in early
 let goalQueue: { text: string; from: string }[] = []
 let goalBusy = false
+let told = new Set<string>() // alertsOf keys already toasted and still holding
+let turnOwed = false // a turn ended and its window is not yet recorded for the turns-left estimate
 let timer: Timer | undefined
 
 const KEEP_SESSIONS = 20 // snapshots kept in $.store; the oldest goes when a new session writes its first
@@ -66,6 +70,7 @@ function fold(x: Seen) {
     dirty = true
     // a goal check per prompt of yours; the call runs from the clock, never inside the chain
     if (x.ev === 'prompt.submit' && x.who === 'you') goalQueue.push({ text: m.lastPrompt ?? '', from: m.prompts === 1 ? 'Your opening message' : `Your message ${m.prompts}` })
+    if (x.ev === 'turn.complete') turnOwed = true // a main turn ended (reduce drops a subagent's): the clock reads its window
   } catch {}
 }
 
@@ -94,6 +99,7 @@ async function restore($: EngineInterface): Promise<void> {
   m = got
   sid = id
   dirty = true
+  told = new Set(alertsOf(m).keys()) // what held before a restart or a resume was announced then, or is stale news now
   // a draft never condensed (a replayed transcript, a call cut short by a restart) gets its goal call now
   const g = m.goal
   if (g?.isDraft && !goalQueue.some(q => q.text === g.text)) goalQueue.push({ text: g.text, from: g.from })
@@ -112,11 +118,18 @@ async function flushOnce($: EngineInterface): Promise<void> {
     // each at its own mtime, not the scan's: a check that ran after the edit stays current
     for (const f of await shellEdits($, since, shellUntil).catch(() => [])) if (mergeShellEdits(m, [f.path], f.t)) dirty = true
   }
+  if (turnOwed) {
+    turnOwed = false
+    // 'summary' counts locally from the last response, no request sent; the threshold is in the same tokens as the total
+    const b = (await $.session.usage({ breakdown: 'summary' }).catch(() => undefined))?.context.breakdown
+    if (b) { recordTurn(m, b.totalTokens, b.isAutoCompactEnabled ? b.autoCompactThreshold : undefined); dirty = true }
+  }
   if (goalQueue.length && !goalBusy) void askGoal($)
   if (!dirty) return
   dirty = false
   const plain = JSON.parse(JSON.stringify(m)) as SessionModel // a copy: the live model keeps changing under the write
   await update($, modelAtom, () => plain)
+  await announce($)
   await remember($, snapshotOf(plain))
 }
 // Which files a shell command wrote is not in any event: the Bash call carries its command and output only. So, as a
@@ -176,6 +189,8 @@ async function draftRecap($: EngineInterface) {
   const next: Recap = r.isAnswered ? { status: 'ready', text: r.text.trim() }
     : { status: 'failed', text: '', note: r.reason === 'nothing-to-fork' ? 'Nothing to recap yet: send a message first.' : `Couldn't draft a recap (${r.reason}).` }
   await update($, recapAtom, () => next)
+  // drafting takes a while: the person may have hidden the pane meanwhile
+  if (next.status === 'ready' && !(await read($, shownAtom))) $.ui.toast('Recap ready: /session-pane to review it')
 }
 
 async function useRecap($: EngineInterface) {
@@ -187,6 +202,16 @@ async function useRecap($: EngineInterface) {
   // our own $ call: capture skips its events, so the compaction is folded here, unless capture saw it after all
   if (!res.skip && m.compactions === before) fold({ ev: 'session.compact', ph: 'exit', who: 'engine', e: { trigger: 'plugin' }, r: res, t: Date.now() })
   await update($, recapAtom, () => res.skip ? { ...r, status: 'failed', note: `The summary didn't run: ${res.skip}` } : { ...r, status: 'applied' })
+}
+
+// === AMBIENT ===
+// A toast per alert as it appears, only between turns: a check that fails mid-turn is Claude's to fix, and a toast for it
+// would be stale before it was read. Held while the pane is open, which shows the same
+async function announce($: EngineInterface) {
+  const now = alertsOf(m)
+  for (const k of told) if (!now.has(k)) told.delete(k) // cleared: the next time it holds is news again
+  if (m.running || await read($, shownAtom).catch(() => false)) return
+  for (const [k, text] of now) if (!told.has(k)) { told.add(k); $.ui.toast(text) }
 }
 
 // === HOOKS ===
@@ -208,7 +233,7 @@ export const register: Register = on => {
       // the process goes on under a new session id and no session.start follows: the clock keeps running, and its next
       // flush restores the new session once the id has moved on
       endedSid = e.sessionId; cleared = e.reason === 'clear'
-      m = empty(); ready = undefined; sid = undefined; early = []; goalQueue = []; dirty = false
+      m = empty(); ready = undefined; sid = undefined; early = []; goalQueue = []; dirty = false; turnOwed = false; told = new Set()
       await Promise.all([update($, modelAtom, () => empty()), update($, viewAtom, () => 'overview'), update($, diffAtom, () => ''), update($, recapAtom, () => ({ status: 'idle', text: '' }))]).catch(() => {})
     } else { timer?.cancel(); timer = undefined }
     return next(e)
@@ -216,16 +241,17 @@ export const register: Register = on => {
 
   on('command.run', { command: 'session-pane' }, async $ => {
     const up = (await $.ui.panes()).some(p => p.id === PANE)
-    if (up) { await $.ui.close({ id: PANE }); return { text: 'Session pane hidden' } }
+    if (up) { await $.ui.close({ id: PANE }); await update($, shownAtom, () => false); return { text: 'Session pane hidden' } }
     await flush($).catch(() => {})
     // docked, the default share is far wider than the ~44 columns the pages are laid out for and squeezes the transcript;
     // 48 leaves a few over, so a long label wraps less. A request only: a width the person dragged the dock to wins
     await $.ui.open({ id: PANE, title: TITLE, focus: true, columns: 48 })
+    await update($, shownAtom, () => true)
     return { text: 'Session pane shown' }
   })
 
   on('ui.close', async ($, e, next) => {
-    if (e.id === PANE) await update($, viewAtom, () => 'overview').catch(() => {}) // reopened, it starts at the overview
+    if (e.id === PANE) await Promise.all([update($, viewAtom, () => 'overview'), update($, shownAtom, () => false)]).catch(() => {}) // reopened, it starts at the overview
     return next(e)
   })
 
@@ -244,5 +270,30 @@ export const register: Register = on => {
       discard: () => { void update($, recapAtom, () => ({ status: 'idle', text: '' })) },
     }
     return draw(el, { m: model, view, help, diff, recap, cols: e.props.bodyColumns ?? 44, usage, model: name }, act)
+  })
+
+  // The band above the prompt, shared with other mods: theirs stays, ours goes on top. Between turns only, and only while
+  // something needs the person; a survey holds the band alone
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const theirs = await next(e)
+    if (e.props.hasSurvey || e.props.isWorking || await read($, shownAtom)) return theirs
+    const parts = bandOf(await read($, modelAtom))
+    if (!parts.length) return theirs
+    const { Box, Text } = $.ui.resolve(e) as Els
+    const line = (
+      <Box key="session-pane-band" flexDirection="row" columnGap={1}>
+        <Text dimColor>Session</Text>
+        {parts.map((p, i) => <Text key={`p${i}`} color={p.color} wrap="truncate-end">{p.text}</Text>)}
+        <Text dimColor>/session-pane</Text>
+      </Box>
+    )
+    return theirs ? <Box flexDirection="column">{line}{theirs}</Box> : line
+  })
+
+  // During a turn the band is hidden, so the spinner carries the one thing that can't wait for the turn to end
+  on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
+    const left = turnsLeft(await read($, modelAtom))
+    if (left == null || left > 2) return next(e)
+    return next({ ...e, props: { ...e.props, suffix: `${e.props.suffix} · ${compactIn(left).toLowerCase()}` } })
   })
 }

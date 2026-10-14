@@ -130,7 +130,7 @@ export function doingOf(tool: string, i: any): string {
 }
 
 // === MODEL ===
-export const empty = (): SessionModel => ({ prompts: 0, running: false, waits: {}, asking: {}, todos: [], files: [], checks: [], lastEdit: 0, context: {}, est: { conversation: 0, files: 0, results: 0 }, sources: [], compactions: 0, onPlan: false })
+export const empty = (): SessionModel => ({ prompts: 0, running: false, waits: {}, asking: {}, todos: [], files: [], checks: [], lastEdit: 0, context: {}, turnTokens: [], est: { conversation: 0, files: 0, results: 0 }, sources: [], compactions: 0, onPlan: false })
 
 const MAX_FILES = 50
 const MAX_SOURCES = 40
@@ -214,6 +214,7 @@ export function reduce(m: SessionModel, x: Seen): boolean {
   }
   if (ev === 'session.compact' && ph === 'exit' && !e?.agentId && r && !r.skip && Array.isArray(r.messages) && e?.trigger !== 'precompute') {
     m.compactions++
+    m.turnTokens = [] // the window shrank: growth measured before the summary says nothing about after it
     // the summary is the first message of what the compaction leaves; there is no separate summary string
     m.summary = scrub(String(r.messages[0]?.text ?? '')).slice(0, 4000) || undefined
     m.est = { conversation: r.messages.reduce((s: number, msg: any) => s + String(msg?.text ?? '').length, 0), files: 0, results: 0 }
@@ -386,6 +387,53 @@ export function segmentsOf(est: Est, rows: readonly { name: string; tokens: numb
   if (!engine) return { segments, confidence: 'none' }
   const gap = Math.abs(rawSum - engine) / engine
   return { segments, confidence: gap <= CLOSE_ENOUGH ? 'close' : 'rough', gap }
+}
+
+// Turns left before auto-compact: the room to the threshold over the median growth per turn, the median so one big
+// file read doesn't swing it. Undefined whenever it can't say (auto-compact off or unread, fewer than two growths seen,
+// a window not growing): the pane then shows nothing, never a guessed 0. 0 means the next turn may compact
+const TURNS_KEPT = 6
+export function recordTurn(m: SessionModel, tokens: number, compactAt: number | undefined): void {
+  m.turnTokens = [...m.turnTokens, tokens].slice(-TURNS_KEPT)
+  m.compactAt = compactAt
+}
+export function turnsLeft(m: SessionModel): number | undefined {
+  const t = m.turnTokens
+  if (m.compactAt == null || t.length < 3) return undefined
+  const grew = t.slice(1).map((x, i) => x - t[i]!).sort((a, b) => a - b)
+  const mid = grew.length / 2
+  const median = grew.length % 2 ? grew[Math.floor(mid)]! : (grew[mid - 1]! + grew[mid]!) / 2
+  if (!(median > 0)) return undefined
+  const left = Math.floor((m.compactAt - t.at(-1)!) / median)
+  return Number.isFinite(left) ? Math.max(0, left) : undefined
+}
+export const compactIn = (left: number) => left === 0 ? 'Auto-compacting any moment' : `Auto-compacting in ~${left} turn${left === 1 ? '' : 's'}`
+
+// === AMBIENT ===
+// What the session says while the pane is hidden: only what needs the person, never progress. The band above the prompt
+// shows these parts as they stand; a toast announces an alert once, when it appears
+export type Part = { text: string; color?: string }
+const names = (cs: Check[]) => cs.map(c => c.name).join(', ')
+export function bandOf(m: SessionModel): Part[] {
+  const { fresh, stale } = splitChecks(m)
+  const bad = fresh.filter(c => !c.ok)
+  const left = turnsLeft(m)
+  const p = m.context.percent
+  const parts: (Part | undefined)[] = [
+    bad.length ? { text: `✗ ${names(bad)} failed`, color: 'error' } : undefined,
+    stale.length ? { text: `Rerun needed: ${names(stale)}`, color: 'warning' } : undefined,
+    p != null && p >= NEARLY_FULL ? { text: `Context ${Math.round(p)}%: prepare a recap`, color: 'warning' }
+      : left != null && left <= 2 ? { text: compactIn(left), color: 'warning' } : undefined,
+  ]
+  return parts.filter((x): x is Part => !!x)
+}
+// key -> toast text. A key stays while its alert holds, so a failure that outlives several turns is announced once
+export function alertsOf(m: SessionModel): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const c of splitChecks(m).fresh) if (!c.ok) out.set(`fail:${c.name}`, `${c.name} failed: /session-pane shows what changed`)
+  const p = m.context.percent
+  if (p != null && p >= NEARLY_FULL) out.set('full', `Context ${Math.round(p)}% full: /session-pane can prepare a recap before auto-compact`)
+  return out
 }
 
 // === RESTORE ===

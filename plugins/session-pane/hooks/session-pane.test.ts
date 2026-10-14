@@ -41,17 +41,18 @@ test('events fold into the pane; /session-pane opens it, nothing opens it unaske
   const p = await $.ui.mount({ plugin: 'session-pane', surface: 'terminal', component: 'Pane', requestId: 'session-pane', props: PROPS(44) })
   expect(await p.find({ text: /Confirm before deleting/ })).toBeDefined()
   expect(await p.find({ text: /Tests failed, needs your input/ })).toBeDefined()
-  expect(await p.find({ text: /Review 2 changed files/ })).toBeDefined()
+  expect(await p.find({ key: 'chg' })).toBeDefined()
+  expect(await p.find({ text: /2 files/ })).toBeDefined() // the count on the Changes rule
   expect(await p.find({ text: /tokens/i })).toBe(undefined) // no token counts on the overview
 
   expect(await p.find({ text: /• No new dependencies/ })).toBeDefined() // the goal's constraints, on the overview itself
 
   await p.press({ key: 'chg' })
-  expect(await p.find({ text: /New\s+\/w\/confirm\.tsx/ })).toBeDefined()
-  expect(await p.find({ text: /Edited \/w\/sed\.ts \(by a command\)/ })).toBeDefined()
+  expect(await p.find({ text: /^New\s+confirm\.tsx$/ })).toBeDefined()
+  expect(await p.find({ text: /^Edited\s+sed\.ts \(by a command\)$/ })).toBeDefined()
   expect(await p.find({ text: /old\.ts/ })).toBe(undefined) // dirty before the call: not its doing
   expect(await p.find({ text: /late\.ts/ })).toBe(undefined) // written after the call ended: not its doing either
-  expect(await p.find({ text: /Browser review: not done/ })).toBeDefined()
+  expect(await p.find({ text: /Not done. Checks don't show how the page looks/ })).toBeDefined()
   await p.press({ key: 'f-/w/confirm.tsx' })
   expect((await p.find({ type: 'Code' }))?.props.source).toBe('@@ -0,0 +1,1 @@\n+x') // counted: Code's diff format parses no other header
   await p.press({ key: 'back' })
@@ -82,7 +83,7 @@ test('nearly full: a recap is drafted by a fork, reviewed, then handed to the co
   await clock.advance(2000)
   const p = await $.ui.mount({ plugin: 'session-pane', surface: 'terminal', component: 'Pane', requestId: 'session-pane', props: PROPS(44) })
   expect(await p.find({ text: /90% used, nearly full/ })).toBeDefined()
-  expect((await p.find({ type: 'Text', text: /^[█░]+  90% used, nearly full$/ }))?.text.length).toBeLessThanOrEqual(44 - 9) // bar and figure fit the value column
+  expect((await p.find({ type: 'Text', text: /^[█░]+$/ }))?.text.length).toBe(44) // the bar spans the column
   await p.press({ key: 'recap' })
   await p.press({ key: 'draft' })
   expect(await p.find({ text: /Still to do: tests/ })).toBeDefined()
@@ -175,4 +176,81 @@ test('details: the cost off a subscription, the plan limits on one', async ($, o
   expect(await p.find({ text: /5-hour limit/ })).toBeDefined()
   expect(await p.find({ text: /^10% used, resets in 1 hour$/ })).toBeDefined()
   expect(await p.find({ text: /so far/ })).toBe(undefined)
+})
+
+test('turns left before auto-compact: worded on the overview, singular for one, hidden without an estimate', async ($, on) => {
+  const clock = mock.clock(on)
+  let total = 0
+  let enabled = true
+  on('session.id', () => ({ value: 'S5' }))
+  on('session.messages', () => ({ value: [] }) as any)
+  on('store.get', () => ({ value: undefined }) as any)
+  on('store.set', () => ({ value: undefined }) as any)
+  on('command.register', () => ({ value: undefined }) as any)
+  on('session.usage', () => ({ value: { context: { window: 200_000, tokens: total, percent: total / 2000, breakdown: { categories: [], totalTokens: total, isAutoCompactEnabled: enabled, autoCompactThreshold: enabled ? 160_000 : undefined } }, rateLimits: [] } }) as any)
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  const turn = async (t: number) => { total = t; await $.turn.complete({ reason: 'answer', answer: '' } as any).catch(() => {}); await clock.advance(2000) }
+  const p = await $.ui.mount({ plugin: 'session-pane', surface: 'terminal', component: 'Pane', requestId: 'session-pane', props: PROPS(44) })
+  await turn(100_000); await turn(110_000)
+  expect(await p.find({ text: /Auto-compacting/ })).toBe(undefined) // one growth: no estimate yet
+  await turn(120_000)
+  expect(await p.find({ text: /^Auto-compacting in ~4 turns$/ })).toBeDefined()
+  await turn(145_000) // growths 10k, 10k, 25k: median 10k, 15k left
+  expect(await p.find({ text: /^Auto-compacting in ~1 turn$/ })).toBeDefined()
+  await turn(158_000) // median 11.5k, 2k left
+  expect(await p.find({ text: /^Auto-compacting any moment$/ })).toBeDefined()
+  enabled = false
+  await turn(159_000)
+  expect(await p.find({ text: /Auto-compacting/ })).toBe(undefined) // off: nothing, not 0
+})
+
+test('hidden pane: the band and one toast between turns say a check failed; the spinner warns of auto-compact', async ($, on) => {
+  const clock = mock.clock(on)
+  const toasts: string[] = []
+  let total = 0
+  let panes: { id: string }[] = []
+  on('session.id', () => ({ value: 'S6' }))
+  on('session.messages', () => ({ value: [] }) as any)
+  on('store.get', () => ({ value: undefined }) as any)
+  on('store.set', () => ({ value: undefined }) as any)
+  on('command.register', () => ({ value: undefined }) as any)
+  on('ui.toast', (_$, e) => { toasts.push(e.text); return { value: undefined } as any })
+  on('ui.open', () => { panes = [{ id: 'session-pane' }]; return { value: { isPlaced: true } } as any })
+  on('ui.close', () => { panes = []; return { value: undefined } as any })
+  on('ui.panes', () => ({ value: panes }) as any)
+  on('session.usage', () => {
+    const tokens = total
+    return { value: { context: { window: 200_000, tokens, percent: tokens / 2000, breakdown: { categories: [], totalTokens: tokens, isAutoCompactEnabled: true, autoCompactThreshold: 160_000 } }, rateLimits: [] } } as any
+  })
+  on('tool.call', () => ({ result: {}, text: 'Exit code 1\n FAIL a.test.ts', isError: true }) as any)
+  // beneath the plugins: the band holds another mod's line; the spinner draws its word and suffix
+  on('ui.render', ($, e: any) => {
+    const { Text } = $.ui.resolve(e) as any
+    return e.component === 'Spinner' ? Text({ key: 'spin', children: [e.props.word + e.props.suffix] }) : Text({ key: 'theirs', children: ['other mod'] })
+  })
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true })
+  const BAND = { isWorking: false, hasSurvey: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 } } as any
+  const band = await $.ui.mount({ plugin: 'session-pane', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+  expect(await band.find({ text: /Session/ })).toBe(undefined) // nothing needs you: no band
+
+  await $.turn.start({ turnId: 't1' } as any).catch(() => {})
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'b1', command: 'npm test', description: 'Run tests' } as any)
+  await clock.advance(2000)
+  expect(toasts.length).toBe(0) // mid-turn: Claude's to fix
+  const turn = async (t: number) => { total = t; await $.turn.complete({ reason: 'answer', answer: '' } as any).catch(() => {}); await clock.advance(2000) }
+  await turn(100_000)
+  expect(toasts).toEqual(['Tests failed: /session-pane shows what changed'])
+  expect(await band.find({ text: /✗ Tests failed/ })).toBeDefined()
+  expect(await band.find({ text: /^other mod$/ })).toBeDefined() // another mod's line stays, under ours
+  await turn(130_000); await turn(150_000)
+  expect(toasts.length).toBe(1) // still failing: announced once
+
+  // growths 30k, 20k: median 25k, 10k left -> any moment
+  const spin = await $.ui.mount({ plugin: 'session-pane', surface: 'terminal', component: 'Spinner', props: { word: 'Working', message: null, suffix: '…', mode: 'thinking' } as any })
+  expect((await spin.find({ type: 'Text' }))?.text).toBe('Working… · auto-compacting any moment')
+
+  await $.command.run({ command: 'session-pane', args: '' } as any)
+  expect(await band.find({ text: /✗ Tests failed/ })).toBe(undefined) // the pane shows it: the band steps aside
 })
