@@ -1,14 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
-import type { Recap, View } from '../types'
-import { alertsOf, applyGoal, bandOf, compactIn, empty, GOAL_SYSTEM, goalPrompt, isNoise, isQuery, mergeShellEdits, recapNotes, recordTurn, reduce, replay, snapshotOf, turnsLeft, whoOf, type SessionModel, type Seen } from './model'
+import type { Recap, Rerun, View } from '../types'
+import { alertsOf, applyGoal, bandOf, compactIn, empty, GOAL_SYSTEM, GOAL_TOKENS, goalPrompt, goalWorthy, isNoise, isQuery, mergeShellEdits, recapNotes, recordTurn, reduce, replay, snapshotOf, splitChecks, turnsLeft, whoOf, type SessionModel, type Seen } from './model'
 import { draw, type Act, type Els } from './views'
 
 // A pane that answers four questions about the session: what are we trying to do, what is Claude doing, what can it
 // see, and what has changed. One `*` hook folds every event into a SessionModel (model.ts); a 2 s clock writes it to
 // $.state, which redraws the pane, and to $.store, so a reload or a resume shows the same pane.
 // While the pane is hidden, the band above the prompt, toasts and the spinner carry what needs the person (AMBIENT).
-// Sections, in order (search `// ===`): STATE, CAPTURE, FLUSH, GOAL, RECAP, AMBIENT, HOOKS
+// Sections, in order (search `// ===`): STATE, CAPTURE, FLUSH, GOAL, RECAP, RERUN, AMBIENT, HOOKS
 
 // === STATE ===
 const PANE = 'session-pane'
@@ -18,6 +18,7 @@ const viewAtom = atom({ plugin: 'session-pane', key: 'view' } as const, 'overvie
 const helpAtom = atom({ plugin: 'session-pane', key: 'help' } as const, false)
 const diffAtom = atom({ plugin: 'session-pane', key: 'diff' } as const, '')
 const recapAtom = atom({ plugin: 'session-pane', key: 'recap' } as const, { status: 'idle', text: '' } as Recap)
+const rerunAtom = atom({ plugin: 'session-pane', key: 'rerun' } as const, { busy: false } as Rerun)
 const shownAtom = atom({ plugin: 'session-pane', key: 'shown' } as const, false) // the pane is open: the band and toasts stay quiet
 
 let m: SessionModel = empty()
@@ -29,15 +30,18 @@ let shellSince: number | undefined // when the earliest Bash call that finished 
 let shellUntil = 0 // when the latest of them ended
 let endedSid: string | undefined // the session a /clear or a resume ended: restore waits until the id has moved on
 let cleared = false // the session being restored began with a /clear: empty, so every event since is in early
-let goalQueue: { text: string; from: string }[] = []
-let goalBusy = false
 let told = new Set<string>() // alertsOf keys already toasted and still holding
+let goalQueue: { text: string; from: string }[] = [] // your messages the goal has not seen yet, newest last
+let goalBusy = false
 let turnOwed = false // a turn ended and its window is not yet recorded for the turns-left estimate
 let timer: Timer | undefined
 
 const KEEP_SESSIONS = 20 // snapshots kept in $.store; the oldest goes when a new session writes its first
 const SLACK_MS = 2000 // a file's mtime may fall this far outside the calls' span and still count as written by them
 const MAX_STATS = 200 // dirty files looked at per scan: a repo with thousands untracked costs no more than this
+const REPLAYED = new Set(['prompt.submit', 'tool.call']) // what replay() rebuilds from a transcript
+const MAX_GOAL_QUEUE = 5 // messages one goal call reads: older ones are what the newest build on
+const MAX_EARLY = 500 // events held while restore can't run (session.id failing): enough for a slow start, not a leak
 const snapKey = (id: string) => `snap:${id}`
 
 // === CAPTURE ===
@@ -65,12 +69,13 @@ async function capture($: EngineInterface, e: unknown, next: any) {
 
 function fold(x: Seen) {
   try {
-    if (early) early.push(x)
+    if (early) { early.push(x); if (early.length > MAX_EARLY) early.shift() }
+    const worthy = x.ev === 'prompt.submit' && x.who === 'you' && goalWorthy(m, String(x.e?.text ?? '')) // before reduce drafts a goal
     if (!reduce(m, x)) return
     dirty = true
-    // a goal check per prompt of yours; the call runs from the clock, never inside the chain
-    if (x.ev === 'prompt.submit' && x.who === 'you') goalQueue.push({ text: m.lastPrompt ?? '', from: m.prompts === 1 ? 'Your opening message' : `Your message ${m.prompts}` })
-    if (x.ev === 'turn.complete') turnOwed = true // a main turn ended (reduce drops a subagent's): the clock reads its window
+    // queued, never asked here: the clock asks, and only while the pane is open (askGoal)
+    if (worthy) goalQueue = queueGoal(goalQueue, { text: m.lastPrompt ?? '', from: m.prompts === 1 ? 'Your opening message' : `Your message ${m.prompts}` })
+    if (x.ev === 'turn.complete' && !x.e?.agentId) turnOwed = true // a main turn ended, not a subagent's: the clock reads its window
   } catch {}
 }
 
@@ -87,24 +92,26 @@ async function restore($: EngineInterface): Promise<void> {
     const snap = await $.store.get(snapKey(id)).catch(() => undefined) as SessionModel | undefined
     if (snap && typeof snap === 'object' && snap.sessionId === id) got = { ...empty(), ...snap }
   }
+  let replayed = false
   if (!got) {
     got = empty()
     const msgs = cleared ? [] : await $.session.messages().catch(() => [])
-    if (msgs.length) replay(got, msgs)
+    if (msgs.length) { replay(got, msgs); replayed = true }
   }
   got.sessionId = id
-  for (const x of early ?? []) reduce(got, x)
+  // the transcript, read just now, already holds the prompts and tool calls seen meanwhile: folded again they would count twice
+  for (const x of early ?? []) if (!replayed || !REPLAYED.has(x.ev)) reduce(got, x)
   early = undefined
   cleared = false
   m = got
   sid = id
   dirty = true
   told = new Set(alertsOf(m).keys()) // what held before a restart or a resume was announced then, or is stale news now
-  // a draft never condensed (a replayed transcript, a call cut short by a restart) gets its goal call now
+  // a draft never condensed (a replayed transcript, a call cut short by a restart) is asked about when the pane is next open
   const g = m.goal
-  if (g?.isDraft && !goalQueue.some(q => q.text === g.text)) goalQueue.push({ text: g.text, from: g.from })
+  if (g?.isDraft && !goalQueue.some(q => q.text === g.text)) goalQueue = [{ text: g.text, from: g.from }, ...goalQueue]
   // per session: the session after a /clear or a resume needs it again
-  await $.command.register({ name: 'session-pane', description: 'Show or hide the session pane: your goal, what Claude is doing, context, and changes so far.' })
+  await $.command.register({ name: 'session-pane', description: 'Show or hide the session pane: your goal, changes so far and whether checks still hold, what needs you, and context.' })
     .catch(err => { $.ui.log(`session-pane: /session-pane could not be registered: ${err}`) })
 }
 
@@ -124,7 +131,7 @@ async function flushOnce($: EngineInterface): Promise<void> {
     const b = (await $.session.usage({ breakdown: 'summary' }).catch(() => undefined))?.context.breakdown
     if (b) { recordTurn(m, b.totalTokens, b.isAutoCompactEnabled ? b.autoCompactThreshold : undefined); dirty = true }
   }
-  if (goalQueue.length && !goalBusy) void askGoal($)
+  if (goalQueue.length && !goalBusy && await read($, shownAtom).catch(() => false)) void askGoal($)
   if (!dirty) return
   dirty = false
   const plain = JSON.parse(JSON.stringify(m)) as SessionModel // a copy: the live model keeps changing under the write
@@ -160,17 +167,21 @@ async function remember($: EngineInterface, snap: SessionModel) {
 }
 
 // === GOAL ===
-// One small-model call per prompt of yours, in order; a failed call leaves the goal as it was
+// The oldest message (often the one that set the goal) and the newest after it: what one call reads
+const queueGoal = (q: typeof goalQueue, x: (typeof goalQueue)[number]) => { const n = [...q, x]; return n.length > MAX_GOAL_QUEUE ? [n[0]!, ...n.slice(-(MAX_GOAL_QUEUE - 1))] : n }
+// The goal costs nothing while the pane is hidden: messages queue, and one call condenses all of them once the pane is
+// open (on opening, then at most one per clock tick while it stays open). A failed call leaves the goal as it was
 async function askGoal($: EngineInterface) {
   goalBusy = true
   try {
     while (goalQueue.length) {
-      const { text, from } = goalQueue.shift()!
-      if (text.split(/\s+/).length < 3 && m.goal && !m.goal.isDraft) continue // "yes", "go on": never a new goal
+      const batch = goalQueue
+      goalQueue = []
+      const last = batch.at(-1)!
       const at = sid
-      const r = await $.model.complete({ model: 'haiku', system: GOAL_SYSTEM, prompt: goalPrompt(m, text), maxTokens: 300, timeoutMs: 20_000 }).catch(() => undefined)
+      const r = await $.model.complete({ model: 'haiku', system: GOAL_SYSTEM, prompt: goalPrompt(m, batch.map(b => b.text)), maxTokens: GOAL_TOKENS, timeoutMs: 20_000 }).catch(() => undefined)
       if (sid !== at) return // a /clear or a resume moved on: the answer is about the session before
-      if (r?.isAnswered && applyGoal(m, r.text, text, from)) dirty = true
+      if (r?.isAnswered && applyGoal(m, r.text, last.text, last.from)) dirty = true
     }
   } finally { goalBusy = false }
 }
@@ -181,13 +192,15 @@ Use these headings, each with short plain bullet points: Goal; Preferences and c
 Only include what this conversation actually established. At most 250 words. No preamble.`
 
 async function draftRecap($: EngineInterface) {
+  const at = sid
   await update($, recapAtom, () => ({ status: 'drafting', text: '' }))
   // what the pane folded from this session's events: a seed for what a summary may have dropped, not the source of truth
   const notes = recapNotes(m)
   const prompt = notes ? `${RECAP_PROMPT}\n\nNotes the session pane kept, which may help:\n<notes>\n${notes.slice(0, 6000)}\n</notes>` : RECAP_PROMPT
   const r = await $.model.fork({ prompt }).catch(err => ({ isAnswered: false as const, reason: String(err) }))
+  if (sid !== at) return // a /clear or a resume moved on: this recap is of the session before, never to be used on this one
   const next: Recap = r.isAnswered ? { status: 'ready', text: r.text.trim() }
-    : { status: 'failed', text: '', note: r.reason === 'nothing-to-fork' ? 'Nothing to recap yet: send a message first.' : `Couldn't draft a recap (${r.reason}).` }
+    : { status: 'failed', text: '', note: r.reason === 'nothing-to-fork' ? 'Nothing to recap yet: send a message first.' : "Couldn't draft a recap. Try again in a moment." }
   await update($, recapAtom, () => next)
   // drafting takes a while: the person may have hidden the pane meanwhile
   if (next.status === 'ready' && !(await read($, shownAtom))) $.ui.toast('Recap ready: /session-pane to review it')
@@ -201,7 +214,28 @@ async function useRecap($: EngineInterface) {
   const res = await $.session.compact({ instructions: `Carry this recap, reviewed by the person, into the summary faithfully:\n\n${r.text}` }).catch(err => ({ skip: String(err) }))
   // our own $ call: capture skips its events, so the compaction is folded here, unless capture saw it after all
   if (!res.skip && m.compactions === before) fold({ ev: 'session.compact', ph: 'exit', who: 'engine', e: { trigger: 'plugin' }, r: res, t: Date.now() })
-  await update($, recapAtom, () => res.skip ? { ...r, status: 'failed', note: `The summary didn't run: ${res.skip}` } : { ...r, status: 'applied' })
+  await update($, recapAtom, () => res.skip ? { ...r, status: 'failed', note: "The summary didn't run. Try again in a moment." } : { ...r, status: 'applied' })
+}
+
+// === RERUN ===
+// Stale checks run again on the person's press, each command as Claude ran it (only those kept unaltered: canRerun).
+// Through $.tool.call, so the permission check applies; capture skips our own calls, so each result is folded here
+async function rerunStale($: EngineInterface) {
+  const stale = splitChecks(m).stale.filter(c => c.canRerun)
+  const cmds = [...new Map(stale.map(c => [c.cmd, c.name])).entries()] // two checks in one command run it once
+  if (!cmds.length || (await read($, rerunAtom)).busy) return
+  await update($, rerunAtom, () => ({ busy: true }))
+  const at = sid
+  let note: string | undefined
+  for (const [command, name] of cmds) {
+    const e = { tool: 'Bash' as const, command, description: `Rerun ${name}` }
+    const r = await $.tool.call(e).catch(err => ({ deny: String(err) }))
+    if (sid !== at) return // a /clear or a resume moved on: the result is the session before's, and session.end reset busy
+    if (r.deny) { note = `${name} was not rerun: ${r.deny}`; break }
+    fold({ ev: 'tool.call', ph: 'exit', who: `plugin:${PANE}`, e: { ...e, tool_use_id: `rerun-${Date.now()}` }, r, t: Date.now() })
+  }
+  await flush($).catch(() => {}) // the checks redraw fresh with the button's return, not a clock tick later
+  await update($, rerunAtom, () => ({ busy: false, note, at: Date.now() }))
 }
 
 // === AMBIENT ===
@@ -234,7 +268,7 @@ export const register: Register = on => {
       // flush restores the new session once the id has moved on
       endedSid = e.sessionId; cleared = e.reason === 'clear'
       m = empty(); ready = undefined; sid = undefined; early = []; goalQueue = []; dirty = false; turnOwed = false; told = new Set()
-      await Promise.all([update($, modelAtom, () => empty()), update($, viewAtom, () => 'overview'), update($, diffAtom, () => ''), update($, recapAtom, () => ({ status: 'idle', text: '' }))]).catch(() => {})
+      await Promise.all([update($, modelAtom, () => empty()), update($, viewAtom, () => 'overview'), update($, diffAtom, () => ''), update($, recapAtom, () => ({ status: 'idle', text: '' })), update($, rerunAtom, () => ({ busy: false }))]).catch(() => {})
     } else { timer?.cancel(); timer = undefined }
     return next(e)
   })
@@ -247,6 +281,7 @@ export const register: Register = on => {
     // 48 leaves a few over, so a long label wraps less. A request only: a width the person dragged the dock to wins
     await $.ui.open({ id: PANE, title: TITLE, focus: true, columns: 48 })
     await update($, shownAtom, () => true)
+    if (goalQueue.length && !goalBusy) void askGoal($) // what was said while it was hidden, in one call
     return { text: 'Session pane shown' }
   })
 
@@ -257,7 +292,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const el = $.ui.resolve(e) as Els
-    const [model, view, help, diff, recap] = await Promise.all([read($, modelAtom), read($, viewAtom), read($, helpAtom), read($, diffAtom), read($, recapAtom)])
+    const [model, view, help, diff, recap, rerun] = await Promise.all([read($, modelAtom), read($, viewAtom), read($, helpAtom), read($, diffAtom), read($, recapAtom), read($, rerunAtom)])
     const usage = view === 'context' ? await $.session.usage({ breakdown: 'summary' }).catch(() => undefined)
       : view === 'details' ? await $.session.usage().catch(() => undefined) : undefined
     const name = view === 'details' ? await $.session.model().catch(() => undefined) : undefined
@@ -268,8 +303,9 @@ export const register: Register = on => {
       draft: () => { void draftRecap($).catch(() => {}) },
       use: () => { void useRecap($).catch(() => {}) },
       discard: () => { void update($, recapAtom, () => ({ status: 'idle', text: '' })) },
+      rerun: () => { void rerunStale($).catch(() => update($, rerunAtom, () => ({ busy: false }))) },
     }
-    return draw(el, { m: model, view, help, diff, recap, cols: e.props.bodyColumns ?? 44, usage, model: name }, act)
+    return draw(el, { m: model, view, help, diff, recap, rerun, cols: e.props.bodyColumns ?? 44, usage, model: name }, act)
   })
 
   // The band above the prompt, shared with other mods: theirs stays, ours goes on top. Between turns only, and only while
@@ -281,11 +317,12 @@ export const register: Register = on => {
     if (!parts.length) return theirs
     const { Box, Text } = $.ui.resolve(e) as Els
     const line = (
-      <Box key="session-pane-band" flexDirection="row" columnGap={1}>
-        <Text dimColor>Session</Text>
-        {parts.map((p, i) => <Text key={`p${i}`} color={p.color} wrap="truncate-end">{p.text}</Text>)}
-        <Text dimColor>/session-pane</Text>
-      </Box>
+      // one line, the way in first: a narrow terminal cuts the last alert, never where to look. Dim dots between parts,
+      // since two warnings side by side share a colour
+      <Text key="session-pane-band" wrap="truncate-end">
+        <Text dimColor>/session-pane </Text>
+        {parts.flatMap((p, i) => [i ? <Text key={`d${i}`} dimColor> · </Text> : null, <Text key={`p${i}`} color={p.color}>{p.text}</Text>])}
+      </Text>
     )
     return theirs ? <Box flexDirection="column">{line}{theirs}</Box> : line
   })
@@ -294,6 +331,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
     const left = turnsLeft(await read($, modelAtom))
     if (left == null || left > 2) return next(e)
-    return next({ ...e, props: { ...e.props, suffix: `${e.props.suffix} · ${compactIn(left).toLowerCase()}` } })
+    // the engine's suffix may be '' (a message that ends in its own ellipsis): no separator dangling in front then
+    return next({ ...e, props: { ...e.props, suffix: [e.props.suffix, compactIn(left).toLowerCase()].filter(Boolean).join(' · ') } })
   })
 }

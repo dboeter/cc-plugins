@@ -1,0 +1,9 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "notepad",
+  "version": "0.1.0",
+  "description": "A notepad pane beside the session, one per project, kept between sessions. /notepad toggles it. Claude does not see it.",
+  "author": { "name": "dboeter", "email": "daan.boeter@hotmail.com" },
+  "license": "MIT",
+  "repository": "https://github.com/dboeter/cc-plugins"
+}

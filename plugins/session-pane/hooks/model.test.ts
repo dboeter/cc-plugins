@@ -1,5 +1,6 @@
 import { test, expect } from 'claude-code/testing'
-import { alertsOf, applyGoal, bandOf, checkOf, goalPrompt, checksOf, contextLabel, doingOf, empty, insightOf, isNoise, isQuery, mergeShellEdits, NEARLY_FULL, progOf, recapNotes, questionOf, recordTurn, reduce, replay, scrub, segmentsOf, snapshotOf, statusOf, titleOf, turnsLeft, whoOf, type Seen } from './model'
+import { cells, fitList } from './views'
+import { alertsOf, applyGoal, bandOf, goalPrompt, goalWorthy, titleOf, checkOf, sparkOf, checksOf, contextLabel, doingOf, empty, insightOf, isNoise, isQuery, mergeShellEdits, NEARLY_FULL, progOf, recapNotes, questionOf, recordTurn, reduce, replay, scrub, segmentsOf, snapshotOf, statusOf, turnsLeft, whoOf, type Seen } from './model'
 
 const ENGINE = { plugin: 'engine', tier: 'core' }
 let t = 0
@@ -25,10 +26,8 @@ test('noise and queries are told apart; session.measure is kept', () => {
   expect(['state.set', 'fs.write', 'tool.call'].some(isQuery)).toBe(false)
 })
 
-test('text helpers: scrub, title, program, check name', () => {
+test('text helpers: scrub, program, check name', () => {
   expect(scrub('curl -H "Authorization: Bearer abc123"')).toBe('curl -H "Authorization: Bearer ***"')
-  expect(titleOf('Add a confirmation step before deleting a project. Keep it accessible.')).toBe('Add a confirmation step before deleting…')
-  expect(titleOf('Fix login')).toBe('Fix login')
   expect(progOf('FOO=1 timeout 30 npx tsc -p .')).toBe('tsc')
   expect(progOf('npm run test -- --watch')).toBe('npm test')
   expect(checkOf('cd app && npm test')).toBe('Tests')
@@ -60,26 +59,20 @@ test('a new session fabricates nothing', () => {
   expect(contextLabel(m.context.percent).label).toBe('Room to begin')
 })
 
-test('goal: your first prompt drafts it; slash commands and later prompts do not replace it', () => {
+test('prompts: yours count; slash commands and other plugins\' do not', () => {
   const m = fold(empty(),
     seen('prompt.submit', 'exit', { text: '/session-pane' }, {}, 'you'),
     seen('prompt.submit', 'exit', { text: 'Add a confirmation step before deleting a project.' }, {}, 'you'),
     seen('prompt.submit', 'exit', { text: 'Also make the button red' }, {}, 'you'),
     seen('prompt.submit', 'exit', { text: 'from a plugin' }, {}, 'plugin:x'))
   expect(m.prompts).toBe(2)
-  expect(m.goal?.title).toBe('Add a confirmation step before deleting…')
-  expect(m.goal?.isDraft).toBe(true)
-  expect(m.lastPrompt).toBe('Also make the button red')
 })
 
-test('working: the todo in progress is the activity, the first pending one is Next', () => {
-  const m = fold(empty(), seen('prompt.submit', 'exit', { text: 'go' }, {}, 'you'), seen('turn.start', 'enter', { text: 'go', turnId: 't1' }),
-    call('TodoWrite', { todos: [{ content: 'Add dialog', status: 'completed', activeForm: 'Adding dialog' }, { content: 'Wire button', status: 'in_progress', activeForm: 'Wiring the button' }, { content: 'Write tests', status: 'pending', activeForm: 'Writing tests' }] }, { result: {}, text: 'ok' }),
-    seen('tool.call', 'enter', { tool: 'Read', tool_use_id: 'r1', file_path: '/w/a.ts' }, undefined, 'claude'))
-  expect(statusOf(m)).toEqual({ kind: 'working', label: 'Working', detail: 'Wiring the button', next: 'Write tests' })
-  const solo = fold(empty(), seen('turn.start', 'enter', {}), seen('tool.call', 'enter', { tool: 'Read', tool_use_id: 'r2', file_path: '/w/a.ts' }, undefined, 'claude'))
-  expect(statusOf(solo).detail).toBe('Reading a.ts')
-  expect(statusOf(solo).next).toBe(undefined) // no todo list: no invented Next
+test('right now: a turn is just Working; a failure says what failed, mid-turn and after', () => {
+  const m = fold(empty(), seen('turn.start', 'enter', { text: 'go', turnId: 't1' }), seen('tool.call', 'enter', { tool: 'Read', tool_use_id: 'r1', file_path: '/w/a.ts' }, undefined, 'claude'))
+  expect(statusOf(m)).toEqual({ kind: 'working', label: 'Working' }) // what it is doing is the spinner's to say
+  fold(m, call('Bash', { command: 'npm test' }, { result: {}, text: 'Exit code 1\n FAIL a.test.ts', isError: true }))
+  expect(statusOf(m)).toEqual({ kind: 'failed', label: 'Tests failed, Claude is investigating', detail: 'npm test\nFAIL a.test.ts' })
 })
 
 test('needs input: a question or a permission prompt, until its call returns', () => {
@@ -123,10 +116,9 @@ test('changes: Write create is New, Edit is Edited, later edits keep New; failed
   expect(checksOf(m).line).toBe("Checks haven't run yet")
 })
 
-test('subagent edits count; subagent calls never move the activity line', () => {
+test('subagent edits count', () => {
   const m = fold(empty(), seen('turn.start', 'enter', {}), call('Edit', { file_path: '/w/s.ts' }, { result: { filePath: '/w/s.ts', structuredPatch: [] }, text: 'ok' }, { agentId: 'a1' }))
   expect(m.files.length).toBe(1)
-  expect(m.activity).toBe(undefined)
 })
 
 test("a subagent's reads and attachments are its own context, not the main conversation's", () => {
@@ -139,11 +131,10 @@ test("a subagent's reads and attachments are its own context, not the main conve
   expect(m.files.map(f => f.path)).toEqual(['/w/s.ts']) // its changes still count
 })
 
-test("another plugin's tool call never moves the activity line; its changes and checks count", () => {
+test("another plugin's tool call: its changes and checks count, its output is not in the context", () => {
   const m = fold(empty(), seen('turn.start', 'enter', {}), call('Read', { file_path: '/w/a.ts' }, { result: {}, text: 'a' }))
   const e = { tool: 'Bash', tool_use_id: 'p1', command: 'npm test' }
   fold(m, seen('tool.call', 'enter', e, undefined, 'plugin:x'), seen('tool.call', 'exit', e, { result: {}, text: 'Exit code 1\n FAIL a.test.ts', isError: true }, 'plugin:x'))
-  expect(m.activity).toBe('Reading a.ts')
   expect(m.est.results).toBe(0)
   expect(checksOf(m).line).toBe('Tests failed')
 })
@@ -157,7 +148,7 @@ test('checks: pass, fail with what failed, stale after an edit', () => {
   const m = fold(empty(), seen('prompt.submit', 'exit', { text: 'go' }, {}, 'you'), call('Edit', { file_path: '/w/a.ts' }, { result: { filePath: '/w/a.ts', structuredPatch: [] }, text: 'ok' }),
     call('Bash', { command: 'npm test' }, { result: {}, text: 'Exit code 1\n FAIL src/a.test.ts', isError: true }))
   expect(checksOf(m).line).toBe('Tests failed')
-  expect(statusOf(m)).toEqual({ kind: 'failed', label: 'Tests failed, needs your input', detail: 'npm test\nFAIL src/a.test.ts' })
+  expect(statusOf(m)).toEqual({ kind: 'failed', label: 'Tests failed', detail: 'npm test\nFAIL src/a.test.ts' })
   m.running = true
   expect(statusOf(m).label).toBe('Tests failed, Claude is investigating')
   reduce(m, call('Edit', { file_path: '/w/a.ts' }, { result: { filePath: '/w/a.ts', structuredPatch: [] }, text: 'ok' })[1]!)
@@ -188,14 +179,14 @@ test('shell edits merge as Edited, without duplicating a tool edit', () => {
   const m = fold(empty(), call('Write', { file_path: '/w/n.ts' }, { result: { type: 'create', filePath: '/w/n.ts', structuredPatch: [] }, text: 'ok' }))
   expect(mergeShellEdits(m, ['/w/n.ts', '/w/sed.ts', 'relative', ''], 99)).toBe(true)
   expect(m.files.map(f => [f.path, f.isNew, !!f.byShell])).toEqual([['/w/sed.ts', false, true], ['/w/n.ts', true, false]])
-  expect(mergeShellEdits(m, ['/w/sed.ts'], 100)).toBe(false)
+  expect(mergeShellEdits(m, ['/w/sed.ts'], 99)).toBe(false) // the same scan again: nothing new
+  expect(m.files.length).toBe(2)
 })
 
-test('recap notes: the goal and the files changed, nothing for a new session', () => {
+test('recap notes: the files changed, nothing for a new session', () => {
   const m = fold(empty(), call('Write', { file_path: '/w/n.ts' }, { result: { type: 'create', filePath: '/w/n.ts', structuredPatch: [] }, text: 'ok' }))
   expect(recapNotes(empty())).toBe('')
-  m.goal = { title: 'Confirm before deleting', keep: [{ text: 'No new dependencies', from: 'x' }], from: 'x', text: 'x', isDraft: false }
-  expect(recapNotes(m)).toBe('Goal: Confirm before deleting\nKeep in mind: No new dependencies\nFiles changed:\n- /w/n.ts (new)')
+  expect(recapNotes(m)).toBe('Files changed:\n- /w/n.ts (new)')
 })
 
 test('context: measure, sources, attachments, compaction', () => {
@@ -250,26 +241,9 @@ test('snapshot drops diffs and live waits; replay rebuilds from the transcript',
     ] },
     { role: 'user', text: '', toolUses: [], toolResults: [{}] },
   ])
-  expect(r.goal?.title).toBe('Add a confirmation step')
   expect(r.prompts).toBe(1)
   expect(r.files.map(f => [f.path, f.isNew])).toEqual([['/w/c.tsx', true]])
   expect(checksOf(r).line).toBe('Tests failed')
-  expect(r.activity).toBe(undefined)
-})
-
-test('goal: the small model condenses the opening message, later messages add constraints or replace it', () => {
-  const m = fold(empty(), seen('prompt.submit', 'exit', { text: 'Add a confirmation step before deleting a project. No new dependencies please.' }, {}, 'you'))
-  expect(applyGoal(m, 'not json', 'x', 'Your opening message')).toBe(false)
-  expect(m.goal?.isDraft).toBe(true)
-  expect(applyGoal(m, '```json\n{"changed":true,"title":"Confirm before deleting projects","keep":["No new dependencies"],"done":"Deleting asks first"}\n```', 'x', 'Your opening message')).toBe(true)
-  expect(m.goal).toEqual({ title: 'Confirm before deleting projects', keep: [{ text: 'No new dependencies', from: 'Your opening message' }], done: 'Deleting asks first', from: 'Your opening message', text: 'Add a confirmation step before deleting a project. No new dependencies please.', isDraft: false })
-  expect(applyGoal(m, '{"changed":false,"title":"Confirm before deleting projects","keep":["Keep it accessible","no new dependencies"],"done":""}', 'y', 'Your message 2')).toBe(true)
-  expect(m.goal?.keep.map(k => k.text)).toEqual(['No new dependencies', 'Keep it accessible'])
-  expect(applyGoal(m, '{"changed":false,"title":"x","keep":[]}', 'z', 'Your message 3')).toBe(false)
-  expect(applyGoal(m, '{"changed":true,"title":"Fix the login page","keep":[]}', 'Now fix the login page', 'Your message 4')).toBe(true)
-  expect(m.goal?.from).toBe('Your message 4')
-  expect(m.goal?.keep.length).toBe(2) // constraints carry over to a new goal; you can say otherwise in the conversation
-  expect(goalPrompt(m, 'hi')).toMatch(/^Current goal: Fix the login page/)
 })
 
 test('turns left: median growth to the threshold; nothing when it cannot say; a summary starts it over', () => {
@@ -299,9 +273,138 @@ test('ambient: the band names failed and stale checks and a nearly full window; 
   expect(bandOf(m).map(p => p.text)).toEqual(['✗ Tests failed', 'Rerun needed: Types'])
   expect([...alertsOf(m).keys()]).toEqual(['fail:Tests'])
   m.context.percent = NEARLY_FULL + 2
-  expect(bandOf(m).at(-1)!.text).toBe(`Context ${NEARLY_FULL + 2}%: prepare a recap`)
+  expect(bandOf(m).at(-1)!.text).toBe(`Context ${NEARLY_FULL + 2}% used: prepare a recap`)
   expect([...alertsOf(m).keys()]).toEqual(['fail:Tests', 'full'])
   m.lastEdit = 20 // edited since: the failure says nothing now, so it is no alert, only a rerun
   expect([...alertsOf(m).keys()]).toEqual(['full'])
   expect(bandOf(m)[0]!.text).toBe('Rerun needed: Tests, Types')
+})
+
+test('subagents: spawned, busy, finished; a snapshot stops a running one; the turn ending leaves them working', () => {
+  const m = fold(empty(), seen('agent.spawn', 'exit', { description: 'Map hooks', subagentType: 'scout' }, { model: 'haiku', agentId: 'a1' }))
+  expect(m.agents[0]).toMatchObject({ id: 'a1', name: 'Map hooks', status: 'running', calls: 0 })
+  fold(m, call('Grep', { pattern: 'on\\(' }, { text: '' }, { agentId: 'a1' }))
+  expect(m.agents[0]!.calls).toBe(1)
+  expect(statusOf(m).label).toBe('1 background agent working')
+  expect(snapshotOf(m).agents[0]!.status).toBe('stopped')
+  fold(m, seen('turn.complete', 'enter', { agentId: 'a1', isAborted: true }))
+  expect(m.agents[0]!.status).toBe('stopped')
+  expect(reduce(m, seen('turn.complete', 'enter', { agentId: 'nobody' }))).toBe(false) // not one of ours
+  const n = fold(empty(), seen('agent.spawn', 'exit', { description: 'B' }, { model: 'haiku', agentId: 'b1' }), seen('classic.SubagentStop', 'enter', { agent_id: 'b1' }))
+  expect(n.agents[0]!.status).toBe('done') // its turn.complete missing: SubagentStop ends it
+})
+
+test('rerun: only a check stored exactly as typed may run again', () => {
+  const m = fold(empty(), call('Bash', { command: 'npm test' }, { text: 'ok' }), call('Bash', { command: 'GH_TOKEN=x tsc' }, { text: 'ok' }))
+  expect(m.checks.find(c => c.name === 'Tests')!.canRerun).toBe(true)
+  expect(m.checks.find(c => c.name !== 'Tests')!.canRerun).toBe(undefined)
+})
+
+test('spark: one block per turn, full height at the auto-compact point, nothing under two turns', () => {
+  const m = empty()
+  recordTurn(m, 20_000, 160_000)
+  expect(sparkOf(m)).toBe('')
+  recordTurn(m, 80_000, 160_000); recordTurn(m, 160_000, 160_000)
+  expect(sparkOf(m)).toBe('▁▄█')
+})
+
+test('review fixes: secrets in everyday spellings are scrubbed', () => {
+  expect(scrub('OPENAI_KEY=abc123 npm test')).toBe('OPENAI_KEY=*** npm test')
+  expect(scrub('export GH_PAT=xyz npm test')).toBe('export GH_PAT=*** npm test')
+  expect(scrub('curl -H "Authorization: Basic dXNlcjpwYXNz"')).toBe('curl -H "Authorization: Basic ***"')
+  expect(scrub('mysql -u root -pHunter2 db')).toBe('mysql -u root -p*** db')
+  expect(scrub('echo sk-proj0123456789abcdef and ghp_0123456789abcdefABCD')).toBe('echo sk-*** and ghp_***')
+  expect(scrub('tsc -p . && find . -print')).toBe('tsc -p . && find . -print') // not a password flag outside mysql
+})
+
+test('review fixes: python, uv, pnpm exec and make spellings count as checks', () => {
+  expect(checkOf('python -m pytest -q')).toBe('Tests')
+  expect(checkOf('python3 -m mypy src')).toBe('Type check')
+  expect(checkOf('uv run pytest')).toBe('Tests')
+  expect(checkOf('poetry run ruff check .')).toBe('Lint')
+  expect(checkOf('pnpm exec vitest run')).toBe('Tests')
+  expect(checkOf('make test')).toBe('Tests')
+  expect(checkOf('make build')).toBe(undefined)
+})
+
+test('review fixes: rerun only a check run alone; a shell edit to a listed file makes checks stale', () => {
+  const m = fold(empty(),
+    call('Bash', { command: 'npm test && rm -rf dist' }, { text: 'ok' }),
+    call('Bash', { command: 'cd app && tsc -p .' }, { text: 'ok' }),
+    call('Bash', { command: 'CI=1 eslint .' }, { text: 'ok' }))
+  expect(m.checks.find(c => c.name === 'Tests')!.canRerun).toBe(undefined) // would remove dist again
+  expect(m.checks.find(c => c.name === 'Type check')!.canRerun).toBe(true)
+  expect(m.checks.find(c => c.name === 'Lint')!.canRerun).toBe(undefined) // sets a variable
+
+  const n = empty()
+  mergeShellEdits(n, ['/w/a.ts'], 10)
+  n.checks = [{ name: 'Tests', ok: true, line: '', t: 20, cmd: 'npm test' }]
+  expect(mergeShellEdits(n, ['/w/a.ts'], 30)).toBe(true) // already listed, edited again by a command
+  expect(n.lastEdit).toBe(30)
+  expect(n.files.length).toBe(1)
+})
+
+test('review fixes: the band says when code changed and no check ran; prose alone owes none', () => {
+  const m = empty()
+  mergeShellEdits(m, ['/w/README.md'], 1)
+  expect(bandOf(m)).toEqual([])
+  mergeShellEdits(m, ['/w/a.ts', '/w/b.ts'], 2)
+  expect(bandOf(m)[0]).toEqual({ text: '2 files changed, no checks run', color: 'warning' })
+  m.checks = [{ name: 'Tests', ok: true, line: '', t: 3, cmd: 'npm test' }]
+  expect(bandOf(m)).toEqual([])
+})
+
+test('ui review: whole cells never sum past the width', () => {
+  // rounded one by one these are 1+1+1+3 = 6 cells in a width of 4
+  expect(cells([0.125, 0.125, 0.125, 0.625], 4).reduce((a, b) => a + b)).toBe(4)
+  expect(cells([0.5, 0.2], 10)).toEqual([5, 2])
+  expect(cells([1 / 3, 1 / 3, 1 / 3], 10).reduce((a, b) => a + b)).toBe(10)
+})
+
+test('backend review: diffs keep the newest changes; an oversized one keeps its head; a waiting call holds no input', () => {
+  const hunk = (n: number, mark: string) => ({ oldStart: 1, oldLines: 0, newStart: 1, newLines: n, lines: Array.from({ length: n }, () => `+${mark}`) })
+  const edit = (h: any) => call('Edit', { file_path: '/w/a.ts' }, { result: { filePath: '/w/a.ts', structuredPatch: [h] }, text: 'ok' })
+  const m = fold(empty(), edit(hunk(300, 'old')), edit(hunk(300, 'new')))
+  expect(m.files[0]!.hunks!.map(h => h.lines[0])).toEqual(['+new']) // the old one makes room
+  const big = fold(empty(), call('Write', { file_path: '/w/b.ts' }, { result: { type: 'create', filePath: '/w/b.ts', structuredPatch: [hunk(401, 'x')] }, text: 'ok' }))
+  expect(big.files[0]!.hunks![0]!.lines.length).toBe(400)
+
+  const a = fold(empty(), seen('tool.check', 'exit', { tool: 'Write', tool_use_id: 'w1', input: { file_path: '/w/s.ts', content: 'API_SECRET=hunter2' } }, { decision: 'ask' }))
+  expect(JSON.stringify(a.asking)).not.toContain('hunter2')
+  reduce(a, seen('classic.PermissionRequest', 'exit', { tool_name: 'Write', tool_input: { file_path: '/w/s.ts', content: 'API_SECRET=hunter2' } }, {}, 'hook'))
+  expect(Object.keys(a.waits)).toEqual(['w1']) // still matched to its permission request
+})
+
+test('goal: a free draft from the opening message; the small model condenses, adds constraints, replaces', () => {
+  expect(titleOf('Add a confirmation step before deleting a project. Keep it accessible.')).toBe('Add a confirmation step before deleting…')
+  const m = fold(empty(),
+    seen('prompt.submit', 'exit', { text: '/session-pane' }, {}, 'you'),
+    seen('prompt.submit', 'exit', { text: 'Add a confirmation step before deleting a project. No new dependencies please.' }, {}, 'you'))
+  expect(m.goal).toMatchObject({ title: 'Add a confirmation step before deleting…', isDraft: true })
+  expect(applyGoal(m, 'not json', 'x', 'Your opening message')).toBe(false)
+  expect(applyGoal(m, '```json\n{"changed":true,"title":"Confirm before deleting projects","keep":["No new dependencies"],"done":"Deleting asks first"}\n```', 'x', 'Your opening message')).toBe(true)
+  expect(m.goal).toMatchObject({ title: 'Confirm before deleting projects', keep: [{ text: 'No new dependencies', from: 'Your opening message' }], done: 'Deleting asks first', isDraft: false })
+  expect(applyGoal(m, '{"changed":false,"title":"x","keep":["Keep it accessible","no new dependencies"]}', 'y', 'Your message 2')).toBe(true)
+  expect(m.goal!.keep.map(k => k.text)).toEqual(['No new dependencies', 'Keep it accessible'])
+  expect(applyGoal(m, '{"changed":true,"title":"Fix the login page","keep":[]}', 'Now fix the login page', 'Your message 3')).toBe(true)
+  expect(m.goal!.from).toBe('Your message 3')
+})
+
+test('goal efficiency: short replies never cost a call; one prompt carries a batch, clipped, newest kept', () => {
+  const m = empty()
+  expect(goalWorthy(m, 'yes')).toBe(true) // nothing condensed yet: even a short opening counts
+  m.goal = { title: 'T', keep: [], from: 'x', text: 'x', isDraft: false }
+  expect(goalWorthy(m, 'yes')).toBe(false)
+  expect(goalWorthy(m, 'go on then')).toBe(true)
+  const p = goalPrompt(m, ['first message', 'x'.repeat(5000)])
+  expect(p.startsWith('Current goal: T\n')).toBe(true)
+  expect(p).not.toContain('first message') // the newest fills the room first
+  expect(p.length).toBeLessThan(3100)
+})
+
+test('goal line: constraints on one line, as many as fit whole, the rest counted', () => {
+  expect(fitList(['No new deps', 'Keep it accessible', 'Use the old API'], 50)).toBe('No new deps · Keep it accessible · Use the old API')
+  expect(fitList(['No new deps', 'Keep it accessible', 'Use the old API'], 36)).toBe('No new deps · Keep it accessible +1')
+  expect(fitList(['No new deps', 'Keep it accessible'], 10)).toBe('No new deps +1') // the line cuts the rest
+  expect(fitList(['Only one'], 4)).toBe('Only one')
 })

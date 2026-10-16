@@ -5,6 +5,8 @@
   "plugins": [
     { "name": "session-pane", "source": "./plugins/session-pane" },
     { "name": "auto-title", "source": "./plugins/auto-title" },
-    { "name": "context-budget", "source": "./plugins/context-budget" }
+    { "name": "context-budget", "source": "./plugins/context-budget" },
+    { "name": "notepad", "source": "./plugins/notepad" },
+    { "name": "agent-log", "source": "./plugins/agent-log" }
   ]
 }

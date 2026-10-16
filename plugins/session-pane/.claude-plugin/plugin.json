@@ -2,9 +2,9 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "session-pane",
   "version": "0.1.0",
-  "types": "./types/index.d.ts",
-  "description": "A pane with four stable summaries of the session: your goal, what Claude is doing right now, how full the context is and what it holds, and the files changed with the checks run since. /session-pane toggles it.",
+  "description": "Tells you when Claude's checks no longer hold (failed, stale after its last edit, or never run) and reruns them in one press. A line above the prompt while you work; /session-pane opens the full pane with your goal, changes and diffs, what needs you, and context.",
   "author": { "name": "dboeter", "email": "daan.boeter@hotmail.com" },
   "license": "MIT",
-  "repository": "https://github.com/dboeter/cc-plugins"
+  "repository": "https://github.com/dboeter/cc-plugins",
+  "types": "./types/index.d.ts"
 }

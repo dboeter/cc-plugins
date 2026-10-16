@@ -3,23 +3,20 @@
 // module owns those, so everything below runs in a test as plain data.
 // Sections, in order (search `// ===`): TEXT, WHO, CHECKS, TOOLS, MODEL, REDUCE, READINGS, RESTORE
 
-import type { Est, FileChange, Goal, Hunk, SessionModel, Source, SourceNote, Todo } from '../types'
-export type { Est, FileChange, Goal, Hunk, SessionModel, Source, SourceNote, Todo }
+import type { Agent, Est, FileChange, Goal, Hunk, SessionModel, Source, SourceNote } from '../types'
+export type { Agent, Est, FileChange, Goal, Hunk, SessionModel, Source, SourceNote }
 
 // === TEXT ===
 // best-effort secret scrub, not a guarantee: anything the pane shows or stores passes through it
-export const scrub = (s: string) => s.replace(/(bearer\s+|\b\w*(token|secret|password|passwd|api[_-]?key)\w*[=:]\s*|--?(password|token|api-key)[= ]|:\/\/[^:\/\s]+:)[^\s@'"]+/gi, '$1***')
+// The value after a secret-looking name (`OPENAI_KEY=`, `GH_PAT=`, `Authorization: Basic `, mysql's `-p<pass>`), then
+// well-known token shapes wherever they stand (`sk-…`, `ghp_…`, `xoxb-…`, `AKIA…`)
+const SECRET_AFTER = /(bearer\s+|basic\s+|\b\w*(token|secret|password|passwd|api[_-]?key|_key|_pat|credential)\w*[=:]\s*|--?(password|token|api-key)[= ]|\b(?:mysql\w*|mariadb)\b[^\n|;&]*?\s-p(?=[^\s-])|:\/\/[^:\/\s]+:)[^\s@'"]+/gi
+const SECRET_SHAPE = /\b(sk-|ghp_|gho_|ghs_|ghu_|github_pat_|xox[abpors]-|AKIA)[A-Za-z0-9_-]{12,}/g
+export const scrub = (s: string) => s.replace(SECRET_AFTER, '$1***').replace(SECRET_SHAPE, '$1***')
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g
 export const base = (p: string) => p.replace(/\/+$/, '').split('/').pop() || p
 const clip = (s: string, n: number) => s.length > n ? `${s.slice(0, n - 1)}…` : s
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim()
-
-// The goal's title until the small model answers, and when it can't: the prompt's first sentence, cut at a word
-export function titleOf(text: string, words = 6): string {
-  const s = oneLine(text).split(/(?<=[.!?])\s/)[0]!.replace(/[.!?]+$/, '')
-  const w = s.split(' ')
-  return w.length > words ? `${w.slice(0, words).join(' ')}…` : s
-}
 
 // === WHO ===
 export type Origin = { readonly plugin: string; readonly tier: string }
@@ -47,11 +44,16 @@ export const isQuery = (ev: string) => QUERY.has(ev) || /\.(get|list|keys|read|e
 const OUTPUT_NOISE = /^\s*(npm (ERR!|error)\s*$|npm (ERR!|error) (code|path|errno|syscall|signal|command|cwd|A complete log|Lifecycle)|at .*(node_modules|node:internal)|[\d.]+%|.*[█░▓▒]{3}|[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏])/i
 const ERRLINE = /(error|exception)\b|\b(fatal|fail(ed|ure)?|panic|denied|rejected|conflict|not found|no such file|cannot|unable)\b|TS\d{4}/i // no \b before error: KeyError, TypeError
 const WRAP = new Set(['sudo', 'npx', 'bunx', 'exec', 'time', 'env', 'nice', 'timeout'])
+const RUNNER = /^(uv|poetry|pipenv|pdm|rye|hatch)$/ // `uv run pytest`: the program is what it runs
 const noCd = (s: string) => s.replace(/^\s*cd\s+\S+\s*(&&|;)\s*/, '') // a Bash command minus its leading `cd <dir> &&` / `;`
-export const progOf = (seg: string) => { // `FOO=1 timeout 30 npx tsc -p .` -> tsc; `npm run test` -> npm test
+export const progOf = (seg: string): string => { // `FOO=1 timeout 30 npx tsc -p .` -> tsc; `npm run test` -> npm test
   const w = seg.trim().split(/\s+/).filter(t => t && !/^\w+=/.test(t))
   while (w.length > 1 && (WRAP.has(w[0]!) || /^\d+[smh]?$/.test(w[0]!))) w.shift()
   const p = (w[0] ?? '').split('/').pop() ?? ''
+  if (RUNNER.test(p) && w[1] === 'run' && w[2]) return progOf(w.slice(2).join(' '))
+  if (/^python[\d.]*$/.test(p) && w[1] === '-m' && w[2]) return w[2] // python -m pytest -> pytest
+  if (/^(pnpm|yarn|bun)$/.test(p) && (w[1] === 'exec' || w[1] === 'dlx') && w[2]) return progOf(w.slice(2).join(' '))
+  if ((p === 'make' || p === 'just') && w[1] && !w[1].startsWith('-')) return `${p} ${w[1]}`
   if (/^(npm|pnpm|yarn|bun)$/.test(p) && w[1] && !w[1].startsWith('-')) return `${p} ${w[1] === 'run' ? w[2] ?? 'run' : w[1]}`
   if (p === 'claude' && w[1] === 'plugin' && w[2]) return `claude plugin ${w[2]}` // a plugin's own test and validate
   if ((p === 'cargo' || p === 'go') && w[1]) return `${p} ${w[1]}`
@@ -82,9 +84,9 @@ export function insightOf(cmd: string | undefined, raw: string): { exit?: number
 // Which commands count as a check, under which plain name, and which output line says one failed. Matched per program of
 // the command, first hit wins; a command that is none of these (a build, a git call) is not a check
 const CHECK: [RegExp, string, RegExp][] = [
-  [/^(tsc|vue-tsc|mypy|pyright|cargo check|go vet|(npm|pnpm|yarn|bun) (typecheck|type-check|check-types|tsc))$/, 'Type check', /error TS\d+|^error(\[E\d+\])?:|\b[1-9]\d* errors?\b/],
-  [/^(eslint|ruff|biome|shellcheck|cargo clippy|claude plugin validate|(npm|pnpm|yarn|bun) lint)$/, 'Lint', /\b[1-9]\d* errors?\b/],
-  [/^(vitest|jest|pytest|mocha|playwright|cargo test|go test|claude plugin test|(npm|pnpm|yarn|bun) (test|t|test:\S+))$/, 'Tests', /^\s*(FAIL|FAILED)\b|^\s*[✗×]\s|\b[1-9]\d* (failed|failing|fail)\b|^\(fail\)/],
+  [/^(tsc|vue-tsc|mypy|pyright|cargo check|go vet|(npm|pnpm|yarn|bun) (typecheck|type-check|check-types|tsc)|(make|just) (typecheck|type-check))$/, 'Type check', /error TS\d+|^error(\[E\d+\])?:|\b[1-9]\d* errors?\b/],
+  [/^(eslint|ruff|biome|shellcheck|cargo clippy|claude plugin validate|(npm|pnpm|yarn|bun) lint|(make|just) lint)$/, 'Lint', /\b[1-9]\d* errors?\b/],
+  [/^(vitest|jest|pytest|mocha|playwright|cargo test|go test|claude plugin test|(npm|pnpm|yarn|bun) (test|t|test:\S+)|(make|just) tests?)$/, 'Tests', /^\s*(FAIL|FAILED)\b|^\s*[✗×]\s|\b[1-9]\d* (failed|failing|fail)\b|^\(fail\)/],
 ]
 // isLast: the check is the command's last program, so the command's exit code is the check's own
 function checkIn(cmd: string): { name: string; fail: RegExp; isLast: boolean } | undefined {
@@ -104,7 +106,7 @@ const KIND: [RegExp, string][] = [
 export const kindOf = (tool: string) => KIND.find(([re]) => re.test(tool))?.[1] ?? 'Tool'
 const pathOf = (i: any): string => String(i?.file_path ?? i?.notebook_path ?? i?.path ?? '')
 
-// The activity line: what a tool call is doing, in words, present tense. A Bash call's own description says it best
+// What a subagent's tool call is doing, in words, present tense. A Bash call's own description says it best
 export function doingOf(tool: string, i: any): string {
   const s = (x: unknown) => scrub(oneLine(String(x ?? '')))
   switch (tool) {
@@ -130,10 +132,14 @@ export function doingOf(tool: string, i: any): string {
 }
 
 // === MODEL ===
-export const empty = (): SessionModel => ({ prompts: 0, running: false, waits: {}, asking: {}, todos: [], files: [], checks: [], lastEdit: 0, context: {}, turnTokens: [], est: { conversation: 0, files: 0, results: 0 }, sources: [], compactions: 0, onPlan: false })
+export const empty = (): SessionModel => ({ prompts: 0, running: false, waits: {}, asking: {}, files: [], checks: [], lastEdit: 0, context: {}, turnTokens: [], est: { conversation: 0, files: 0, results: 0 }, sources: [], compactions: 0, agents: [], onPlan: false })
 
 const MAX_FILES = 50
 const MAX_SOURCES = 40
+const MAX_AGENTS = 20
+// A call's input, held only to match it to its permission request: a digest, never the content (a Write's whole file,
+// a command's secrets) in state
+const digest = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return `${s.length}:${(h >>> 0).toString(36)}` }
 const MAX_HUNK_LINES = 400 // per file: the diff view shows the change, not a whole generated file
 
 // === REDUCE ===
@@ -146,10 +152,21 @@ function addSource(m: SessionModel, s: Source) {
 function addFile(m: SessionModel, f: FileChange) {
   const was = m.files.find(x => x.path === f.path)
   const isNew = was ? was.isNew : f.isNew // a file this session created stays New through later edits
-  let n = 0
-  const hunks = [...(was?.hunks ?? []), ...(f.hunks ?? [])].filter(h => (n += h.lines.length) <= MAX_HUNK_LINES)
+  const hunks = capHunks([...(was?.hunks ?? []), ...(f.hunks ?? [])])
   const byShell = f.byShell && (!was || was.byShell) // a tool edit's diff outranks a shell's mention
   m.files = [{ path: f.path, isNew, t: f.t, ...(hunks.length ? { hunks } : {}), ...(byShell ? { byShell: true as const } : {}) }, ...m.files.filter(x => x.path !== f.path)].slice(0, MAX_FILES)
+}
+// The newest hunks up to the cap, oldest first: the latest change is the one to review. A single hunk over the cap keeps
+// its first lines rather than vanishing
+function capHunks(all: Hunk[]): Hunk[] {
+  const kept: Hunk[] = []
+  let n = 0
+  for (const h of [...all].reverse()) {
+    if (n + h.lines.length > MAX_HUNK_LINES) { if (!kept.length) kept.push({ ...h, lines: h.lines.slice(0, MAX_HUNK_LINES) }); break }
+    n += h.lines.length
+    kept.push(h)
+  }
+  return kept.reverse()
 }
 const hunksOf = (r: any): Hunk[] => Array.isArray(r?.structuredPatch) ? r.structuredPatch.map((h: any) => ({ oldStart: h.oldStart, newStart: h.newStart, lines: (h.lines ?? []).map((l: string) => scrub(String(l))) })) : []
 
@@ -162,28 +179,39 @@ export function questionOf(i: any): string {
 }
 
 // Folds one event into m. Returns whether anything the pane draws changed. Subagent calls (agentId) add changes and
-// checks but never move the activity line: that line is the main conversation's
+// checks; only the main conversation's calls count toward what the context holds
 export function reduce(m: SessionModel, x: Seen): boolean {
   const { ev, ph, e, r, t } = x
   if (ev === 'prompt.submit' && ph === 'exit' && x.who === 'you') {
     const text = String(e?.text ?? '').trim()
-    if (!text || text.startsWith('/')) return false // a slash command is not a statement of the goal
-    m.prompts++
+    if (!text || text.startsWith('/')) return false // a slash command is not a message to Claude
     m.lastPrompt = scrub(text).slice(0, 2000)
+    // a free draft at once: the opening message's first sentence, until the small model condenses it
     if (!m.goal) m.goal = { title: titleOf(m.lastPrompt), keep: [], from: 'Your opening message', text: m.lastPrompt, isDraft: true }
+    m.prompts++
     m.est.conversation += text.length
     return true
   }
-  if (ev === 'turn.start' && ph === 'enter') { m.running = true; m.ended = undefined; m.activity = undefined; return true }
+  if (ev === 'turn.start' && ph === 'enter') { m.running = true; m.ended = undefined; return true }
+  if (ev === 'agent.spawn' && ph === 'exit' && r?.agentId) {
+    m.agents = [{ id: String(r.agentId), name: scrub(String(e?.description || e?.subagentType || 'Subagent')), type: e?.subagentType, status: 'running' as const, calls: 0, t }, ...m.agents].slice(0, MAX_AGENTS)
+    return true
+  }
+  // a second sign a subagent ended, should its turn.complete never come: else it would read as running all session
+  if (ev === 'classic.SubagentStop' && ph === 'enter' && e?.agent_id) return agentDid(m, String(e.agent_id), a => a.status === 'running' ? { ...a, status: 'done', doing: undefined } : a)
   if (ev === 'turn.complete' && ph === 'enter') {
-    if (e?.agentId) return false
-    m.running = false; m.waits = {}; m.asking = {}; m.activity = undefined
+    if (e?.agentId) {
+      const u = e?.usage
+      const tokens = u ? (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) : undefined
+      return agentDid(m, e.agentId, a => ({ ...a, status: e?.isAborted ? 'stopped' : 'done', doing: undefined, tokens: tokens || a.tokens }))
+    }
+    m.running = false; m.waits = {}; m.asking = {}
     m.ended = e?.isAborted ? 'aborted' : e?.reason
     m.est.conversation += String(e?.answer ?? '').length
     return true
   }
   if (ev === 'tool.check' && ph === 'exit' && r?.decision === 'ask' && e?.tool_use_id) {
-    m.asking = { ...m.asking, [e.tool_use_id]: { tool: String(e.tool), input: JSON.stringify(e.input), text: `Allow: ${doingOf(String(e.tool), e.input)}?` } }
+    m.asking = { ...m.asking, [e.tool_use_id]: { tool: String(e.tool), input: digest(JSON.stringify(e.input)), text: `Allow: ${doingOf(String(e.tool), e.input)}?` } }
     return false // nothing drawn yet: the classifier may answer it
   }
   // a permission request no settings hook answered: the dialog opens next. It names the tool and input, not the call,
@@ -191,7 +219,7 @@ export function reduce(m: SessionModel, x: Seen): boolean {
   if (ev === 'classic.PermissionRequest' && ph === 'exit' && !r?.decision && !r?.block) {
     const asks = Object.entries(m.asking)
     const same = asks.filter(([, a]) => a.tool === e?.tool_name)
-    const hit = same.find(([, a]) => a.input === JSON.stringify(e?.tool_input)) ?? (same.length === 1 ? same[0] : undefined)
+    const hit = same.find(([, a]) => a.input === digest(JSON.stringify(e?.tool_input))) ?? (same.length === 1 ? same[0] : undefined)
     if (!hit) return false
     const { [hit[0]]: _, ...rest } = m.asking
     m.asking = rest
@@ -228,15 +256,13 @@ export function reduce(m: SessionModel, x: Seen): boolean {
 function toolCall(m: SessionModel, { ph, who, e, r, t }: Seen): boolean {
   const tool = String(e?.tool ?? '')
   const id = String(e?.tool_use_id ?? '')
-  // Claude's own call in the main conversation: only its result is in the context, only it moves the activity line.
-  // A subagent's call (agentId) or another plugin's $.tool.call still adds changes and checks
+  // Claude's own call in the main conversation: only its result is in the context. A subagent's call (agentId) or another
+  // plugin's $.tool.call still adds changes and checks
   const main = !e?.agentId && who === 'claude'
   if (ph === 'enter') {
     if (tool === 'AskUserQuestion') m.waits = { ...m.waits, [id]: questionOf(e) }
-    if (!main) return tool === 'AskUserQuestion'
-    if (tool === 'TodoWrite' && Array.isArray(e?.todos)) m.todos = e.todos.map((d: any) => ({ content: scrub(String(d.content ?? '')), status: d.status, activeForm: scrub(String(d.activeForm ?? '')) }))
-    m.activity = doingOf(tool, e)
-    return true
+    if (e?.agentId && agentDid(m, e.agentId, a => ({ ...a, doing: doingOf(tool, e), calls: a.calls + 1 }))) return true
+    return tool === 'AskUserQuestion'
   }
   let changed = false
   if (id in m.waits) { const { [id]: _, ...rest } = m.waits; m.waits = rest; changed = true }
@@ -269,9 +295,24 @@ function toolCall(m: SessionModel, { ph, who, e, r, t }: Seen): boolean {
       // a pipeline or a `;` list exits with its last program's code: a check piped into tail, or followed by another
       // command, is judged by what its output says instead
       const ok = c.isLast ? !r.isError && !(i.exit && i.exit > 0) : !text.replace(ANSI, '').split('\n').some(l => c.fail.test(l))
-      m.checks = [{ name: c.name, ok, line: ok ? '' : i.text, t, cmd: scrub(cmd).slice(0, 200) }, ...m.checks.filter(x => x.name !== c.name)]
+      const kept = scrub(cmd).slice(0, 200)
+      m.checks = [{ name: c.name, ok, line: ok ? '' : i.text, t, cmd: kept, ...(rerunnable(cmd, kept) ? { canRerun: true as const } : {}) }, ...m.checks.filter(x => x.name !== c.name)]
     }
   }
+  return true
+}
+
+// A check the pane may run again: the command is the check alone (after one `cd <dir> &&`), sets no variable that may
+// hold a secret, and is stored exactly as typed. `npm test && rm -rf dist` is never offered: a rerun would remove dist too
+function rerunnable(cmd: string, kept: string): boolean {
+  return kept === cmd && progsOf(cmd).length === 1 && !/(^|\s)\w+=/.test(noCd(cmd))
+}
+
+// One of this session's subagents changed; false when the id is none of them (a teammate, another plugin's agent)
+function agentDid(m: SessionModel, id: string, f: (a: Agent) => Agent): boolean {
+  const i = m.agents.findIndex(a => a.id === id)
+  if (i < 0) return false
+  m.agents = m.agents.map((a, j) => j === i ? f(a) : a)
   return true
 }
 
@@ -305,16 +346,17 @@ function attachment(m: SessionModel, type: string, text: string | undefined, t: 
 export function mergeShellEdits(m: SessionModel, paths: string[], t: number): boolean {
   let added = false
   for (const p of paths.map(s => s.trim()).filter(s => s.startsWith('/'))) {
+    // a file already listed is still a fresh change: the checks run before it say nothing about it now
+    if (t > m.lastEdit) { m.lastEdit = t; added = true }
     if (m.files.some(f => f.path === p)) continue
     addFile(m, { path: p, isNew: false, t, byShell: true })
-    m.lastEdit = Math.max(m.lastEdit, t)
     added = true
   }
   return added
 }
 
 // === READINGS ===
-export type Status = { kind: 'new' | 'working' | 'input' | 'failed' | 'review' | 'idle'; label: string; detail?: string; next?: string }
+export type Status = { kind: 'new' | 'working' | 'input' | 'failed' | 'review' | 'idle'; label: string; detail?: string }
 type Check = SessionModel['checks'][number]
 // fresh: run since the last change, so its verdict holds; stale: run before it, so it says nothing about the code now
 export function splitChecks(m: SessionModel): { fresh: Check[]; stale: Check[] } {
@@ -322,21 +364,25 @@ export function splitChecks(m: SessionModel): { fresh: Check[]; stale: Check[] }
 }
 const failing = (m: SessionModel) => splitChecks(m).fresh.find(c => !c.ok)
 
+// What 'Right now' says. It is drawn only for what needs the person: a question waiting, a failed check, subagents still
+// running. What Claude is doing and what's next are left to the spinner and Claude Code's own todo list
 export function statusOf(m: SessionModel): Status {
   const ask = Object.values(m.waits).at(-1)
   if (ask) return { kind: 'input', label: 'Needs your input', detail: ask }
-  const doing = m.todos.find(d => d.status === 'in_progress')?.activeForm || m.activity
-  const next = m.todos.find(d => d.status === 'pending')?.content // no todo list, no Next: never invent one
   const bad = failing(m)
-  if (m.running) return bad ? { kind: 'failed', label: `${bad.name} failed, Claude is investigating`, detail: doing ?? bad.line, next } : { kind: 'working', label: 'Working', detail: doing ?? 'Thinking', next }
+  // no dialog is open for a failure: not "needs your input"
+  if (bad) return { kind: 'failed', label: m.running ? `${bad.name} failed, Claude is investigating` : `${bad.name} failed`, detail: bad.line }
+  if (m.running) return { kind: 'working', label: 'Working' }
+  // the turn ended but agents it started in the background go on: not waiting for you yet
+  const bg = m.agents.filter(a => a.status === 'running').length
+  if (bg) return { kind: 'working', label: `${bg} background agent${bg === 1 ? '' : 's'} working` }
   if (!m.prompts && !m.files.length) return { kind: 'new', label: 'Ready when you are' }
-  if (bad) return { kind: 'failed', label: `${bad.name} failed, needs your input`, detail: bad.line }
   if (m.ended === 'aborted') return { kind: 'idle', label: 'Stopped', detail: 'You interrupted the last response' }
   if (m.ended === 'error') return { kind: 'idle', label: 'Stopped by an error', detail: 'The last response ended with an error' }
   if (m.ended === 'refusal') return { kind: 'idle', label: 'Stopped', detail: 'Claude declined the last request' }
-  // never "Done" or "Ready": a stopped turn with changes proves neither that the goal is met nor that the checks are
-  // fresh, so it only says there is something to look at, and keeps any unfinished todo in view
-  if (m.files.length) return { kind: 'review', label: 'Waiting for you', detail: 'Changes available to review', next }
+  // never "Done" or "Ready": a stopped turn with changes proves neither that the work is finished nor that the checks are
+  // fresh, so it only says there is something to look at
+  if (m.files.length) return { kind: 'review', label: 'Waiting for you', detail: 'Changes available to review' }
   return { kind: 'idle', label: 'Waiting for you' }
 }
 
@@ -381,8 +427,8 @@ export function segmentsOf(est: Est, rows: readonly { name: string; tokens: numb
   const segments: Segment[] = [
     { name: 'Instructions', tokens: instructions, color: 'permission', isEstimate: false },
     { name: 'Conversation', tokens: conversation, color: 'claude', isEstimate: true },
-    { name: 'Files and references', tokens: files, color: 'suggestion', isEstimate: true },
-    { name: 'Tool results', tokens: results, color: 'warning', isEstimate: true },
+    { name: 'Files and references', tokens: files, color: 'planMode', isEstimate: true },
+    { name: 'Tool results', tokens: results, color: 'bashBorder', isEstimate: true },
   ]
   if (!engine) return { segments, confidence: 'none' }
   const gap = Math.abs(rawSum - engine) / engine
@@ -407,22 +453,34 @@ export function turnsLeft(m: SessionModel): number | undefined {
   const left = Math.floor((m.compactAt - t.at(-1)!) / median)
   return Number.isFinite(left) ? Math.max(0, left) : undefined
 }
-export const compactIn = (left: number) => left === 0 ? 'Auto-compacting any moment' : `Auto-compacting in ~${left} turn${left === 1 ? '' : 's'}`
+// The window after each of your turns as a row of block characters, full height at where auto-compact starts (else the
+// window's size): how fast it fills, at a glance. Empty under two points
+const SPARK = '▁▂▃▄▅▆▇█'
+export function sparkOf(m: SessionModel): string {
+  const top = m.compactAt ?? m.context.window
+  if (m.turnTokens.length < 2 || !top) return ''
+  return m.turnTokens.map(t => SPARK[Math.min(SPARK.length - 1, Math.max(0, Math.round((t / top) * SPARK.length) - 1))]).join('')
+}
+// Claude Code calls it auto-compact; the pane says what happens to you: older messages get summarised
+export const compactIn = (left: number) => left === 0 ? 'Summarising any moment' : `Summarising in ~${left} turn${left === 1 ? '' : 's'}`
 
 // === AMBIENT ===
 // What the session says while the pane is hidden: only what needs the person, never progress. The band above the prompt
 // shows these parts as they stand; a toast announces an alert once, when it appears
 export type Part = { text: string; color?: string }
+const DOC_FILE = /\.(md|mdx|txt|rst)$/i // a change to prose alone owes no check
 const names = (cs: Check[]) => cs.map(c => c.name).join(', ')
 export function bandOf(m: SessionModel): Part[] {
   const { fresh, stale } = splitChecks(m)
   const bad = fresh.filter(c => !c.ok)
   const left = turnsLeft(m)
   const p = m.context.percent
+  const unchecked = !m.checks.length && m.files.filter(f => !DOC_FILE.test(f.path)).length
   const parts: (Part | undefined)[] = [
+    unchecked ? { text: `${unchecked} file${unchecked === 1 ? '' : 's'} changed, no checks run`, color: 'warning' } : undefined,
     bad.length ? { text: `✗ ${names(bad)} failed`, color: 'error' } : undefined,
     stale.length ? { text: `Rerun needed: ${names(stale)}`, color: 'warning' } : undefined,
-    p != null && p >= NEARLY_FULL ? { text: `Context ${Math.round(p)}%: prepare a recap`, color: 'warning' }
+    p != null && p >= NEARLY_FULL ? { text: `Context ${Math.round(p)}% used: prepare a recap`, color: 'warning' }
       : left != null && left <= 2 ? { text: compactIn(left), color: 'warning' } : undefined,
   ]
   return parts.filter((x): x is Part => !!x)
@@ -430,15 +488,17 @@ export function bandOf(m: SessionModel): Part[] {
 // key -> toast text. A key stays while its alert holds, so a failure that outlives several turns is announced once
 export function alertsOf(m: SessionModel): Map<string, string> {
   const out = new Map<string, string>()
-  for (const c of splitChecks(m).fresh) if (!c.ok) out.set(`fail:${c.name}`, `${c.name} failed: /session-pane shows what changed`)
+  for (const c of splitChecks(m).fresh) if (!c.ok) out.set(`fail:${c.name}`, `${c.name} failed: /session-pane shows what failed`)
   const p = m.context.percent
-  if (p != null && p >= NEARLY_FULL) out.set('full', `Context ${Math.round(p)}% full: /session-pane can prepare a recap before auto-compact`)
+  if (p != null && p >= NEARLY_FULL) out.set('full', `Context ${Math.round(p)}% used: /session-pane can prepare a recap before older messages are summarised`)
   return out
 }
 
 // === RESTORE ===
 // What $.store keeps per session: the model less its diffs (the store is small; a diff is the transcript's to keep)
-export const snapshotOf = (m: SessionModel): SessionModel => ({ ...m, files: m.files.map(({ hunks, ...f }) => f), running: false, waits: {}, asking: {}, activity: undefined })
+// A subagent running when the snapshot was taken is stopped by the time anything restores it: a restart ends it
+export const snapshotOf = (m: SessionModel): SessionModel => ({ ...m, files: m.files.map(({ hunks, ...f }) => f), running: false, waits: {}, asking: {},
+  agents: m.agents.map(a => a.status === 'running' ? { ...a, status: 'stopped' as const, doing: undefined } : a) })
 
 // A resumed session with no snapshot: rebuilt from the transcript. Prompts, tool calls and their stored results, in order;
 // what the transcript does not hold (the context fill, permission waits) stays empty until the next event
@@ -451,28 +511,41 @@ export function replay(m: SessionModel, msgs: readonly { role: string; text: str
     m.est.conversation += msg.text.length
     for (const u of msg.toolUses ?? []) {
       const e = { ...u.input, tool: u.tool, tool_use_id: u.tool_use_id }
-      if (u.tool === 'TodoWrite') reduce(m, { ev: 'tool.call', ph: 'enter', who: 'claude', e, t: t++ })
       if (u.text != null || u.result != null) reduce(m, { ev: 'tool.call', ph: 'exit', who: 'claude', e, r: { result: u.result, text: u.text, ...(u.isError ? { isError: true } : {}) }, t: t++ })
     }
   }
-  m.activity = undefined
 }
 
 // === GOAL ===
-// One small-model call per prompt of yours that may set or change the goal. It answers JSON; anything else leaves the
-// goal as it was (the first-sentence draft, or the last good answer)
-export const GOAL_SYSTEM = `You keep a one-line statement of what a person is trying to get done in a coding session with an AI assistant.
-Answer with JSON only: {"changed": boolean, "title": string, "keep": string[], "done": string}.
-- changed: true when this message sets the goal or replaces it; false when it only continues, answers a question, or adds detail.
-- title: the goal in at most 6 words, sentence case, no full stop. When changed is false, repeat the current title.
-- keep: constraints or preferences stated in THIS message only (e.g. "No new dependencies"), each under 8 words; [] if none.
-- done: one short sentence saying what finished looks like; "" if unclear.`
-
-export function goalPrompt(m: SessionModel, text: string): string {
-  const now = m.goal && !m.goal.isDraft ? `Current goal: ${m.goal.title}\n` : m.goal && m.prompts > 1 ? `Current goal (draft): ${m.goal.title}\n` : 'There is no goal yet: this is the opening message.\n'
-  return `${now}\nThe person's message:\n<message>\n${text.slice(0, 4000)}\n</message>`
+// The goal's title until the small model answers, and when it can't: the prompt's first sentence, cut at a word
+export function titleOf(text: string, words = 6): string {
+  const s = oneLine(text).split(/(?<=[.!?])\s/)[0]!.replace(/[.!?]+$/, '')
+  const w = s.split(' ')
+  return w.length > words ? `${w.slice(0, words).join(' ')}…` : s
 }
 
+// A message that may move the goal: any before the goal is condensed, after that only one of three words or more. "yes",
+// "go on", "do it" never cost a call
+export const goalWorthy = (m: SessionModel, text: string) => !m.goal || m.goal.isDraft || text.trim().split(/\s+/).length >= 3
+
+// One call condenses every message sent since the last one (the pane asks only while it is open), so it is kept short:
+// a terse system prompt, messages clipped, a small answer
+export const GOAL_SYSTEM = `Track what a person wants done in a coding session. Reply with JSON only:
+{"changed":bool,"title":str,"keep":[str],"done":str}
+changed: these messages set or replace the goal. title: the goal in at most 6 words, sentence case, no full stop; repeat the current one when unchanged.
+keep: constraints stated in these messages, each under 8 words; [] if none. done: what finished looks like, one short sentence; "" if unclear.`
+export const GOAL_TOKENS = 150
+const GOAL_CHARS = 3000 // of the messages, newest kept: enough to say what is wanted
+
+export function goalPrompt(m: SessionModel, texts: string[]): string {
+  const g = m.goal
+  const now = g && !g.isDraft ? `Current goal: ${g.title}` : 'No goal yet.'
+  let room = GOAL_CHARS
+  const kept = texts.slice().reverse().map(t => { const c = t.slice(0, Math.max(0, room)); room -= c.length; return c }).filter(Boolean).reverse()
+  return `${now}\n${kept.map(t => `<message>${t}</message>`).join('\n')}`
+}
+
+const MAX_KEEP = 8 // the goal's constraints: the newest, a list one reads at a glance
 // Folds the small model's reply into the goal. from: which message it was ("Your opening message", "Your message 3").
 // Returns whether the goal changed
 export function applyGoal(m: SessionModel, reply: string, text: string, from: string): boolean {
@@ -484,11 +557,11 @@ export function applyGoal(m: SessionModel, reply: string, text: string, from: st
   const done = typeof j.done === 'string' && j.done.trim() ? scrub(clip(j.done.trim(), 200)) : undefined
   if (!m.goal || m.goal.isDraft || j.changed === true) {
     const opening = !m.goal || m.goal.isDraft
-    m.goal = { title, keep: [...(opening ? [] : m.goal?.keep ?? []), ...keep], done: done ?? m.goal?.done, from: opening ? m.goal?.from ?? from : from, text: opening ? m.goal?.text ?? text : scrub(text).slice(0, 2000), isDraft: false }
+    m.goal = { title, keep: [...(opening ? [] : m.goal?.keep ?? []), ...keep].slice(-MAX_KEEP), done: done ?? m.goal?.done, from: opening ? m.goal?.from ?? from : from, text: opening ? m.goal?.text ?? text : scrub(text).slice(0, 2000), isDraft: false }
     return true
   }
   if (!keep.length) return false
-  m.goal = { ...m.goal, keep: [...m.goal.keep, ...keep.filter((k: { text: string }) => !m.goal!.keep.some(x => x.text.toLowerCase() === k.text.toLowerCase()))] }
+  m.goal = { ...m.goal, keep: [...m.goal.keep, ...keep.filter((k: { text: string }) => !m.goal!.keep.some(x => x.text.toLowerCase() === k.text.toLowerCase()))].slice(-MAX_KEEP) }
   return true
 }
 
