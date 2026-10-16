@@ -8,7 +8,7 @@ Claude Code mods. Each one is a folder under `plugins/`, listed in `.claude-plug
 | [auto-title](plugins/auto-title) | Names the session with Haiku from the first prompt after start, `/clear`, or `/compact` when it has no title yet. |
 | [context-budget](plugins/context-budget) | A pane that explains the context window to people new to Claude Code: the room left before auto-compact, the window as one stacked bar in category colours with a note per category, what every request carries, the window after each turn with its change, and where auto-compact starts. `/contextbudget` toggles it. |
 | [notepad](plugins/notepad) | A notepad pane, one note per project, kept between sessions. Claude does not see it. `/notepad` toggles it. |
-| [agent-log](plugins/agent-log) | A pane that logs what the session's agents do and what Claude Code does around them: tool calls, hooks and the permission rule behind each decision, per agent and with their times. `/agentlog` toggles it. |
+| [agent-log](plugins/agent-log) | A pane that shows what Claude Code does in this session and where the time goes: each model request with its timings and price, tool calls and the permission decision behind each, hooks and Claude Code's own events, per agent and per turn. Calls outside the project root are marked, and a setup page lists what the session runs on and what broke. `/agentlog` toggles it. |
 
 Install one:
 

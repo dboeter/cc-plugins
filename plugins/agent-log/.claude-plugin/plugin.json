@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "agent-log",
   "version": "0.1.0",
-  "description": "Live pane with the session's agent tree and a log of file reads/edits, tool outcomes and classic hook triggers, filterable per agent, by view (all, agent: tool calls, turns and plugins' model forks, harness: hooks, the text they injected, plugins' model forks and the permission rule behind each decision, context: injected text incl. the system prompt, with sizes) and by level (debug, info, notice, error); /agentlog toggles it, /agentlog <view> opens a view, /agentlog level <level> sets the level.",
+  "description": "Live pane of what Claude Code does in this session: each model request (model, time to first token, thinking, reply, calls, tokens, price), tool calls with the permission decision behind them and their waits, hooks, Claude Code's own events and model requests, per agent and per turn with where the time went. Calls outside the project root are marked ↗; a setup row and page show the model, mode, hooks, plugins, MCP servers, background work and what broke. Views: all, agent, harness, outside; levels debug to error. /agentlog toggles it, /agentlog <view> picks a view, /agentlog level <level> sets the level.",
   "author": { "name": "dboeter", "email": "daan.boeter@hotmail.com" },
   "license": "MIT",
   "repository": "https://github.com/dboeter/cc-plugins",

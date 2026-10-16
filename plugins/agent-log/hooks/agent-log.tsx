@@ -27,11 +27,12 @@ type Status = 'ok' | 'failed' | 'denied' | 'blocked' | 'feedback' | 'stopped' | 
 // tools it called; server: the calls the API ran itself (the advisor) and their ms; thought: its thinking's first line;
 // cost/req: the collector's price and request id for it, when OTEL export is on
 // split: on main's turn row, where its time went as splitOf counts it, kept so evicting the turn's rows does not lose it
+// out: on a tool row, the place outside the session's project root the call reached (outsideOf), `~`-shortened; absent inside it
 // event: something the engine reports happening (eventOf, harnessOf): name is what (`model switch`, `API error`), detail and outcome
 // its particulars. side: a model request outside the turns: the engine's own (src engine, name its query source: a title, a
 // prompt suggestion, compaction) or a plugin's $.model.complete (src plugin, name the plugin); detail is the model
 type Entry = { t: number; turn?: number; kind: 'tool' | 'hook' | 'session' | 'prompt' | 'turn' | 'fork' | 'step' | 'event' | 'side'; name: string; detail: string; outcome: string; status?: Status; src?: Src; bytes?: number; agent?: string; ms?: number; type?: string; origin?: string; peek?: string; cmd?: string; check?: 'allow' | 'ask' | 'deny'; rule?: string; exit?: number; insight?: string; child?: string; use?: string; wait?: number; waitFor?: string; again?: boolean
-  via?: string; step?: string; effort?: string | number; ttft?: number; think?: number; stop?: string; tok?: number[]; asked?: string[]; server?: [string, number | null][]; thought?: string; cost?: number; req?: string; split?: number[] }
+  via?: string; step?: string; effort?: string | number; ttft?: number; think?: number; stop?: string; tok?: number[]; asked?: string[]; server?: [string, number | null][]; thought?: string; cost?: number; req?: string; split?: number[]; out?: string }
 
 const PANE = 'agent-log'
 // a block after the fact refuses nothing: PostToolUse's tool already ran and Stop's turn already ended, so the hook's text is
@@ -190,10 +191,12 @@ let pageBack = false // the inspector opened from the setup page: back returns t
 // The session's setup as the hooks saw it, for the setup row and page, in memory only: the engine's version and tools (asked at
 // session.start), the main loop's last model and effort (its steps), the permission mode (every classic event carries it), usage
 // (session.measure), and from the collector, with OTEL export on: the plugins the engine loaded and the MCP servers it connected
-// (records at startup), and per hook event the settings hooks' runs, the silent ones included (hook_execution_complete)
+// (records at startup), and per hook event the settings hooks' runs, the silent ones included (hook_execution_complete). bg: the
+// background tasks and crons still in flight when main's last turn ended (Stop): TaskCreated/Completed rows log their lives
 type Setup = { version?: string; model?: string; effort?: string | number; mode?: string; cost?: number; limits: { kind: string; percentUsed: number; resetsAt?: string }[]
+  bg?: { tasks: { type: string; status: string; description: string; command?: string }[]; crons: { schedule: string; recurring: boolean; prompt: string }[] }
   context?: { tokens?: number; window: number; percent?: number }; tools?: ToolInfo[]; asked?: boolean
-  plugins: Map<string, { version?: string; scope?: string; hooks?: boolean; mcp?: boolean }>; mcp: Map<string, { ok: boolean; ms?: number; transport?: string; error?: string }>
+  plugins: Map<string, { version?: string; scope?: string; hooks?: boolean; mcp?: boolean }>; mcp: Map<string, { status: string; ms?: number; transport?: string; error?: string }>
   runs: Map<string, { n: number; ms: number; errors: number; cancelled: number }>; runsOf?: string } // runsOf: the session id the runs count for
 const setup: Setup = { limits: [], plugins: new Map(), mcp: new Map(), runs: new Map() }
 // what the API alone answers: asked once at session.start (a reload's included), and by the first draw where none ran
@@ -204,6 +207,8 @@ async function refreshSetup($: any): Promise<void> {
   try { setup.tools = await $.tool.list() } catch {}
   try { await hooksOf($) } catch {}
 }
+let homeDir: string | undefined // HOME, kept once an answer came: the `~` of the places calls reach
+const homeOf = async ($: any): Promise<string | undefined> => homeDir ??= await $.env.get('HOME').catch(() => undefined)
 // a row's id, stable while its entry lives: an index into the log shifts each time a full log evicts its oldest row
 const ids = new WeakMap<Entry, number>()
 let seq = 0
@@ -250,7 +255,16 @@ const STOPPED: Record<string, string> = { max_tokens: 'Cut off at the output lim
 const SIDE: Record<string, string> = { prompt_suggestion: 'prompt suggestion', agent_summary: 'agent progress summary', generate_session_title: 'session title', web_search_tool: 'web search', side_question: 'side question', compact: 'compaction' }
 const CHATTER = new Set(['prompt_suggestion', 'agent_summary', 'generate_session_title'])
 // an `ask` settled, by the collector's decision source
-const VIA: Record<string, string> = { user_temporary: 'you allowed it once', user_permanent: 'you allowed it from now on', user_reject: 'you rejected it', user_abort: 'you interrupted it', hook: 'a PermissionRequest hook decided', config: 'your settings decided' }
+const VIA: Record<string, string> = { user_temporary: 'you allowed it once', user_permanent: 'you allowed it from now on', user_reject: 'you rejected it', user_abort: 'you interrupted it', hook: 'a PermissionRequest hook decided', config: 'your settings decided', classifier: 'the auto-mode classifier decided' }
+// auto mode's classifier refusing a call: the error result the model reads instead of the call's output
+const CLASSIFIED = /^Permission for this action was denied by the Claude Code auto mode classifier/
+// the error results a refused call returns: a denied permission prompt (or one no one could answer, headless), you rejecting it,
+// the classifier, the guard on the session's working directories. Read from the text too: without OTEL export no decision record
+// comes, and a refusal's record can come late
+const DENIED = /^(Permission to use \S+ has been denied|The user doesn't want to proceed with this tool use|Permission for this action was denied|\S+ in '[^']*' was blocked\. For security)/
+// why it was refused: the first sentence (past it, advice to the model); the guard's, with the rule it applied but not the directories
+const deniedWhy = (s: string) => /was blocked\. For security/.test(s) ? s.replace(/:\s*'[\s\S]*$/, '') : s.split(/(?<=\.)\s/)[0]!
+const classifierWhy = (s: string) => { const m = /Reason: (?:\[([^\]\n]+)\]|([^.\n]+))/.exec(s); return `the auto-mode classifier refused it${m ? `: ${(m[1] ?? m[2])!.trim()}` : ''}` }
 // what an event row means, for its inspector
 const EVENT_WHAT: Record<string, string> = {
   'model switch': 'The session\'s model changed. Unless the prompt cache was warm, the next request writes it again', 'turn failed': 'The API ended the turn with an error',
@@ -259,7 +273,7 @@ const EVENT_WHAT: Record<string, string> = {
   'MCP question': 'An MCP server asked you for input', 'MCP answer': 'Your answer to an MCP server\'s question', command: 'A slash command expanded into the prompt',
   'task created': 'A task joined the team\'s list', 'task completed': 'A task on the team\'s list was completed', 'teammate idle': 'A teammate is waiting for work',
   notification: 'Claude Code notified you', 'file changed': 'A file a hook watches changed', setup: 'Claude Code ran its setup', mode: 'The permission mode changed',
-  'MCP connected': 'An MCP server connected; the time is how long it took', 'MCP failed': 'An MCP server failed to connect', 'API error': 'A model request failed; the engine may have retried it',
+  'MCP connected': 'An MCP server connected; the time is how long it took', 'MCP failed': 'An MCP server failed to connect', 'MCP disconnected': 'An MCP server closed its connection: at the session\'s end, or a server that stopped', 'API error': 'A model request failed; the engine may have retried it',
 }
 const QUIET_EVENTS = new Set(['notification']) // Claude Code telling you it waits: the call's wait line and the turn's end already say so
 // The collector's records that report what no hook sees: a permission mode change, an MCP server connecting or failing, a failed
@@ -268,6 +282,8 @@ const QUIET_EVENTS = new Set(['notification']) // Claude Code telling you it wai
 export const harnessOf = (event: string, a: Record<string, any>): Omit<Entry, 't'> | undefined => {
   if (event === 'permission_mode_changed') return { kind: 'event', name: 'mode', detail: `${a.from_mode} → ${a.to_mode}`, outcome: String(a.trigger ?? '') }
   if (event === 'mcp_server_connection') {
+    // `disconnected`: a server closing, at the session's end or mid-session; its duration is how long it was connected, not a wait
+    if (a.status === 'disconnected') return { kind: 'event', name: 'MCP disconnected', detail: String(a.server_name ?? ''), outcome: String(a.transport_type ?? ''), status: 'ok', peek: Number(a.duration_ms) ? `connected for ${secs(Number(a.duration_ms))}` : undefined }
     const ok = a.status === 'connected'
     return { kind: 'event', name: ok ? 'MCP connected' : 'MCP failed', detail: String(a.server_name ?? ''), outcome: String(a.transport_type ?? ''), status: ok ? 'ok' : 'failed', ms: Number(a.duration_ms) || undefined, peek: ok ? undefined : peek(String(a.error ?? a.status ?? '')) }
   }
@@ -289,6 +305,36 @@ export const pack = (ws: number[], room: number): number[][] => {
   return out
 }
 const base = (p: string) => p.replace(/\/+$/, '').split('/').pop() || p
+// a path made absolute against cwd, ~ and $HOME expanded, . and .. folded; undefined where another variable, or ~ and no home, is left
+const absOf = (p: string, cwd: string, home?: string): string | undefined => {
+  let s = p.replace(/^(["'])(.*)\1$/, '$2')
+  const h = /^(~|\$HOME|\$\{HOME\})(?=\/|$)/.exec(s)
+  if (h) { if (!home) return undefined; s = home + s.slice(h[0].length) }
+  if (s.includes('$')) return undefined
+  const parts: string[] = []
+  for (const x of (s.startsWith('/') ? s : `${cwd}/${s}`).split('/')) if (x === '..') parts.pop(); else if (x && x !== '.') parts.push(x)
+  return '/' + parts.join('/')
+}
+const under = (p: string, dir: string) => { const d = dir.replace(/\/+$/, ''); return p === d || p.startsWith(d + '/') }
+const tilde = (p: string, home?: string) => home && under(p, home) ? '~' + p.slice(home.replace(/\/+$/, '').length) : p
+const CD = /^\s*cd\s+("[^"]*"|'[^']*'|\S+)\s*(?:&&|;|$)/ // a Bash command's leading `cd <dir>`, alone or before `&&` / `;`
+const PATHS = /(?:^|[\s"'=(])((?:~|\$HOME|\$\{HOME\})?\/[^\s"'|;&<>()`]+)/g // the absolute and home paths a command names
+// Where a call reached outside the session's project root, `~`-shortened: a file tool's folder (Grep's and Glob's path as given,
+// else the loop's cwd); for Bash its leading `cd`'s folder, else the cwd, else the first path its command names under your home.
+// From a command's words only paths under home count: /tmp, /usr and /dev are scratch and system files, not work elsewhere, and
+// a word need not be a path. undefined: inside the root, or not known (no path, a variable left in it)
+export const outsideOf = (tool: string, a: { path?: string; cmd?: string }, root: string, cwd: string, home?: string): string | undefined => {
+  const away = (p?: string) => p && !under(p, root) ? tilde(p, home) : undefined
+  if (/^(Read|Edit|Write|NotebookEdit)$/.test(tool)) { const p = a.path ? absOf(a.path, cwd, home) : undefined; return away(p && (p.replace(/\/[^/]*$/, '') || '/')) }
+  if (/^(Grep|Glob)$/.test(tool)) return away(a.path ? absOf(a.path, cwd, home) : cwd)
+  if (tool !== 'Bash' || !a.cmd) return undefined
+  const cd = CD.exec(a.cmd)?.[1], at = cd ? absOf(cd, cwd, home) : cwd
+  if (!at) return undefined
+  const there = away(at)
+  if (there || !home) return there
+  for (const m of a.cmd.matchAll(PATHS)) { const p = absOf(m[1]!, at, home); if (p && under(p, home) && !under(p, root)) return tilde(p, home) }
+  return undefined
+}
 // a cwd change or another mid-session edit of the environment block; the first message's block reads `# Environment`
 const envUpdate = (x: Entry) => x.type === 'environment' && (x.peek ?? '').startsWith('# Environment update')
 // engine notes about one file, named by it: the kind, and where its first line holds the path
@@ -396,9 +442,11 @@ const VIEWS = {
   agent: (x: Entry) => x.kind === 'tool' || x.kind === 'turn' || x.kind === 'fork' || x.kind === 'step', // what the model did: its requests, calls and turns, and what it answered a plugin's fork
   harness: (x: Entry) => x.kind === 'hook' || x.kind === 'fork' || x.kind === 'event' || x.kind === 'side' || (x.kind === 'prompt' && !hiddenCtx(x)) || (x.kind === 'tool' && (x.rule != null || x.check === 'deny')), // what your setup and the engine did: hooks, the text they injected, plugins' forks and model calls, rule decisions, the engine's own requests and what it reported happening
   context: (x: Entry) => x.bytes != null && x.kind !== 'hook', // hidden for now: no button, no command. Prompt blocks and attachments, everything with an injected size
+  // where the session went beyond its project root: the calls that reached outside it, the directories and worktrees it gained or lost, its cwd changes
+  outside: (x: Entry) => !!x.out || (x.kind === 'event' && /^(directory added|worktree created|worktree removed)$/.test(x.name)) || (x.kind === 'prompt' && ctxOf(x)[0] === 'CWD'),
 } satisfies Record<string, (x: Entry) => boolean>
 type View = keyof typeof VIEWS
-const SHOWN: View[] = ['all', 'agent', 'harness'] // the views the controls and /agentlog offer
+const SHOWN: View[] = ['all', 'agent', 'harness', 'outside'] // the views the controls and /agentlog offer
 let view: View = 'all'
 // How much a row matters, derived at draw time like stat so stored entries rank too and the rules can change. The pane shows
 // rows at `level` or above. error: refused or broke. notice: changed or decided something (shell, edits, agents, web, a rule's
@@ -414,7 +462,7 @@ const lvl = (x: Entry): number => {
   // a request that wrote no text ranks debug: the calls it made follow as rows of their own (a step between every two lookups would
   // break each Explore fold), and its time stays in the turn header's split and in its calls' inspector
   if (x.kind === 'step') return stat(x) === 'aborted' ? 2 : first(x.peek) ? 1 : 0
-  if (x.kind === 'event') return QUIET_EVENTS.has(x.name) ? 0 : x.name === 'MCP connected' || /^(file changed|command|task |teammate|setup)/.test(x.name) ? 1 : 2
+  if (x.kind === 'event') return QUIET_EVENTS.has(x.name) || x.name === 'MCP connected' ? 0 : /^(MCP disconnected|file changed|command|task |teammate|setup)/.test(x.name) ? 1 : 2
   if (x.kind === 'side') return x.src === 'plugin' || !CHATTER.has(x.name) ? (x.name === 'compact' ? 2 : 1) : 0
   return stat(x) === 'aborted' ? 2 : 1
 }
@@ -494,7 +542,7 @@ const blockedUse = new Set<string>() // tool_use_ids a PreToolUse hook blocked: 
 // 2.1.296: an `ask` settled `source: config` 1.1 s after the check, its `tool_decision` 6 ms before main's `api_request` record,
 // with no classifier request). Only with OTEL export on does the engine raise collector records; without them no wait is logged
 const checkedAt = new Map<string, number>()
-const decided = new Map<string, { t: number; source?: string }>()
+const decided = new Map<string, { t: number; source?: string; decision?: string }>()
 let streamEnd = 0 // when main's last model request closed (collector `api_request`)
 const WAIT = 100 // ms: a shorter gap is the engine's own step from check to decision (1-2 ms when nothing streams), not a wait
 const preCtx = new Map<string, number>() // tool_use_id -> context entries its PreToolUse hooks returned, taken by the tool.call that raised them
@@ -691,7 +739,7 @@ const problemsOf = (xs: Entry[]): string[] => {
     many(runs || n(x => x.kind === 'hook' && stat(x) === 'failed'), 'hook run failed', 'hook runs failed'),
     many(n(x => x.kind === 'event' && x.name === 'API error'), 'API error'),
     many(n(x => x.kind === 'event' && x.name === 'turn failed'), 'turn failed', 'turns failed'),
-    many([...setup.mcp.values()].filter(m => !m.ok).length || n(x => x.kind === 'event' && x.name === 'MCP failed'), 'MCP server down', 'MCP servers down'),
+    many([...setup.mcp.values()].filter(m => m.status !== 'connected' && m.status !== 'disconnected').length || n(x => x.kind === 'event' && x.name === 'MCP failed'), 'MCP server down', 'MCP servers down'),
   ].filter(Boolean)
 }
 
@@ -731,7 +779,17 @@ export const register: Register = (on, options) => {
   // read-only: when a call was decided, and when main's model request closed, for the wait tool.call logs; each request's price
   on('telemetry.log', { to: 'collector' }, async ($, e: any, next) => {
     const a = e.attributes ?? {}
-    if (e.event === 'tool_decision' && typeof a.tool_use_id === 'string') { decided.set(a.tool_use_id, { t: Date.now(), source: a.source }); const l = liveNow.get(`t${a.tool_use_id}`); if (l?.asking) { l.asking = false; $.ui.invalidate('ui.render') } }
+    // a refusal no one waited on (a headless session's prompt) is recorded just after its call ended: its row is in, or queued ahead
+    // of this on the chain, so the decision is written onto it
+    if (e.event === 'tool_decision' && typeof a.tool_use_id === 'string' && !loopOf.has(a.tool_use_id)) mutate(async () => {
+      const y = entries.findLast(y => y.kind === 'tool' && y.use === a.tool_use_id)
+      decided.delete(a.tool_use_id)
+      if (!y || y.via) return
+      y.via = a.source
+      if (a.decision === 'reject') { y.status = 'denied'; y.outcome = 'deny'; y.insight = undefined; y.exit = undefined }
+      touch($)
+    }).catch(() => {})
+    else if (e.event === 'tool_decision' && typeof a.tool_use_id === 'string') { decided.set(a.tool_use_id, { t: Date.now(), source: a.source, decision: a.decision }); const l = liveNow.get(`t${a.tool_use_id}`); if (l?.asking) { l.asking = false; $.ui.invalidate('ui.render') } }
     if (e.event === 'hook_execution_complete') {
       const run = lastRun = { t: Date.now(), event: String(a.hook_event ?? ''), errors: Number(a.num_non_blocking_error) || 0, cancelled: Number(a.num_cancelled) || 0 }
       // the count is this session's: /clear and resume start it over, here and at load(). A record can land before the new session's
@@ -741,7 +799,10 @@ export const register: Register = (on, options) => {
       setup.runs.set(run.event, { n: r.n + 1, ms: r.ms + (Number(a.total_duration_ms) || 0), errors: r.errors + run.errors, cancelled: r.cancelled + run.cancelled })
     }
     if (e.event === 'plugin_loaded' && a['plugin.name']) setup.plugins.set(String(a['plugin.name']), { version: a['plugin.version'], scope: a['plugin.scope'], hooks: a.has_hooks === true || a.has_hooks === 'true', mcp: a.has_mcp === true || a.has_mcp === 'true' })
-    if (e.event === 'mcp_server_connection' && a.server_name) setup.mcp.set(String(a.server_name), { ok: a.status === 'connected', ms: Number(a.duration_ms) || undefined, transport: a.transport_type, error: a.error })
+    if (e.event === 'mcp_server_connection' && a.server_name) { // a close keeps the time it took to connect: its own duration is the connection's life
+      const was = setup.mcp.get(String(a.server_name))
+      setup.mcp.set(String(a.server_name), { status: String(a.status ?? ''), ms: a.status === 'disconnected' ? was?.ms : Number(a.duration_ms) || undefined, transport: a.transport_type, error: a.error })
+    }
     if (e.event === 'permission_mode_changed' && a.to_mode) setup.mode = String(a.to_mode)
     try { const x = harnessOf(e.event, a); if (x) push($, x, { start: x.ms != null ? Date.now() - x.ms : undefined }) } catch {}
     if (e.event === 'api_request' && String(a.query_source ?? '').startsWith('repl_main_thread')) streamEnd = Date.now()
@@ -770,6 +831,9 @@ export const register: Register = (on, options) => {
     const now = `t${e.tool_use_id ?? t0}`
     liveNow.set(now, { t: began, loop: e.agentId, row: { kind: 'tool', name: e.tool, detail, outcome: '', cmd, agent: e.agentId } })
     $.ui.invalidate('ui.render')
+    // where the call runs: asked before it runs (a Bash `cd` moves the cwd) and in this hook (a subagent's own cwd), not awaited
+    // ahead of it. Unanswered, the row is not tagged
+    const place = Promise.all([$.session.root(), $.session.cwd(), homeOf($)]).catch(() => undefined)
     const r = await next(e).finally(() => { if (e.tool_use_id) loopOf.delete(e.tool_use_id); liveNow.delete(now) })
     const v = e.tool_use_id ? checks.get(e.tool_use_id) : undefined
     const pre = e.tool_use_id ? preCtx.get(e.tool_use_id) : undefined // classic.PreToolUse ran inside next
@@ -780,15 +844,23 @@ export const register: Register = (on, options) => {
     // main's message closed between the check and the call's end: the decision waited for it. Not up to the decision: the engine
     // records the request a few ms after deciding. Main's next request starts only once its calls end, so none closes in between
     // by chance. Anything else is named by the decision's source alone: `user_temporary`, `user_reject` and their kin are the person
+    // Auto mode's classifier answers as `config`, as a rule does, but a rule takes a millisecond and the classifier a model request:
+    // a config decision that waited, in auto mode, is the classifier's. Its refusal names it in the error result
+    const text = typeof r.text === 'string' ? r.text : '', refused = d?.decision === 'reject' || (!!r.isError && DENIED.test(text))
+    const classified = CLASSIFIED.test(text) || (d?.source === 'config' && wait != null && setup.mode === 'auto')
     const waitFor = wait == null ? undefined : !e.agentId && streamEnd >= at! && streamEnd <= Date.now() ? STREAMING
-      : d?.source?.startsWith('user') ? ASKED : `the permission decision${d?.source ? ` (${d.source})` : ''}`
+      : d?.source?.startsWith('user') ? ASKED : classified ? 'the auto-mode classifier' : `the permission decision${d?.source ? ` (${d.source})` : ''}`
     const sp = e.tool === 'Agent' ? spawned.find(s => s.use === e.tool_use_id) : undefined // the spawn ran inside next
     if (sp) spawned = spawned.filter(s => s !== sp)
-    const outcome = r.deny ? 'deny' : r.isError ? 'error' : 'ok'
-    const why = r.deny ? peek(r.deny) ?? peek(v?.reason) : r.isError ? peek(r.text) : undefined // only failures keep text: an ok result can be a whole file
-    const ins = r.isError && !r.deny && !hookBlocked && typeof r.text === 'string' ? insightOf(cmd, r.text) : undefined // refused: it never ran, so no output to boil down
-    const status: Status = r.deny || hookBlocked ? 'denied' : ins?.quiet ? 'nomatch' : r.isError ? 'failed' : 'ok'
-    try { push($, { kind: 'tool', name: e.tool, detail, outcome, status, agent: e.agentId, ms: r.deny ? undefined : Date.now() - t0 - (wait ?? 0), wait, waitFor, peek: why, cmd, check: v?.check, rule: v?.rule, exit: ins?.exit, insight: ins?.text || undefined, child: sp?.id, use: e.tool_use_id, step, via: d?.source }, { ahead: pre, start: began }) } catch {} // logger never breaks the call
+    // a rejected decision is a refusal, whether it reaches the call as a deny or as the error result the model reads
+    const outcome = r.deny || refused ? 'deny' : r.isError ? 'error' : 'ok'
+    const why = CLASSIFIED.test(text) ? classifierWhy(text) : refused && DENIED.test(text) ? deniedWhy(text)
+      : r.deny ? peek(r.deny) ?? peek(v?.reason) : r.isError ? peek(r.text) : undefined // only failures keep text: an ok result can be a whole file
+    const ins = r.isError && !r.deny && !refused && !hookBlocked && text ? insightOf(cmd, text) : undefined // refused: it never ran, so no output to boil down
+    const status: Status = r.deny || refused || hookBlocked ? 'denied' : ins?.quiet ? 'nomatch' : r.isError ? 'failed' : 'ok'
+    const pl = await place, a = e as any
+    const out = pl ? outsideOf(e.tool, { path: a.file_path ?? a.notebook_path ?? a.path, cmd }, ...pl) : undefined
+    try { push($, { kind: 'tool', name: e.tool, detail, outcome, status, agent: e.agentId, ms: r.deny ? undefined : Date.now() - t0 - (wait ?? 0), wait, waitFor, peek: why, cmd, check: v?.check, rule: v?.rule, exit: ins?.exit, insight: ins?.text || undefined, child: sp?.id, use: e.tool_use_id, step, via: classified ? 'classifier' : d?.source, out }, { ahead: pre, start: began }) } catch {} // logger never breaks the call
     return r
   })
 
@@ -883,6 +955,7 @@ export const register: Register = (on, options) => {
       if (e.hook_event_name === 'SubagentStop' && !e.agent_type) stops = [...stops.slice(-19), { id: e.agent_id, t: Date.now(), text: e.last_assistant_message }]
     }
     if (!e.agent_id && e.permission_mode) setup.mode = e.permission_mode // main's; a subagent's may differ
+    if (e.hook_event_name === 'Stop' && !e.agent_id) setup.bg = { tasks: e.background_tasks ?? [], crons: e.session_crons ?? [] }
     if (e.hook_event_name === 'PreCompact') compactAt.set(e.agent_id ?? 'main', Date.now())
     if (e.hook_event_name === 'PermissionRequest') { // the prompt is up: the call's ● line says so until the decision lands
       const l = [...liveNow.values()].find(l => l.row?.name === e.tool_name && (l.loop ?? '') === (e.agent_id ?? '') && !l.asking)
@@ -1179,6 +1252,7 @@ export const register: Register = (on, options) => {
           {x.src === 'hook' && x.origin && kv('trigger', [x.origin, x.detail].filter(Boolean).join(' · '))}
           {x.cmd ? kv('command', x.cmd) : x.detail && x.src !== 'hook' && kv(x.name === 'Bash' ? 'command' : 'input', x.detail)}
           {x.cmd && kv('what', x.detail)}
+          {x.out && kv('where', `${x.out}, outside the session's project root`)}
           {x.exit != null && kv('exit', String(x.exit))}
           {x.check && kv('decided', `${x.check}${x.rule ? ` by rule ${x.rule}` : x.check === 'ask' ? `, then ${VIA[x.via ?? ''] ?? (x.via ? `by ${x.via}` : 'the mode or you')}` : ' by a mode, hook or the tool\'s own check'}`)}
           {x.ms != null && kv(x.child ? 'call' : 'took', secs(x.ms))}
@@ -1291,9 +1365,11 @@ export const register: Register = (on, options) => {
     const TOOL = 11, END = 12 // TOOL fits the longest label, a model's: Sonnet 5.5
     const fit = (s: string, n: number) => s.length <= n ? s : s.slice(0, Math.max(0, n - 1)) + '…'
     // mark: drawn in the disclosure's cell when there is none (the header's `›` on the agent the log is filtered to).
-    // rail: a fold's tree guides (`│ ├ `), drawn dim in place of the indent. No press: plain text, a line with nothing to open
-    type Line = { k: string; act: string; press?: () => void; tool?: string; st?: [string, string?]; who?: string; tail?: string; disc?: [boolean, () => void]; indent?: number; rail?: string; mark?: string }
-    const line = ({ k, act, press, tool = '', st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ' }: Line) => {
+    // rail: a fold's tree guides (`│ ├ `), drawn dim in place of the indent. No press: plain text, a line with nothing to open.
+    // away: the place outside the project root the row reached, kept in the tail as ` ↗ ~/dir` (its end, when long) so it survives the cut
+    type Line = { k: string; act: string; press?: () => void; tool?: string; st?: [string, string?]; who?: string; tail?: string; disc?: [boolean, () => void]; indent?: number; rail?: string; mark?: string; away?: string }
+    const line = ({ k, act, press, tool = '', st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ', away }: Line) => {
+      if (away) tail += ` ↗ ${away.length > 32 ? '…' + away.slice(-31) : away}`
       const room = cols - 2 - rail.length - who.length - tail.length - TOOL - END - 1
       return (
         <Box key={k} flexDirection="row" overflow="hidden">
@@ -1420,7 +1496,9 @@ export const register: Register = (on, options) => {
     const spans = new Map<string, number>() // a group's drawn rows, by its key: how far an opened fold runs, for the window to show it
     const keyOf = (g: Group) => `g${idOf(g.by ?? g.xs[0])}` // a group's own row; its first entry's id keys its fold in expanded
     const inner = (y: Entry) => { const key = `e${idOf(y)}`; where.set(y, key); return key }
-    const entryRow = (y: Entry, k: string, rail: string, who = '') => line({ k, act: action(y), press: () => show(y), tool: toolOf(y), st: cell(y), who, rail })
+    const entryRow = (y: Entry, k: string, rail: string, who = '') => line({ k, act: action(y), press: () => show(y), tool: toolOf(y), st: cell(y), who, rail, away: y.out })
+    // a fold's places outside the root: the first, and how many more
+    const awayOf = (ys: Entry[]) => { const o = [...new Set(ys.flatMap(y => y.out ? [y.out] : []))]; return o.length ? `${o[0]}${o.length > 1 ? ` +${o.length - 1}` : ''}` : undefined }
     // a call's wait, drawn from its own fields under it; pressed, the call's inspector
     const waitLine = (y: Entry, rail: string) => line({ k: `e${idOf(y)}w`, act: `Waiting for ${y.waitFor ?? 'the decision'}`, press: () => show(y), st: [secs(y.wait)], rail })
     // A group's parts, from the one switch on its kind:
@@ -1442,7 +1520,7 @@ export const register: Register = (on, options) => {
         const body = under.get(x) ?? [], nested = groupsOf(body), reply = first(runs(x.child).at(-1)?.peek)
         const many = new Set(body.map(y => y.agent)).size > 1 // a grandchild shares the fold: rows name their loop
         p = { target: x, members: [x, ...body], nested, // a closed fold's rows: back lands on the fold; drawn ones claim their own
-          head: (rail, who, _, press, disc) => line({ k, act: action(x), press, tool: toolOf(x), st: ran(x), who, disc, rail }),
+          head: (rail, who, _, press, disc) => line({ k, act: action(x), press, tool: toolOf(x), st: ran(x), who, disc, rail, away: awayOf(body) }),
           // the Agent row's inspector last, where the reply came: the row itself opens the fold
           parts: body.length ? [
             ...nested.map((h, j) => (rail: string, rest: string) => drawGroup(h, rail, rest, many && h.xs[0].agent ? `${nameOf(h.xs[0].agent)} · ` : '', j === nested.length - 1)),
@@ -1451,7 +1529,7 @@ export const register: Register = (on, options) => {
       } else if (g.kind === 'rep') {
         const why = x.kind === 'tool' ? broke(last) : [] // a hook row already reads `name: what it said`
         p = { target: last, members: g.xs, nested: [],
-          head: (rail, who, _, press, disc) => line({ k, act: action(x), tail: n > 1 ? ` ×${n}` : '', press, tool: toolOf(x), st: cell(x, total(g.xs)), who, disc, rail }),
+          head: (rail, who, _, press, disc) => line({ k, act: action(x), tail: n > 1 ? ` ×${n}` : '', press, tool: toolOf(x), st: cell(x, total(g.xs)), who, disc, rail, away: awayOf(g.xs) }),
           parts: [
             ...why.map((s, j) => (rail: string) => [note(`${k}n${j}`, s, j === 0, rail, () => show(last))]),
             ...(hooksUnder.get(last) ?? []).map(y => (rail: string) => [entryRow(y, inner(y), rail)]), // the hook that refused it, beside why
@@ -1479,7 +1557,7 @@ export const register: Register = (on, options) => {
         const server = (x.server ?? []).map(([n, ms], j) => (rail: string) => [line({ k: `${k}s${j}`, act: cap(n.replace(/_/g, ' ')), press: () => show(x), tool: 'API', st: [secs(ms ?? undefined)], rail })])
         p = { target: x, members: g.xs, nested,
           parts: kids.length || waited.length || server.length ? [...pre.map(ev), ...waited, ...server, own, ...post.map(ev)] : [],
-          head: (rail, who, _, press, disc) => line({ k, act: action(x), press, tool: toolOf(x), st: cell(x), who, disc, rail }) }
+          head: (rail, who, _, press, disc) => line({ k, act: action(x), press, tool: toolOf(x), st: cell(x), who, disc, rail, away: x.out }) }
       }
       else if (g.kind === 'ctx' && bucketsOf(g.xs).length > 1) {
         const bs = bucketsOf(g.xs)
@@ -1496,7 +1574,7 @@ export const register: Register = (on, options) => {
             const [act, tool, st] = g.kind === 'ctx' || g.kind === 'bucket' ? [one.head === one.name ? `${one.name} ×${n}` : one.head, 'Engine', '']
               : g.kind === 'edit' ? [`${action(x)} ×${n}`, 'Change', secs(total(g.xs))]
               : [`Explore ${common(g.xs.map(y => y.detail)) || 'files'} ×${n}${growing ? ` · ${action(last)}` : ''}`, 'Look', secs(total(g.xs))]
-            return line({ k, act, press, tool, st: [st], who, disc, rail })
+            return line({ k, act, press, tool, st: [st], who, disc, rail, away: awayOf(g.xs) })
           } }
       }
       memo.set(g, p)
@@ -1542,7 +1620,7 @@ export const register: Register = (on, options) => {
     const inFlight = view === 'all' || view === 'agent' ? [...liveNow].filter(([, l]) => only === undefined || (l.loop ?? 'main') === only) : []
     if (inFlight.length && busy && cur !== turnNo) { if (cur !== undefined) rows.push(<Text key={`gap${rows.length}`}> </Text>); rows.push(header(turnNo, `turn${turnNo}`)); cur = turnNo }
     for (const [k, l] of inFlight) rows.push(line({ k: `now${k}`, act: nowAct(l), tool: l.row ? toolOf({ t: l.t, ...l.row }) : modelName(l.model ?? ''), st: [`● ${secs(now - l.t)}`, 'yellow'], who: l.loop ? `${nameOf(l.loop)} · ` : '' }))
-    const LEGEND = ['✗ refused or broke · ↩ hook feedback to the model · ⚠ slow or aborted · ∅ no match · ● running now · ≈ estimated · ▸ press to open', 'ctrl+↑↓ previous/next prompt · o every fold · s setup · j newest · b back · n p next/prev in the inspector · k this legend']
+    const LEGEND = ['✗ refused or broke · ↩ hook feedback to the model · ⚠ slow or aborted · ∅ no match · ● running now · ≈ estimated · ↗ outside the project root · ▸ press to open', 'ctrl+↑↓ previous/next prompt · o every fold · s setup · j newest · b back · n p next/prev in the inspector · k this legend']
     // `no agent entries for scout at notice or above · /agentlog level debug: every row · a: all views · main: clear the filter`; only the filters set
     const empty = () => {
       if (!entries.length) return 'no entries yet'
@@ -1577,7 +1655,7 @@ export const register: Register = (on, options) => {
       if (at >= 0) anchor = { k: String(rows[at].props.key), off: at - win }
       $.ui.invalidate('ui.render')
     }} />
-    const VIEW_KEYS: Partial<Record<View, string>> = { all: 'a', agent: 'g', harness: 'h' }
+    const VIEW_KEYS: Partial<Record<View, string>> = { all: 'a', agent: 'g', harness: 'h', outside: 'u' }
     const items: [number, any][] = SHOWN.map((v): [number, any] => [v.length + 3, vbtn(v, VIEW_KEYS[v]!)])
     const wide = 'view:'.length + items.reduce((n, [w]) => n + 2 + w, 0) + '   level: '.length + LEVELS[level]!.length + 3 + '   o: unfold'.length + '   k: legend'.length + '   #↑↓'.length
     const bare: [number, any][] = [...items, [LEVELS[level]!.length + 3, lbtn], [9, obtn], [4, kbtn('?')], [3, tbtn]]
@@ -1609,13 +1687,15 @@ export const register: Register = (on, options) => {
     for (const sv of setup.mcp.keys()) if (!servers.has(sv)) servers.set(sv, 0)
     const peak = setup.limits.reduce<Setup['limits'][number] | undefined>((m, l) => !m || l.percentUsed > m.percentUsed ? l : m, undefined)
     const plugins = setup.plugins.size || enabled.length
+    const bgN = setup.bg?.tasks.length ?? 0, cronN = setup.bg?.crons.length ?? 0
     const setupText = [setup.model && `${modelName(setup.model)}${setup.effort != null ? ` ${setup.effort}` : ''}`, setup.mode, hookN && `${hookN} hooks`, plugins && `${plugins} plugins`,
-      servers.size && `${servers.size} MCP`, setup.cost != null && `$${setup.cost.toFixed(2)}`, peak && `limit ${Math.round(peak.percentUsed)}%`].filter(Boolean).join(' · ') || 'setup'
+      servers.size && `${servers.size} MCP`, bgN && `${bgN} in background`, cronN && `${cronN} cron${cronN > 1 ? 's' : ''}`, setup.cost != null && `$${setup.cost.toFixed(2)}`,
+      peak && `limit ${Math.round(peak.percentUsed)}%`].filter(Boolean).join(' · ') || 'setup'
     const openSetup = () => { page = 'setup'; inspect = undefined; follow = false; $.ui.invalidate('ui.render'); $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}); $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: 'back' }).catch(() => {}) }) }
     // The setup page: the session's setup and how it held up. Hook runs and plugins come from the collector (OTEL export on); without
     // it, the hooks and plugins your settings name. A problem's row opens its inspector
-    const setupPage = () => {
-      const kw = (k: string, v: string) => <Box key={`k${k}`} flexDirection="row"><Box flexShrink={0} width={15}><Text dimColor>{k}</Text></Box><Text wrap="wrap">{v}</Text></Box>
+    const setupPage = (at?: [string, string, string | undefined]) => {
+      const kw = (k: string, v: string, id = k) => <Box key={`k${id}`} flexDirection="row"><Box flexShrink={0} width={15}><Text dimColor>{k}</Text></Box><Text wrap="wrap">{v}</Text></Box>
       const title = (k: string, t: string) => [<Text key={`gap${k}`}> </Text>, <Text key={`t${k}`} weight="semibold">{t}</Text>]
       const xs = (f: (x: Entry) => boolean) => entries.filter(f)
       // requests: how many, their time, tokens and price where the collector gave one
@@ -1628,6 +1708,8 @@ export const register: Register = (on, options) => {
       const bad = xs(x => (x.kind === 'hook' && stat(x) === 'failed') || (x.kind === 'event' && BAD.has(stat(x))))
       const events = [...new Set([...Object.keys(hookCfg ?? {}), ...setup.runs.keys()])]
       const steps = xs(x => x.kind === 'step')
+      const added = [...new Set(xs(x => x.kind === 'event' && x.name === 'directory added').map(x => x.detail))]
+      const outs = [...xs(x => !!x.out).reduce((m, x) => m.set(x.out!, (m.get(x.out!) ?? 0) + 1), new Map<string, number>())].sort((p, q) => q[1] - p[1])
       return (
         <Box key="setup" flexDirection="column" width={e.props.bodyColumns}>
           <Box flexDirection="row" columnGap={2}><Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} /></Box>
@@ -1637,22 +1719,30 @@ export const register: Register = (on, options) => {
           {setup.context && kw('context', `${setup.context.tokens != null ? `${num(setup.context.tokens)} of ` : ''}${num(setup.context.window)} tokens${setup.context.percent != null ? ` (${Math.round(setup.context.percent)}%)` : ''}`)}
           {setup.cost != null && kw('cost', `$${setup.cost.toFixed(2)} this session`)}
           {setup.limits.length > 0 && kw('limits', setup.limits.map(l => `${l.kind.replace(/_/g, ' ')} ${Math.round(l.percentUsed)}%${l.resetsAt ? ` (resets ${new Date(l.resetsAt).toLocaleTimeString()})` : ''}`).join(' · '))}
+          {title('wh', 'Where')}
+          {at && kw('root', tilde(at[0], at[2]))}
+          {at && at[1] !== at[0] && kw('cwd', tilde(at[1], at[2]))}
+          {added.length > 0 && kw('added', added.join(', '))}
+          {kw('calls outside', outs.length ? outs.slice(0, 12).map(([p, n]) => n > 1 ? `${p} ×${n}` : p).join(', ') + (outs.length > 12 ? `, +${outs.length - 12} more` : '') : 'none reached outside the root')}
           {title('pb', problems.length ? `Problems: ${problems.join(', ')}` : 'Problems: none this session')}
           {bad.slice(-20).map(x => <Box key={`p${idOf(x)}`} flexDirection="row"><Button key={`pb${idOf(x)}`} label={fit(`✗ ${action(x)}`, cols - 4)} plain onPress={() => show(x)} /></Box>)}
           {title('hk', `Hooks: ${hookN} settings and plugin command hooks${setup.runs.size ? '; runs as the collector counted them' : ''}`)}
           {events.map(ev => { const r = setup.runs.get(ev), names = [...new Set((hookCfg?.[ev] ?? []).map(h => h.name))]
-            return kw(ev, [names.join(', ') || 'no hook in your settings', r && `${r.n} run${r.n === 1 ? '' : 's'} · ${secs(r.ms)}${r.errors ? ` · ${r.errors} failed` : ''}${r.cancelled ? ` · ${r.cancelled} cancelled` : ''}`].filter(Boolean).join(' — ')) })}
+            return kw(ev, [names.join(', ') || 'no hook in your settings', r && `${r.n} run${r.n === 1 ? '' : 's'} · ${secs(r.ms)}${r.errors ? ` · ${r.errors} failed` : ''}${r.cancelled ? ` · ${r.cancelled} cancelled` : ''}`].filter(Boolean).join(' — '), `hk${ev}`) })}
           {title('pl', `Plugins: ${plugins}`)}
-          {setup.plugins.size ? [...setup.plugins].map(([n, pl]) => kw(n, [pl.version, pl.scope, pl.hooks && 'hooks', pl.mcp && 'MCP'].filter(Boolean).join(' · ')))
-            : enabled.map(id => kw(id.split('@')[0]!, `enabled in your settings (${id.split('@')[1] ?? ''})`))}
+          {setup.plugins.size ? [...setup.plugins].map(([n, pl]) => kw(n, [pl.version, pl.scope, pl.hooks && 'hooks', pl.mcp && 'MCP'].filter(Boolean).join(' · '), `pl${n}`))
+            : enabled.map(id => kw(id.split('@')[0]!, `enabled in your settings (${id.split('@')[1] ?? ''})`, `pl${id}`))}
           {title('mc', `MCP servers: ${servers.size}`)}
           {[...servers].map(([sv, k]) => { const c = setup.mcp.get(sv)
-            return kw(sv, [c ? (c.ok ? `connected${c.transport ? ` over ${c.transport}` : ''}${c.ms != null ? ` in ${secs(c.ms)}` : ''}` : `failed${c.error ? `: ${c.error}` : ''}`) : '', k && `${k} tool${k === 1 ? '' : 's'}`].filter(Boolean).join(' · ')) })}
+            return kw(sv, [c ? (c.status === 'connected' ? `connected${c.transport ? ` over ${c.transport}` : ''}${c.ms != null ? ` in ${secs(c.ms)}` : ''}` : `${c.status || 'failed'}${c.error ? `: ${c.error}` : ''}`) : '', k && `${k} tool${k === 1 ? '' : 's'}`].filter(Boolean).join(' · '), `mc${sv}`) })}
           {title('us', 'Model use this session')}
           {kw('main', use(steps.filter(x => !x.agent)))}
           {steps.some(x => x.agent) && kw('subagents', use(steps.filter(x => x.agent)))}
-          {by(xs(x => x.kind === 'side' && x.src !== 'plugin')).map(([n, ys]) => kw(SIDE[n] ?? n, use(ys)))}
-          {by(xs(x => (x.kind === 'side' && x.src === 'plugin') || x.kind === 'fork')).map(([n, ys]) => kw(n, `${use(ys)} (plugin)`))}
+          {by(xs(x => x.kind === 'side' && x.src !== 'plugin')).map(([n, ys]) => kw(SIDE[n] ?? n, use(ys), `us${n}`))}
+          {by(xs(x => (x.kind === 'side' && x.src === 'plugin') || x.kind === 'fork')).map(([n, ys]) => kw(n, `${use(ys)} (plugin)`, `up${n}`))}
+          {title('bg', !setup.bg ? 'Background: told at the end of each turn' : bgN + cronN ? 'Background: in flight when the last turn ended' : 'Background: nothing in flight when the last turn ended')}
+          {setup.bg?.tasks.map((t, i) => kw(t.type, `${t.status}: ${fit(t.command ?? t.description, 200)}`, `bg${i}`))}
+          {setup.bg?.crons.map((c, i) => kw('cron', `${c.schedule}${c.recurring ? '' : ' (once)'}: ${fit(first(c.prompt), 200)}`, `cr${i}`))}
         </Box>
       )
     }
@@ -1674,7 +1764,10 @@ export const register: Register = (on, options) => {
     // taken before the inspector draws: `o` pressed there must not move the window that back is about to centre
     const held = anchor; anchor = undefined
     if (inspect) return <Box flexDirection="column">{head}{await inspector(inspect)}</Box>
-    if (page) return <Box flexDirection="column">{head}{setupPage()}</Box>
+    if (page) { // where the session is: asked on each draw of the page, as /cd and a worktree move change it
+      const at = await Promise.all([$.session.root(), $.session.cwd(), homeOf($)]).catch(() => undefined)
+      return <Box flexDirection="column">{head}{setupPage(at)}</Box>
+    }
     if (!rows.length) { winMax = 0; return <Box flexDirection="column">{head}<Text dimColor wrap="truncate-end">{empty()}</Text></Box> } // a stale winMax would let a scroll turn follow off
     // The window: decide follow against the rows without the jump row first, then give the jump row its own row when not
     // following, so landing on the newest row never shows `↓ newest`

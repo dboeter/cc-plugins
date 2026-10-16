@@ -1,6 +1,6 @@
 // Pane tests share the module's state (level, folds, finished agents shown): a test that changes one sets it back before it ends.
 import { test, expect, mock, type TestBody } from 'claude-code/testing'
-import { ASKED, bucketsOf, costOf, ctxOf, harnessOf, hookName, markAgain, modelName, pack, rootOf, splitOf, tagOf } from './agent-log'
+import { ASKED, bucketsOf, costOf, ctxOf, harnessOf, hookName, markAgain, modelName, outsideOf, pack, rootOf, splitOf, tagOf } from './agent-log'
 
 // the shape hooksOf builds: settings hooks by script name, plugin hooks by plugin. Texts are real rows from the store
 const cfg = {
@@ -359,13 +359,13 @@ test('the controls take as many rows as the width needs, never clipping one', as
   const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: props(100) })
   expect(await ctlRows(m)).toBe(1) // `view: a: all … level: l: info   o: unfold   k: legend`
   expect(await m.find({ type: 'Button', text: /legend/ })).toBeDefined()
-  const bare = [6, 8, 10, 'info'.length + 3, 9, 4, 3] // a: all, g: agent, h: harness, l: info, o: unfold, k: ?, #↑↓
+  const bare = [6, 8, 10, 10, 'info'.length + 3, 9, 4, 3] // a: all, g: agent, h: harness, u: outside, l: info, o: unfold, k: ?, #↑↓
   for (const cols of [50, 30]) {
     await m.redraw(props(cols))
     expect(await ctlRows(m)).toBe(pack(bare, cols - 1).length)
-    for (const k of ['vall', 'vagent', 'vharness', 'lvl', 'folds', 'legend', 'tprev', 'tnext']) expect(await m.find({ key: k })).toBeDefined()
+    for (const k of ['vall', 'vagent', 'vharness', 'voutside', 'lvl', 'folds', 'legend', 'tprev', 'tnext']) expect(await m.find({ key: k })).toBeDefined()
   }
-  expect(await ctlRows(m)).toBe(2) // 30 columns: three views, then level, folds, legend and the prompt jumps
+  expect(await ctlRows(m)).toBe(3) // 30 columns: three views; outside and level; folds, legend and the prompt jumps
 })
 
 test('ctrl+↑↓ (the #↑↓ buttons) put the previous or next prompt\'s turn header at the top', async ($, on) => {
@@ -782,6 +782,24 @@ test('the gap between a call\'s check and its decision is a wait line under the 
   await m.press({ key: (await m.find({ type: 'Button', text: /^Edit a\.ts ×2$/ }))!.key! })
 })
 
+test('auto mode\'s classifier refusing a call is a denial that names it, not a failure', async ($, on) => {
+  const db = capture(on, 'AC')
+  on('tool.check', () => ({ decision: 'ask' }))
+  on('telemetry.log', () => ({ value: undefined }))
+  on('tool.call', async (_$, e: any) => {
+    if (e.tool_use_id !== 'ac1') return { result: 'ok', text: 'ok' }
+    await ($ as any).tool.check({ tool: e.tool, input: {}, tool_use_id: e.tool_use_id })
+    await wait(120) // the classifier's model request
+    await ($ as any).telemetry.log({ to: 'collector', event: 'tool_decision', attributes: { tool_use_id: 'ac1', decision: 'reject', source: 'config' } }) // as a rule's
+    return { result: '', isError: true, text: 'Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Auto-Mode Bypass]. If you have other tasks that don\'t depend on this action, continue working on those.' }
+  })
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'acw', command: 'true', description: 'Warm up' } as any) // the first call on $ loads the plugins
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'ac1', subagent_type: 'general-purpose', description: 'Count entries', prompt: 'ls' } as any)
+  const row = (await flushed($, 'AC', db)).find(x => x.use === 'ac1')
+  expect(row).toMatchObject({ status: 'denied', outcome: 'deny', via: 'classifier', waitFor: 'the auto-mode classifier', peek: 'the auto-mode classifier refused it: Auto-Mode Bypass' })
+  expect(row.insight).toBe(undefined)
+})
+
 test('a model id reads as its family and version', () => {
   expect(modelName('claude-opus-5-5')).toBe('Opus 5.5')
   expect(modelName('claude-sonnet-5-5-20261001')).toBe('Sonnet 5.5')
@@ -945,6 +963,10 @@ test('collector records no hook sees become rows; a main or subagent request is 
   expect(harnessOf('permission_mode_changed', { from_mode: 'plan', to_mode: 'auto', trigger: 'exit_plan_mode' })).toMatchObject({ kind: 'event', name: 'mode', detail: 'plan → auto', outcome: 'exit_plan_mode' })
   expect(harnessOf('mcp_server_connection', { status: 'connected', server_name: 'skins', transport_type: 'http', duration_ms: '997' })).toMatchObject({ name: 'MCP connected', detail: 'skins', ms: 997, status: 'ok' })
   expect(harnessOf('mcp_server_connection', { status: 'failed', server_name: 'x', error: 'ECONNREFUSED' })).toMatchObject({ name: 'MCP failed', status: 'failed', peek: 'ECONNREFUSED' })
+  // a server closing, as every one does when a headless session ends: no failure, and its duration is its life, not a wait
+  const closed = harnessOf('mcp_server_connection', { status: 'disconnected', server_name: 'roadmap', transport_type: 'http', duration_ms: '61045' })
+  expect(closed).toMatchObject({ name: 'MCP disconnected', status: 'ok', peek: 'connected for 61.0 s' })
+  expect(closed!.ms).toBe(undefined)
   expect(harnessOf('api_error', { status_code: '529', error: 'Overloaded', attempt: 2, duration_ms: 1200 })).toMatchObject({ name: 'API error', detail: '529 Overloaded', outcome: 'attempt 2', status: 'failed', ms: 1200 })
   expect(harnessOf('api_request', { query_source: 'prompt_suggestion', model: 'claude-haiku-5-5', duration_ms: 900, input_tokens: 5, output_tokens: 3, cost_usd: 0.001 }))
     .toMatchObject({ kind: 'side', name: 'prompt_suggestion', src: 'engine', detail: 'claude-haiku-5-5', ms: 900, tok: [5, 0, 0, 3], cost: 0.001 })
@@ -1058,4 +1080,90 @@ test('the setup row reads what the session runs on, what broke first and red; s 
   await m.press({ key: 'back' }) // and to the log
   expect(await m.find({ text: /^Problems: / })).toBe(undefined)
   expect(await m.find({ type: 'Button', text: /^API error: 529 Overloaded/ })).toBeDefined()
+})
+
+test('a call reaches outside the project root where its file, its search path, its cd or a home path its command names lies', () => {
+  const R = '/home/u/repo', H = '/home/u'
+  expect(outsideOf('Read', { path: '/home/u/repo/src/a.ts' }, R, R, H)).toBe(undefined)
+  expect(outsideOf('Read', { path: '/home/u/dotagents/claude/RULES.md' }, R, R, H)).toBe('~/dotagents/claude')
+  expect(outsideOf('Edit', { path: '../repo-old/a.ts' }, R, R, H)).toBe('~/repo-old') // relative, and a sibling named like the root
+  expect(outsideOf('Read', { path: '/tmp/x.log' }, R, R, H)).toBe('/tmp') // a file tool's path counts wherever it lies
+  expect(outsideOf('Grep', {}, R, '/home/u/other', H)).toBe('~/other') // no path: the loop's cwd
+  expect(outsideOf('Glob', { path: 'src' }, R, R, H)).toBe(undefined)
+  expect(outsideOf('Bash', { cmd: 'cd ~/dotagents && git status' }, R, R, H)).toBe('~/dotagents')
+  expect(outsideOf('Bash', { cmd: 'cd "$HOME/my dir"; ls' }, R, R, H)).toBe('~/my dir')
+  expect(outsideOf('Bash', { cmd: 'cd $PROJECT && make' }, R, R, H)).toBe(undefined) // a variable: not known
+  expect(outsideOf('Bash', { cmd: 'npm test' }, R, '/home/u/other', H)).toBe('~/other') // the shell's cwd
+  expect(outsideOf('Bash', { cmd: 'git -C /home/u/dotagents log' }, R, R, H)).toBe('~/dotagents')
+  expect(outsideOf('Bash', { cmd: 'python3 /tmp/probe/x.py 2>/dev/null' }, R, R, H)).toBe(undefined) // scratch and system paths
+  expect(outsideOf('Bash', { cmd: 'cat src/a.ts /home/u/repo/b.ts' }, R, R, H)).toBe(undefined)
+  expect(outsideOf('Bash', { cmd: 'curl https://example.com/home/u/x' }, R, R, H)).toBe(undefined) // a URL's path is no file
+  expect(outsideOf('WebFetch', {}, R, '/home/u/other', H)).toBe(undefined) // no place
+})
+
+// the engine's answers for where the session is
+const at = (on: any, root: string, cwd = root) => { on('session.root', () => ({ value: root })); on('session.cwd', () => ({ value: cwd })); on('env.get', () => ({ value: '/home/u' })) }
+
+test('a call outside the project root stores where it reached; one inside stores nothing', async ($, on) => {
+  const db = capture(on, 'OUT')
+  at(on, '/home/u/repo')
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  await $.tool.call({ tool: 'Read', tool_use_id: 'o1', file_path: '/home/u/dotagents/RULES.md' } as any)
+  await $.tool.call({ tool: 'Read', tool_use_id: 'o2', file_path: '/home/u/repo/a.ts' } as any)
+  expect((await flushed($, 'OUT', db)).filter(x => x.kind === 'tool').map(x => x.out)).toEqual(['~/dotagents', undefined])
+})
+
+test('a row outside the root reads ↗ where; the outside view keeps it and the added directories; the setup page says where the session is', async ($, on) => {
+  at(on, '/home/u/repo', '/home/u/repo/sub')
+  const m = await mountWith($, on, 'OV', [
+    call({ name: 'Read', detail: '/home/u/dotagents/RULES.md', out: '~/dotagents' }),
+    call({ t: T0 + 1, detail: 'Run tests' }),
+    { t: T0 + 2, turn: 1, kind: 'event', name: 'directory added', detail: '~/other', outcome: 'slash_command' },
+  ])
+  expect(await m.find({ type: 'Button', text: 'Read RULES.md ↗ ~/dotagents' })).toBeDefined()
+  await m.press({ key: 'voutside' })
+  expect(await m.find({ type: 'Button', text: /^Run tests/ })).toBe(undefined)
+  expect(await m.find({ type: 'Button', text: /^Directory added: ~\/other/ })).toBeDefined()
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Read RULES\.md/ }))!.key! })
+  expect(await m.find({ text: '~/dotagents, outside the session\'s project root' })).toBeDefined()
+  await m.press({ key: 'back' })
+  await m.press({ key: 'voutside' }) // back to all: views are module state
+  await m.press({ key: 'fsetup' })
+  expect(await m.find({ text: '~/repo' })).toBeDefined() // root
+  expect(await m.find({ text: '~/repo/sub' })).toBeDefined() // cwd
+  expect(await m.find({ text: '~/other' })).toBeDefined() // added
+  expect(await m.find({ text: '~/dotagents' })).toBeDefined() // calls outside
+  await m.press({ key: 'back' })
+})
+
+test('the background tasks and crons in flight when main\'s turn ended show on the setup row and page', async ($, on) => {
+  session(on, 'BG')
+  on('classic.*', () => ({}) as any)
+  await ($ as any).classic.Stop({ stop_hook_active: false, background_tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'Run the dev server', command: 'npm run dev' }],
+    session_crons: [{ id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check the build\nmore' }] })
+  const m = await pane($, 60, 160)
+  expect(await m.find({ type: 'Button', text: /\b1 in background · 1 cron\b/ })).toBeDefined()
+  await m.press({ key: 'fsetup' })
+  expect(await m.find({ text: 'Background: in flight when the last turn ended' })).toBeDefined()
+  expect(await m.find({ text: 'running: npm run dev' })).toBeDefined()
+  expect(await m.find({ text: '*/5 * * * *: check the build' })).toBeDefined()
+  await ($ as any).classic.Stop({ stop_hook_active: false, background_tasks: [], session_crons: [] })
+  await m.redraw()
+  expect(await m.find({ text: 'Background: nothing in flight when the last turn ended' })).toBeDefined()
+  await m.press({ key: 'back' })
+})
+
+test('a refusal whose decision is recorded after its call ended still reads denied, and by whom', async ($, on) => {
+  const db = capture(on, 'LD')
+  on('telemetry.log', () => ({ value: undefined }))
+  const GUARDED = 'ls in \'/home/u/x\' was blocked. For security, Claude Code may only list files in the allowed working directories for this session: \'/home/u/repo\'.'
+  on('tool.call', (_$, e: any) => ({ result: '', isError: true, text: e.tool_use_id === 'ld2' ? GUARDED : 'Permission to use Bash has been denied. IMPORTANT: You *may* attempt to accomplish this action using other tools.' }))
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'ld0', command: 'true', description: 'Warm up' } as any) // the first call on $ loads the plugins
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'ld1', command: 'ls /x', description: 'List x' } as any)
+  await collect($, 'tool_decision', { tool_use_id: 'ld1', decision: 'reject', source: 'config' }) // as a headless session records it: after the call
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'ld2', command: 'ls /home/u/x', description: 'List x' } as any) // no record: OTEL export off
+  const rows = await flushed($, 'LD', db), row = rows.find(x => x.use === 'ld1')
+  expect(row).toMatchObject({ status: 'denied', outcome: 'deny', via: 'config', peek: 'Permission to use Bash has been denied.' })
+  expect(row.insight).toBe(undefined)
+  expect(rows.find(x => x.use === 'ld2')).toMatchObject({ status: 'denied', peek: 'ls in \'/home/u/x\' was blocked. For security, Claude Code may only list files in the allowed working directories for this session' })
 })
