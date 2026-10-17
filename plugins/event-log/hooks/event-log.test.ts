@@ -72,10 +72,10 @@ const row = (o: Partial<Row>): Row => ({ seq: 1, t: 0, ph: 'enter', ev: 'tool.ca
 test('an exit merges into its enter, across its own batch; past nested events it points back', () => {
   const merged = linesOf([row({ seq: 1 }), row({ seq: 2, ph: 'exit', enter: 1, ms: 340 })])
   expect(merged.length).toBe(1)
-  expect(merged[0].text).toMatch(/tool\.call {2}Bash ls · 340ms ok$/)
+  expect(merged[0]!.text).toMatch(/tool\.call {2}Bash ls · 340ms ok$/)
   const apart = linesOf([row({ seq: 1 }), row({ seq: 2, ev: 'classic.PreToolUse', who: 'hook', peek: '' }), row({ seq: 3, ph: 'exit', enter: 1, ms: 5, err: true })])
   expect(apart.map(l => l.rows.length)).toEqual([1, 1, 1])
-  expect(apart[2].text).toMatch(/↳ tool\.call 5ms threw/)
+  expect(apart[2]!.text).toMatch(/↳ tool\.call 5ms threw/)
   expect(linesOf(apart.flatMap(l => l.rows), 'hook').length).toBe(1)
   expect(linesOf([row({ who: 'plugin:skins' })], 'plugin').length).toBe(1)
   // a concurrent batch: every enter before any exit, each exit still lands on its own enter's line
@@ -123,7 +123,7 @@ test('the * hook wraps each event in enter/exit rows, flushed after the chunk a 
   release()
   await call$
   await clock.advance(2000) // flush: its exit row
-  const text = files['/h/.claude/event-log/S1/0002.jsonl']
+  const text = files['/h/.claude/event-log/S1/0002.jsonl']!
   expect(typeof text).toBe('string')
   expect(text.startsWith(prior)).toBe(true)
   const rows = text.trim().split('\n').map(l => JSON.parse(l))

@@ -13,7 +13,7 @@ export type Info = { branch?: string; model?: string; lastPrompt?: string; lastR
 
 // The look of herdr-agent-tree (~/.config/herdr/local-plugins/herdr-agent-tree/agent_tree.py): its STATUS glyphs
 // and colours, DIM, GROUP and its Nerd Font carets (Nerd Fonts 3.5.0+, else boxes)
-const STATUS: Record<string, [string, string]> = {
+const STATUS = {
   blocked: ['●', '#f7768e'],
   working: ['◐', '#e0af68'],
   done: ['✓', '#9ece6a'],
@@ -21,8 +21,9 @@ const STATUS: Record<string, [string, string]> = {
   failed: ['✗', '#f7768e'], // herdr has no failed; a background session can end so
   unknown: ['·', '#6e6e78'],
   exited: ['◌', '#6e6e78'], // not herdr's: a background session whose process is gone
-}
-const ORDER = ['blocked', 'working', 'done', 'idle', 'failed', 'exited']
+} satisfies Record<string, [string, string]>
+type Status = keyof typeof STATUS
+const ORDER: Status[] = ['blocked', 'working', 'done', 'idle', 'failed', 'exited']
 const DIM = '#6e6e78'
 const GROUP = '#7dcfff'
 const OPEN = '' // fa-caret_down
@@ -52,10 +53,10 @@ export const groupOf = (list: readonly Session[], rootOf: (cwd: string) => strin
 }
 
 // a background session's `state` or an interactive one's `status`, as one of herdr's statuses
-export const statusOf = (s: Session) => {
+export const statusOf = (s: Session): Status => {
   if (s.kind === 'background' && s.pid === undefined) return 'exited'
   const v = s.state ?? s.status ?? ''
-  return v === 'busy' || v === 'running' ? 'working' : v in STATUS ? v : 'unknown'
+  return v === 'busy' || v === 'running' ? 'working' : Object.hasOwn(STATUS, v) ? v as Status : 'unknown'
 }
 
 // the facts a transcript's tail gives, the latest of each winning; typed prompts only, not command or reminder rows
@@ -84,7 +85,7 @@ export const ago = (ms: number, now: number) => {
 }
 
 const clip = (t: string, n: number) => (t.length > n ? t.slice(0, Math.max(1, n - 1)) + '…' : t)
-const countsOf = (list: readonly Session[], order: readonly string[]) =>
+const countsOf = (list: readonly Session[], order: readonly Status[]) =>
   order.map(st => [st, list.filter(s => statusOf(s) === st).length] as const).filter(([, n]) => n > 0)
 
 const fetchAll = async ($: any) => {

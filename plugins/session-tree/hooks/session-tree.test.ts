@@ -5,7 +5,7 @@ const s = (sessionId: string, cwd: string, startedAt: number): Session => ({ ses
 
 test('sessions group under their repo root, roots by path, newest first', () => {
   const roots: Record<string, string> = { '/r/b': '/r/b', '/r/b/sub': '/r/b', '/r/a': '/r/a' }
-  const groups = groupOf([s('1', '/r/b', 1), s('2', '/r/a', 2), s('3', '/r/b/sub', 3)], cwd => roots[cwd])
+  const groups = groupOf([s('1', '/r/b', 1), s('2', '/r/a', 2), s('3', '/r/b/sub', 3)], cwd => roots[cwd]!)
   expect(groups.map(g => [g.root, g.sessions.map(x => x.sessionId)])).toEqual([['/r/a', ['2']], ['/r/b', ['3', '1']]])
 })
 
@@ -56,7 +56,7 @@ test('the pane draws herdr-agent-tree rows: a repo per group, a glyph per status
   on('session.id', () => ({ value: 'B2' }))
   on('process.run', ($, e) => {
     ran.push(e.argv.join(' '))
-    const out = { claude: JSON.stringify(list), git: e.argv[2] === '/r/c' ? '/r/c\n' : '/r/b\n', find: '/p/B1.jsonl\n', tail }[e.argv[0]] ?? ''
+    const out = { claude: JSON.stringify(list), git: e.argv[2] === '/r/c' ? '/r/c\n' : '/r/b\n', find: '/p/B1.jsonl\n', tail }[e.argv[0]!] ?? ''
     return { value: { exitCode: 0, stderr: '', stdout: e.argv[1] === 'agents' || e.argv[0] !== 'claude' ? out : '' } } as any
   })
   const m = await $.ui.mount({ plugin: 'session-tree', surface: 'terminal', component: 'Pane', requestId: 'session-tree', props: { title: 'Sessions', isFocused: false, bodyColumns: 41, placement: 'dock', scroll: { offset: 0, bodyRows: 40 } } as any })
@@ -102,5 +102,5 @@ test('a press focuses the herdr pane a session runs in, else attaches a backgrou
   expect(actionOf(bg, 'ME', '/r/b', herdr)).toEqual({ kind: 'attach', workspace: 'w1' }) // no pane in its repo: our workspace
   expect(actionOf(bg, 'ME', '/r/b', [...herdr, pane('X', 'w5:p2', 'w5', '/r/b')])).toEqual({ kind: 'attach', workspace: 'w5' }) // a pane in its repo: that one's
   expect(actionOf(bg, 'ME', '/r/b', [])).toEqual({ kind: 'copy' }) // this session in no herdr pane
-  expect(actionOf(term, 'ME', '/r/c', [herdr[0]])).toEqual({ kind: 'elsewhere' }) // an interactive session in another terminal
+  expect(actionOf(term, 'ME', '/r/c', [herdr[0]!])).toEqual({ kind: 'elsewhere' }) // an interactive session in another terminal
 })

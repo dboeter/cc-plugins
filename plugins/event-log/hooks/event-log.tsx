@@ -316,10 +316,10 @@ export function linesOf(rows: Row[], filter?: string): Line[] {
   const out: Line[] = []
   const merged = new Set<number>() // seqs of exits already shown on their enter's line
   for (let i = 0; i < rs.length; i++) {
-    const a = rs[i]
+    const a = rs[i]!
     if (merged.has(a.seq)) continue
     let j = i + 1
-    if (a.ph === 'enter') while (j < rs.length && rs[j].ev === a.ev && rs[j].enter !== a.seq) j++
+    if (a.ph === 'enter') while (j < rs.length && rs[j]!.ev === a.ev && rs[j]!.enter !== a.seq) j++
     const b = rs[j]
     if (a.ph === 'enter' && b?.ph === 'exit' && b.enter === a.seq) {
       out.push({ key: `r${a.seq}`, rows: [a, b], text: `${hms(a.t)}  ${tag(b.who)}  ${a.ev}  ${a.peek || b.peek} · ${done(b)}` })
