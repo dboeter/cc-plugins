@@ -1,1 +1,1 @@
-{ "modules": ["redact.ts"] }
+{ "modules": ["redact.tsx"] }

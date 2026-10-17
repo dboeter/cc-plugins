@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(~/.claude/plugins/store/redact_*)",
+      "Edit(~/.claude/plugins/store/redact_*)",
+      "Bash(claude plugin disable*)",
+      "Bash(claude plugin uninstall*)",
+      "Bash(claude plugin marketplace remove*)"
+    ],
+    "ask": [
+      "Edit(~/.claude/settings.json)",
+      "Edit(**/.claude/settings*.json)"
+    ]
+  }
+}

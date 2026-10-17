@@ -2,10 +2,18 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "redact",
   "version": "0.1.0",
-  "description": "Masks secret-shaped values in every tool's output before the model, the transcript or the terminal sees them, and refuses tool calls that would write the mask back over a real value.",
+  "description": "Swaps secret-shaped values and email addresses for numbered placeholders (API_KEY_1, EMAIL_1) in everything the model is sent, from the first request on, keeps the real values in a local vault per session, and puts them back in every tool call's input and in the terminal. Refuses a placeholder it cannot restore and changes to its own config. /redact show lists the rules in a pane, where you add and remove your own.",
   "author": {
     "name": "dboeter",
     "email": "daan.boeter@hotmail.com"
+  },
+  "userConfig": {
+    "patterns": {
+      "type": "string",
+      "multiple": true,
+      "title": "Extra patterns",
+      "description": "Regex sources masked on top of the built-in rules, each match whole (a lookbehind keeps a prefix), labelled by the first named group, SECRET without one. A list, so set it in settings.json pluginConfigs: /config does not show list fields"
+    }
   },
   "license": "MIT",
   "repository": "https://github.com/dboeter/cc-plugins"
