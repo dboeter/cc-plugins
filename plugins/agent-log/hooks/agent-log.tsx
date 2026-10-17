@@ -785,9 +785,13 @@ async function prune($: any): Promise<void> {
   const others: string[] = (await $.store.keys()).filter((k: string) => k !== key)
   const redacted = others.filter(k => k.startsWith('r:'))
   const last = new Map<string, number>()
-  for (const k of redacted) { const v = await $.store.get(k); const es = Array.isArray(v) ? v : v?.entries; last.set(k, Array.isArray(es) ? es.at(-1)?.t ?? 0 : 0) }
+  await Promise.all(redacted.map(async (k) => {
+    const v = await $.store.get(k)
+    const es = Array.isArray(v) ? v : v?.entries
+    last.set(k, Array.isArray(es) ? es.at(-1)?.t ?? 0 : 0)
+  }))
   const stale = [...others.filter(k => !k.startsWith('r:')), ...redacted.sort((a, b) => last.get(b)! - last.get(a)!).slice(SESSIONS - 1)]
-  for (const k of stale) await $.store.delete(k)
+  await Promise.all(stale.map((k) => $.store.delete(k)))
 }
 
 // What broke this session, for the setup row: settings hook runs that failed or were cancelled (the collector's counts, else the red
