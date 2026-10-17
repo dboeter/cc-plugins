@@ -109,11 +109,11 @@ test('a spawned agent\'s rows fold under its Agent row, which shows the agent\'s
   expect(await m.find({ text: /^general-purpose: probe A$/ })).toBeDefined() // the type is an identifier: never recased
   expect(await m.find({ text: /List files A/ })).toBe(undefined) // folded
   expect(await m.find({ text: /List files B/ })).toBe(undefined) // folded, though logged in turn 2
-  expect(await m.find({ text: /^● \d+\.\d s$/ })).toBeDefined() // A still runs: its time counts up
-  expect(await m.find({ text: /80\.0 s/ })).toBeDefined() // B's run, not its 0.1 s launch
+  expect(await m.find({ text: /^● \d+\.\ds$/ })).toBeDefined() // A still runs: its time counts up
+  expect(await m.find({ text: /80\.0s/ })).toBeDefined() // B's run, not its 0.1s launch
   // the header lists A as a log row: its name and task, its run counting up as on its Agent row
   expect(await m.find({ type: 'Button', text: /^general-purpose: probe A$/ })).toBeDefined()
-  expect((await m.findAll({ type: 'Text', text: /^● \d+\.\d s$/ })).length).toBe(2)
+  expect((await m.findAll({ type: 'Text', text: /^● \d+\.\ds$/ })).length).toBe(2)
   expect(await m.find({ type: 'Button', text: /^general-purpose #2: probe B$/ })).toBe(undefined) // finished: folded into the toggle row
   await m.press({ key: 'fdone' }) // B has finished: the header lists it once finished ones are shown
   expect(await m.find({ type: 'Button', text: /^general-purpose #2: probe B$/ })).toBeDefined() // and tells it from A
@@ -128,7 +128,7 @@ test('a spawned agent\'s rows fold under its Agent row, which shows the agent\'s
   const labels = (await m.findAll({ type: 'Button' })).map(l => String(l.text))
   expect(labels.findIndex(l => /^reply: B done$/.test(l))).toBeGreaterThan(labels.findIndex(l => /^List files B$/.test(l))) // the reply came last
   await m.press({ key: (await m.find({ type: 'Button', text: /^reply: B done$/ }))!.key! }) // its inspector: the agent's run, cost and answer
-  expect(await m.find({ text: '80.0 s' })).toBeDefined()
+  expect(await m.find({ text: '80.0s' })).toBeDefined()
   expect(await m.find({ text: '1.0k tok in · 10 tok out' })).toBeDefined()
   expect(await m.find({ text: 'B done' })).toBeDefined()
   // pressing an agent's header row filters the log to its rows, now flat; the filter's chip clears it
@@ -259,10 +259,10 @@ test('engine context that only composes the request is logged but not shown, its
 })
 
 // a store the test reads back: what agent-log wrote, by key. session.end flushes the log's last second
-const capture = (on: any, id: string) => {
+const capture = (on: any, id: string, agents: object[] = []) => {
   const db: Record<string, any> = {}
   on('session.id', () => ({ value: id }))
-  on('agent.list', () => ({ value: [] }))
+  on('agent.list', () => ({ value: agents }))
   on('config.list', () => ({ value: [] }))
   on('store.get', (_$: any, e: any) => ({ value: db[e.key] }))
   on('store.set', (_$: any, e: any) => { db[e.key] = e.value; return { value: undefined } })
@@ -287,6 +287,89 @@ test('email and date log once, as the attachments that carry them, not also as f
   const rows = (await flushed($, 'V', db)).filter(x => x.kind === 'prompt')
   expect(rows.map(x => x.type)).toEqual(['claudeMd', 'session_context', 'date']) // no `email`, no second date
   expect(rows.reduce((n, x) => n + x.bytes, 0)).toBe(mem.length + user.length + date.length) // each text counted once
+})
+
+// When the plugin chain changes (another plugin loaded, edited or removed), the engine asks a running instance for the whole
+// history again, in order, on the next request: the log keeps one row per copy that entered the context
+const MEM = { blocks: [{ name: 'claudeMd', text: 'Codebase and user instructions are shown below.' }] } as any
+const START = { type: 'hook_success', text: 'SessionStart:startup hook success: Preflight (preflight-context hook):', origin: { kind: 'hook', event: 'SessionStart' } } as any
+const ASK = { type: 'hook_success', text: 'UserPromptSubmit hook success: question-mode: Rule for THIS message only', origin: { kind: 'hook', event: 'UserPromptSubmit' } } as any
+const MODE = { type: 'auto_mode', text: 'While auto mode is active:', origin: { kind: 'engine' } } as any
+const replay = (on: any, id: string, agents: object[] = []) => {
+  const db = capture(on, id, agents)
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  on('prompt.context', (_$: any, e: any) => ({ blocks: e.blocks }))
+  on('prompt.attachment', (_$: any, e: any) => ({ text: e.text }))
+  return db
+}
+const kinds = (rows: any[]) => rows.filter(x => x.kind === 'prompt').map(x => `${x.type}${x.origin ? ` ${x.origin}` : ''}`)
+const ls = (use: string) => ({ tool: 'Bash', tool_use_id: use, command: 'ls', description: 'List' }) as any
+
+test('the whole history asked again of a running instance logs only what is new', async ($, on) => {
+  const db = replay(on, 'RP')
+  await $.prompt.context(MEM); await $.prompt.attachment(START); await $.prompt.attachment(ASK)
+  await $.tool.call(ls('rp1'))
+  await $.prompt.attachment(ASK) // the next prompt's
+  await $.tool.call(ls('rp2'))
+  await $.prompt.context(MEM); for (const a of [START, ASK, ASK]) await $.prompt.attachment(a) // the replay
+  await $.prompt.attachment(ASK) // this prompt's, new
+  expect(kinds(await flushed($, 'RP', db))).toEqual(['claudeMd', 'hook_success SessionStart', 'hook_success UserPromptSubmit', 'hook_success UserPromptSubmit', 'hook_success UserPromptSubmit'])
+})
+
+test('attachments asked again without the first message are a replay too', async ($, on) => {
+  const db = replay(on, 'RA')
+  await $.prompt.attachment(START); await $.prompt.attachment(ASK)
+  await $.tool.call(ls('ra1'))
+  for (const a of [START, ASK, ASK]) await $.prompt.attachment(a)
+  expect(kinds(await flushed($, 'RA', db))).toEqual(['hook_success SessionStart', 'hook_success UserPromptSubmit', 'hook_success UserPromptSubmit'])
+})
+
+test('the first message re-read alone hides its own copy, not an attachment sent with it', async ($, on) => {
+  const db = replay(on, 'RC')
+  await $.prompt.context(MEM); await $.prompt.attachment(START); await $.prompt.attachment(MODE)
+  await $.tool.call(ls('rc1'))
+  await $.prompt.context(MEM); await $.prompt.attachment(MODE) // auto mode turned on again: new, though its text is the same
+  expect(kinds(await flushed($, 'RC', db))).toEqual(['claudeMd', 'hook_success SessionStart', 'auto_mode', 'auto_mode'])
+})
+
+const TIP = { type: 'hook_additional_context', text: 'UserPromptSubmit hook additional context: <context_guidance>', origin: { kind: 'hook', event: 'UserPromptSubmit' } } as any
+const by = (agentId: string) => (a: any) => ({ ...a, agentId })
+
+test('a replayed PostToolUse copy leaves the live call its place in the queue', async ($, on) => {
+  const db = replay(on, 'RQ')
+  on('classic.PostToolUse', (_$: any, e: any) => (e.tool_use_id === 'rqb' ? {} : { additionalContext: [`tip for ${e.tool_use_id}`] }))
+  const read = (f: string) => $.tool.call({ tool: 'Read', tool_use_id: `rq${f}`, file_path: `/home/u/${f}.ts` } as any)
+  const hook = (f: string) => ($ as any).classic.PostToolUse({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_use_id: `rq${f}`, tool_input: {}, tool_response: 'ok' })
+  const tip = (f: string) => ({ type: 'hook_additional_context', text: `PostToolUse:Read hook additional context: tip for rq${f}`, origin: { kind: 'hook', event: 'PostToolUse' } }) as any
+  await $.prompt.attachment(START)
+  await read('x'); await hook('x'); await $.prompt.attachment(tip('x'))
+  await Promise.all(['a', 'b'].map(read)); for (const f of ['a', 'b']) await hook(f) // only a's hook adds context
+  await $.prompt.attachment(START); await $.prompt.attachment(tip('x')) // the replay
+  await $.prompt.attachment(tip('a'))
+  expect((await flushed($, 'RQ', db)).filter(x => x.kind === 'prompt' && x.origin === 'PostToolUse').map(x => x.use)).toEqual(['rqx', 'rqa'])
+})
+
+test('a fork replayed partway through logs none of the history it inherited again', async ($, on) => {
+  const db = replay(on, 'RF'), f = by('F') // no spawn and no list names F: a fork
+  await $.prompt.attachment(START); await $.prompt.attachment(ASK)
+  await $.tool.call(ls('rf1'))
+  await $.prompt.attachment(f(START)); await $.prompt.attachment(f(ASK)) // its first request: main's history
+  await $.tool.call({ ...ls('rf2'), agentId: 'F' })
+  await $.prompt.attachment(f(TIP))
+  for (const a of [START, ASK, TIP]) await $.prompt.attachment(f(a)) // the replay
+  await $.prompt.attachment(f(TIP)) // new
+  expect(kinds(await flushed($, 'RF', db))).toEqual(['hook_success SessionStart', 'hook_success UserPromptSubmit', 'hook_additional_context UserPromptSubmit', 'hook_additional_context UserPromptSubmit'])
+})
+
+test('a subagent whose history opens with a hook tip logs none of it again on a replay', async ($, on) => {
+  const db = replay(on, 'RS', [{ id: 'S', type: 'general-purpose', description: 'probe', status: 'running' }]), s = by('S')
+  const SUB = { type: 'hook_success', text: 'SubagentStart hook success: you are a subagent', origin: { kind: 'hook', event: 'SubagentStart' } }
+  await $.prompt.attachment(s(TIP)); await $.prompt.attachment(s(SUB))
+  await $.tool.call({ ...ls('rs1'), agentId: 'S' })
+  await $.prompt.attachment(s(TIP)); await $.prompt.attachment(s(SUB)) // the replay
+  expect(kinds(await flushed($, 'RS', db))).toEqual(['hook_additional_context UserPromptSubmit', 'hook_success SubagentStart'])
+  await $.prompt.attachment(s(TIP)) // new: the replay's tip owes nothing more
+  expect(kinds(await flushed($, 'RS', db))).toEqual(['hook_additional_context UserPromptSubmit', 'hook_success SubagentStart', 'hook_additional_context UserPromptSubmit'])
 })
 
 test('a subagent\'s PreToolUse hook row is credited to the subagent', async ($, on) => {
@@ -328,8 +411,8 @@ test('the log draws only the rows that fit under the header, which never scrolls
   on('agent.list', () => ({ value: [] }))
   on('config.list', () => ({ value: [] }))
   mock.store(on, { 'r:W': { entries: steps(), seen: {}, turn: 1, names: {} } })
-  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 13 } } as any })
-  expect((await m.find({ type: 'Box' }))!.children.length).toBe(13) // controls, setup row, main row, rule, then 9 of the 31 log rows
+  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 12 } } as any })
+  expect((await m.find({ type: 'Box' }))!.children.length).toBe(12) // controls, setup row, rule (no main row: no subagents), then 9 of the 31 log rows
   expect(await m.find({ text: /^Step 30$/ })).toBeDefined() // following: the newest
   expect(await m.find({ text: /^Step 22$/ })).toBeDefined()
   expect(await m.find({ text: /^Step 21$/ })).toBe(undefined)
@@ -340,7 +423,7 @@ test('the log draws only the rows that fit under the header, which never scrolls
   expect(await m.find({ text: /^Step 23$/ })).toBeDefined()
   expect(await m.find({ text: /^Step 30$/ })).toBe(undefined)
   expect(await m.find({ key: 'jump' })).toBeDefined()
-  expect((await m.find({ type: 'Box' }))!.children.length).toBe(13)
+  expect((await m.find({ type: 'Box' }))!.children.length).toBe(12)
   await m.press({ key: 'jump' })
   expect(await m.find({ text: /^Step 30$/ })).toBeDefined()
   // back onto the newest row keeps following: no jump row
@@ -357,8 +440,7 @@ test('the controls take as many rows as the width needs, never clipping one', as
   mock.store(on, { 'r:C': { entries: steps(), seen: {}, turn: 1, names: {} } })
   const props = (bodyColumns: number) => ({ ...PANE_PROPS, bodyColumns, scroll: { offset: 0, bodyRows: 20 } }) as any
   const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: props(100) })
-  expect(await ctlRows(m)).toBe(1) // `view: a: all … level: l: info   o: unfold   k: legend`
-  expect(await m.find({ type: 'Button', text: /legend/ })).toBeDefined()
+  expect(await ctlRows(m)).toBe(1) // `a: all  g: agent  h: harness  u: outside  l: info  o: unfold  k: ?  #↑↓`
   const bare = [6, 8, 10, 10, 'info'.length + 3, 9, 4, 3] // a: all, g: agent, h: harness, u: outside, l: info, o: unfold, k: ?, #↑↓
   for (const cols of [50, 30]) {
     await m.redraw(props(cols))
@@ -394,7 +476,7 @@ test('ctrl+↑↓ (the #↑↓ buttons) put the previous or next prompt\'s turn 
 
 // lookups in hooks/, three by default: `Explore hooks ×3`
 const reads = (t0: number, extra: object = {}, files = ['a', 'b', 'c']) => files.map((f, i) => ({ t: t0 + i, turn: 1, kind: 'tool', name: 'Read', detail: `/home/u/hooks/${f}.ts`, outcome: 'ok', status: 'ok', ms: 10, ...extra }))
-// the line a row sits on in the pane's body, the header's rows counted (4 at 100 columns: controls, setup, main, rule): the same line
+// the line a row sits on in the pane's body, the header's rows counted (3 at 100 columns with no subagents: controls, setup, rule): the same line
 // before and after means it did not move
 const lineOf = async (m: any, k: string) => (await m.find({ type: 'Box' }))!.children.findIndex((c: any) => c.props?.key === k)
 
@@ -421,7 +503,7 @@ test('a fold opens where it was pressed, its rows on tree guides, each opening i
   await m.press({ key: 'folds' }) // o in the inspector closes the fold, but must not move the window back centres
   await m.press({ key: 'back' })
   expect(await m.find({ text: /^Read a\.ts$/ })).toBe(undefined)
-  expect(await lineOf(m, row)).toBe(4 + 4) // the closed fold that holds Read a.ts, centred: 4 of the 9 log rows above it
+  expect(await lineOf(m, row)).toBe(3 + 5) // the closed fold that holds Read a.ts, centred: 5 of the 10 log rows above it
 })
 
 test('opening the newest fold while following shows it, its row staying on screen', async ($, on) => {
@@ -430,7 +512,7 @@ test('opening the newest fold while following shows it, its row staying on scree
   const m = await pane($, 12, 100)
   const fold = await m.find({ type: 'Button', text: /^Explore hooks ×3$/ })
   await m.press({ key: fold!.key! })
-  expect(await lineOf(m, fold!.key!.slice(1))).toBeGreaterThanOrEqual(4) // still drawn, not under the jump row
+  expect(await lineOf(m, fold!.key!.slice(1))).toBeGreaterThanOrEqual(3) // still drawn, not under the jump row
   expect(await m.find({ text: /^Read c\.ts$/ })).toBeDefined() // the window moved down just far enough to show the fold
   expect(await m.find({ key: 'jump' })).toBe(undefined) // which put it at the end: following
   await m.press({ key: fold!.key! })
@@ -442,9 +524,9 @@ test('o keeps the turn header at the window\'s top in place, though folds above 
   session(on, 'H', entries, { turn: 2 })
   const m = await pane($, 12, 100)
   await m.press({ key: 'tprev' })
-  expect(await lineOf(m, 'turn2')).toBe(4) // the first log row
+  expect(await lineOf(m, 'turn2')).toBe(3) // the first log row
   await m.press({ key: 'folds' })
-  expect(await lineOf(m, 'turn2')).toBe(4)
+  expect(await lineOf(m, 'turn2')).toBe(3)
   await m.press({ key: 'folds' })
 })
 
@@ -452,7 +534,7 @@ test('o from inside an open fold keeps the fold\'s row at the window\'s top', as
   // #1, Step 1, the fold of ten, Step 2-16
   const s = steps().slice(0, 16), entries = [s[0]!, ...reads(s[0]!.t, {}, [...'abcdefghij']), ...s.slice(1).map(x => ({ ...x, t: x.t + 10 }))]
   session(on, 'I', entries)
-  const m = await pane($, 13, 100)
+  const m = await pane($, 12, 100)
   await m.press({ key: 'folds' })
   await m.press({ key: 'tprev' }) // #1 on top: #1, Step 1, the fold, Read a-e
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read e\.ts$/ }))!.key! })
@@ -461,7 +543,7 @@ test('o from inside an open fold keeps the fold\'s row at the window\'s top', as
   const fold = await m.find({ type: 'Button', text: /^Explore hooks ×10$/ })
   expect(fold).toBe(undefined) // its row is above the window
   await m.press({ key: 'folds' })
-  expect(await lineOf(m, (await m.find({ type: 'Button', text: /^Explore hooks ×10$/ }))!.key!.slice(1))).toBe(4)
+  expect(await lineOf(m, (await m.find({ type: 'Button', text: /^Explore hooks ×10$/ }))!.key!.slice(1))).toBe(3)
 })
 
 test('a lookup fold still growing shows its newest call; o opens and closes every fold', async ($, on) => {
@@ -575,7 +657,7 @@ test('a PreToolUse block marks its call denied', async ($, on) => {
 
 test('a block after the fact is feedback: ↩, not ✗', async ($, on) => {
   const m = await mountWith($, on, 'E1', [hookRow({ name: 'lint-feedback', origin: 'PostToolUse', detail: 'Edit', outcome: 'block', ms: 300, peek: 'x.py:3:1: F821 undefined name' })])
-  expect(await m.find({ type: 'Text', text: '↩ 0.3 s' })).toBeDefined() // ranked notice: shown at info
+  expect(await m.find({ type: 'Text', text: '↩ 0.3s' })).toBeDefined() // ranked notice: shown at info
   expect(await m.find({ type: 'Text', text: /^✗/ })).toBe(undefined)
 })
 
@@ -586,9 +668,9 @@ test('a slow SessionStart hook is not flagged; a slow ConfigChange hook is', asy
     hookRow({ name: 'config-change-guard', origin: 'ConfigChange', detail: 'user_settings', ms: 2100 }),
   ])
   await toLevel(m, 'debug')
-  expect(await m.find({ type: 'Text', text: '2.0 s' })).toBeDefined()
-  expect(await m.find({ type: 'Text', text: '⚠ 2.0 s' })).toBe(undefined)
-  expect(await m.find({ type: 'Text', text: '⚠ 2.1 s' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '2.0s' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '⚠ 2.0s' })).toBe(undefined)
+  expect(await m.find({ type: 'Text', text: '⚠ 2.1s' })).toBeDefined()
   await toLevel(m, 'info')
 })
 
@@ -887,12 +969,15 @@ test('a request that wrote text is a row; one that only called tools hides at in
   ])
   expect(await m.find({ type: 'Button', text: /^Explore hooks ×3$/ })).toBeDefined() // the silent requests between the reads hide
   expect(await m.find({ text: /Thought: Checking the hooks/ })).toBe(undefined)
-  expect(await m.find({ text: /model 10\.4 s · other 5\.1 s/ })).toBeDefined() // the header's split: the reads take under 0.1 s
+  expect(await m.find({ text: /model 10\.4s · other 5\.1s/ })).toBeDefined() // the header's split: the reads take under 0.1s
   expect(await m.find({ type: 'Button', text: /^2 hidden$/ })).toBeDefined()
-  expect(await m.find({ text: 'Opus 5.5' })).toBeDefined() // the tool column names the model
+  await m.press({ key: 'th1' }) // `#1` opens the turn: its whole split, which the header cuts to two parts
+  expect(await m.find({ text: 'A turn of the main loop ended' })).toBeDefined()
+  expect(await m.find({ text: /^model 10\.4s · other 5\.1s/ })).toBeDefined()
+  await m.press({ key: 'back' })
   await m.press({ key: (await m.find({ type: 'Button', text: /^The hooks read the store\.$/ }))!.key! }) // the advisor's line is in its fold
   expect(await m.find({ type: 'Button', text: /^Advisor$/ })).toBeDefined()
-  expect(await m.find({ text: '2.5 s' })).toBeDefined()
+  expect(await m.find({ text: '2.5s' })).toBeDefined()
   await m.press({ key: (await m.find({ type: 'Button', text: /^request & reply$/ }))!.key! })
   expect(await m.find({ text: /A request to Opus 5\.5 by the main loop, which ended the turn/ })).toBeDefined()
   expect(await m.find({ text: 'claude-opus-5-5 · effort high' })).toBeDefined()
@@ -902,7 +987,7 @@ test('a request that wrote text is a row; one that only called tools hides at in
   await m.press({ key: (await m.find({ type: 'Button', text: /^The hooks read the store\.$/ }))!.key! }) // closed again
   await m.press({ key: (await m.find({ type: 'Button', text: /^Explore hooks ×3$/ }))!.key! })
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read a\.ts$/ }))!.key! }) // a call's inspector names the request before it
-  expect(await m.find({ text: 'by Opus 5.5 in a 4.2 s request: Checking the hooks' })).toBeDefined()
+  expect(await m.find({ text: 'by Opus 5.5 in a 4.2s request: Checking the hooks' })).toBeDefined()
   await m.press({ key: 'back' })
   await m.press({ key: (await m.find({ type: 'Button', text: /^Explore hooks ×3$/ }))!.key! })
   await toLevel(m, 'debug') // every request a row: what it thought, else the calls it made
@@ -913,12 +998,14 @@ test('a request that wrote text is a row; one that only called tools hides at in
 
 test('what streams or runs right now is a ● line below the rows, gone once it ends', async ($, on) => {
   session(on, 'LV')
-  let thought!: () => void, ran!: () => void
-  const gate = new Promise<void>(res => { thought = res }), gate2 = new Promise<void>(res => { ran = res })
+  let thought!: () => void, wrote!: () => void, ran!: () => void
+  const gate = new Promise<void>(res => { thought = res }), gate2 = new Promise<void>(res => { ran = res }), gate3 = new Promise<void>(res => { wrote = res })
   on('turn.step', async function* (_$: any, e: any) {
     yield { kind: 'thinking', index: 0, text: 'Weighing the options\nmore' }
     await gate
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+    yield { kind: 'text', index: 1, text: 'Running the tests' }
+    await gate3
+    return { turnId: e.turnId, index: e.index, answer: 'Running the tests', toolUses: [], stopReason: 'end_turn', usage: null }
   })
   on('tool.call', async () => { await gate2; return { result: 'ok', text: 'ok' } })
   const it = ($ as any).turn.step(STEP)[Symbol.asyncIterator]()
@@ -926,10 +1013,16 @@ test('what streams or runs right now is a ● line below the rows, gone once it 
   const call = $.tool.call({ tool: 'Bash', tool_use_id: 'lv1', command: 'npm test', description: 'Run tests' } as any)
   await wait(20)
   const m = await pane($)
-  expect(await m.find({ text: /^Thinking: Weighing the options$/ })).toBeDefined()
+  // no text yet: the request may end as a debug row, hidden at info, so its line would flash and vanish
+  expect(await m.find({ text: /^Thinking/ })).toBe(undefined)
   expect(await m.find({ text: /^Run tests$/ })).toBeDefined()
-  expect((await m.findAll({ type: 'Text', text: /^● \d+\.\d s$/ })).length).toBe(2)
-  thought(); ran()
+  expect((await m.findAll({ type: 'Text', text: /^● \d+\.\ds$/ })).length).toBe(1)
+  thought()
+  await it.next() // it writes: its row will show, so its line does
+  await m.redraw()
+  expect(await m.find({ text: /^Running the tests$/ })).toBeDefined()
+  expect((await m.findAll({ type: 'Text', text: /^● \d+\.\ds$/ })).length).toBe(2)
+  wrote(); ran()
   while (!(await it.next()).done) {}
   await call
   await m.redraw()
@@ -965,7 +1058,7 @@ test('collector records no hook sees become rows; a main or subagent request is 
   expect(harnessOf('mcp_server_connection', { status: 'failed', server_name: 'x', error: 'ECONNREFUSED' })).toMatchObject({ name: 'MCP failed', status: 'failed', peek: 'ECONNREFUSED' })
   // a server closing, as every one does when a headless session ends: no failure, and its duration is its life, not a wait
   const closed = harnessOf('mcp_server_connection', { status: 'disconnected', server_name: 'roadmap', transport_type: 'http', duration_ms: '61045' })
-  expect(closed).toMatchObject({ name: 'MCP disconnected', status: 'ok', peek: 'connected for 61.0 s' })
+  expect(closed).toMatchObject({ name: 'MCP disconnected', status: 'ok', peek: 'connected for 61.0s' })
   expect(closed!.ms).toBe(undefined)
   expect(harnessOf('api_error', { status_code: '529', error: 'Overloaded', attempt: 2, duration_ms: 1200 })).toMatchObject({ name: 'API error', detail: '529 Overloaded', outcome: 'attempt 2', status: 'failed', ms: 1200 })
   expect(harnessOf('api_request', { query_source: 'prompt_suggestion', model: 'claude-haiku-5-5', duration_ms: 900, input_tokens: 5, output_tokens: 3, cost_usd: 0.001 }))
@@ -1009,7 +1102,7 @@ test('an event row reads what happened, a failure red; the engine\'s frequent re
   expect(await m.find({ type: 'Button', text: /^Turn failed: overloaded$/ })).toBeDefined()
   expect(await m.find({ type: 'Text', text: /^✗ failed$/ })).toBeDefined()
   expect(await m.find({ type: 'Button', text: /^Compacted: auto$/ })).toBeDefined()
-  expect(await m.find({ type: 'Text', text: '37.6 s' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '37.6s' })).toBeDefined()
   expect(await m.find({ type: 'Button', text: /^Notification/ })).toBe(undefined) // debug
   expect(await m.find({ type: 'Button', text: /^Prompt suggestion$/ })).toBe(undefined) // debug: one after most turns
   await m.press({ key: (await m.find({ type: 'Button', text: /^auto-title: Fix the agent log$/ }))!.key! })
@@ -1062,15 +1155,15 @@ test('the setup row reads what the session runs on, what broke first and red; s 
   await ($ as any).session.measure({ context: { tokens: 41000, window: 200000, percent: 20.5 }, rateLimits: [{ kind: 'five_hour', percentUsed: 42 }], cost: { usd: 1.234 }, changed: ['context', 'rateLimits', 'cost'] })
   const m = await pane($, 60, 160)
   expect(await m.find({ type: 'Text', text: /^✗ 1 hook run failed · 1 API error · 1 MCP server down/ })).toBeDefined()
-  expect(await m.find({ type: 'Button', text: /^Opus 5\.5 high · acceptEdits · (\d+ hooks · )?2 plugins · 2 MCP · \$1\.23 · limit 42%$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /^Opus 5\.5 high$/ })).toBeDefined() // the rest is on the page; a limit under 80% says nothing here
   await m.press({ key: 'fsetup' })
   expect(await m.find({ text: 'Opus 5.5 (claude-opus-5-5) · effort high' })).toBeDefined()
   expect(await m.find({ text: '41.0k of 200.0k tokens (21%)' })).toBeDefined()
   expect(await m.find({ text: /^five hour 42%/ })).toBeDefined()
   expect(await m.find({ text: 'Problems: 1 hook run failed, 1 API error, 1 MCP server down' })).toBeDefined()
-  expect(await m.find({ text: /1 run · 0\.4 s · 1 failed$/ })).toBeDefined() // PostToolUse's, as the collector counted them
+  expect(await m.find({ text: /1 run · 0\.4s · 1 failed$/ })).toBeDefined() // PostToolUse's, as the collector counted them
   expect(await m.find({ text: '0.2.0 · user · hooks' })).toBeDefined()
-  expect(await m.find({ text: 'connected over http in 1.0 s' })).toBeDefined()
+  expect(await m.find({ text: 'connected over http in 1.0s' })).toBeDefined()
   expect(await m.find({ text: 'failed: ECONNREFUSED' })).toBeDefined()
   expect(await m.find({ text: /^1 request · / })).toBeDefined() // main's
   await m.press({ key: (await m.find({ type: 'Button', text: /^✗ API error/ }))!.key! })
@@ -1120,7 +1213,7 @@ test('a row outside the root reads ↗ where; the outside view keeps it and the 
     call({ t: T0 + 1, detail: 'Run tests' }),
     { t: T0 + 2, turn: 1, kind: 'event', name: 'directory added', detail: '~/other', outcome: 'slash_command' },
   ])
-  expect(await m.find({ type: 'Button', text: 'Read RULES.md ↗ ~/dotagents' })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: 'Read RULES.md ↗ dotagents' })).toBeDefined() // its last folder; the inspector says where in full
   await m.press({ key: 'voutside' })
   expect(await m.find({ type: 'Button', text: /^Run tests/ })).toBe(undefined)
   expect(await m.find({ type: 'Button', text: /^Directory added: ~\/other/ })).toBeDefined()
@@ -1136,13 +1229,12 @@ test('a row outside the root reads ↗ where; the outside view keeps it and the 
   await m.press({ key: 'back' })
 })
 
-test('the background tasks and crons in flight when main\'s turn ended show on the setup row and page', async ($, on) => {
+test('the background tasks and crons in flight when main\'s turn ended show on the setup page', async ($, on) => {
   session(on, 'BG')
   on('classic.*', () => ({}) as any)
   await ($ as any).classic.Stop({ stop_hook_active: false, background_tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'Run the dev server', command: 'npm run dev' }],
     session_crons: [{ id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check the build\nmore' }] })
   const m = await pane($, 60, 160)
-  expect(await m.find({ type: 'Button', text: /\b1 in background · 1 cron\b/ })).toBeDefined()
   await m.press({ key: 'fsetup' })
   expect(await m.find({ text: 'Background: in flight when the last turn ended' })).toBeDefined()
   expect(await m.find({ text: 'running: npm run dev' })).toBeDefined()

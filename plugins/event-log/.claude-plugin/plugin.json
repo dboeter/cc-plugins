@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "event-log",
+  "version": "0.1.0",
+  "description": "Every event that crosses Claude Code in a session, in the order it happened, whoever raised it (you, the model, the engine, settings hooks, plugins): full payloads to ~/.claude/event-log/<session>/NNNN.jsonl, a peek per event in a live pane. UI events and plugins' read-only calls are only counted; /eventlog toggles it, /eventlog <you|claude|engine|hook|plugin|all> filters by who.",
+  "author": {
+    "name": "dboeter",
+    "email": "daan.boeter@hotmail.com"
+  },
+  "userConfig": {
+    "maxMB": {
+      "type": "number",
+      "title": "Log size cap (MB)",
+      "default": 50,
+      "description": "Per session: past it the log stops writing to disk, and the pane says so"
+    }
+  },
+  "license": "MIT",
+  "repository": "https://github.com/dboeter/cc-plugins"
+}

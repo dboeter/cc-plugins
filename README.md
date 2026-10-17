@@ -9,6 +9,9 @@ Claude Code mods. Each one is a folder under `plugins/`, listed in `.claude-plug
 | [context-budget](plugins/context-budget) | A pane that explains the context window to people new to Claude Code: the room left before auto-compact, the window as one stacked bar in category colours with a note per category, what every request carries, the window after each turn with its change, and where auto-compact starts. `/contextbudget` toggles it. |
 | [notepad](plugins/notepad) | A notepad pane, one note per project, kept between sessions. Claude does not see it. `/notepad` toggles it. |
 | [agent-log](plugins/agent-log) | A pane that shows what Claude Code does in this session and where the time goes: each model request with its timings and price, tool calls and the permission decision behind each, hooks and Claude Code's own events, per agent and per turn. Calls outside the project root are marked, and a setup page lists what the session runs on and what broke. `/agentlog` toggles it. |
+| [event-log](plugins/event-log) | Logs every event in a session, whoever raised it (you, the model, the engine, hooks, plugins), with full payloads to `~/.claude/event-log/<session>/` and a peek per event in a live pane. `/eventlog` toggles it, `/eventlog <you\|claude\|engine\|hook\|plugin\|all>` filters by who. |
+| [redact](plugins/redact) | Masks secret-shaped values in every tool's output before the model, the transcript or the terminal sees them, and refuses tool calls that would write the mask back over a real value. |
+| [session-tree](plugins/session-tree) | A pane with every Claude session on this machine as a tree under its repo; pressing one focuses its herdr pane or attaches a background one in a new tab. `/sessiontree` toggles it. |
 
 Install one:
 

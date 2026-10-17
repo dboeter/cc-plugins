@@ -1,0 +1,12 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "redact",
+  "version": "0.1.0",
+  "description": "Masks secret-shaped values in every tool's output before the model, the transcript or the terminal sees them, and refuses tool calls that would write the mask back over a real value.",
+  "author": {
+    "name": "dboeter",
+    "email": "daan.boeter@hotmail.com"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/dboeter/cc-plugins"
+}

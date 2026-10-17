@@ -108,7 +108,7 @@ function insightOf(cmd: string | undefined, raw: string): { exit?: number; quiet
 // said nothing, so all are named. A settings hook names itself in its text's first line (hooks/CLAUDE.md), a plugin's hook maybe
 // anywhere; text is credited to the candidates it names that way. Text naming none is a plugin hook's, or with one candidate that
 // one's. Else the event's, as a guess
-type HookCfg = Record<string, { matcher: string; name: string; plugin?: boolean }[]>
+type HookCfg = Record<string, { matcher: string; name: string; plugin?: boolean; cmd?: string }[]> // cmd: the command as written, so one script on several events or matchers counts once
 let hookCfg: HookCfg | undefined
 let enabled: string[] = [] // the plugins settings enable (`name@marketplace`): the setup's plugin list where no plugin_loaded record came
 const scriptName = (h: any): string => {
@@ -119,7 +119,7 @@ async function hooksOf($: any): Promise<HookCfg> {
   if (hookCfg) return hookCfg
   const cfg: HookCfg = {}
   const add = (hooks: any, plugin?: string) => {
-    for (const [ev, groups] of Object.entries<any>(hooks ?? {})) for (const g of Array.isArray(groups) ? groups : []) for (const h of g?.hooks ?? []) (cfg[ev] ??= []).push({ matcher: String(g?.matcher ?? ''), name: plugin ?? scriptName(h), plugin: !!plugin })
+    for (const [ev, groups] of Object.entries<any>(hooks ?? {})) for (const g of Array.isArray(groups) ? groups : []) for (const h of g?.hooks ?? []) (cfg[ev] ??= []).push({ matcher: String(g?.matcher ?? ''), name: plugin ?? scriptName(h), plugin: !!plugin, cmd: String(h?.command ?? h?.prompt ?? h?.type ?? '') })
   }
   let s: any
   try { s = await $.settings.read(); add(s?.hooks); enabled = Object.entries(s?.enabledPlugins ?? {}).filter(([, on]) => on).map(([id]) => id) } catch {}
@@ -238,7 +238,7 @@ const cell = (x: Entry, ms = x.ms): [string, string?] => {
     : slow(x, ms) ? [`⚠ ${time}`, 'yellow']
     : [time ?? (x.kind === 'tool' || x.kind === 'hook' ? '—' : '')]
 }
-const secs = (ms?: number) => ms == null ? '—' : `${(ms / 1000).toFixed(1)} s` // one unit everywhere; unknown is —, never a guess
+const secs = (ms?: number) => ms == null ? '—' : `${(ms / 1000).toFixed(1)}s` // one unit everywhere; unknown is —, never a guess
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 // `claude-opus-5-5[1m]` -> `Opus 5.5`, `claude-opus-4-20250514` -> `Opus 4`, `claude-3-5-sonnet-20241022` -> `Sonnet 3.5`;
 // an id of no known shape (a gateway's alias) as named. (?!\d): a date suffix is no minor version
@@ -387,7 +387,7 @@ export const bucketsOf = (xs: Entry[]): { name: string; head: string; xs: Entry[
     return { name, head, xs: ys }
   })
 }
-// what happened, action first in sentence case; the tool column names the tool, so the action never repeats it
+// what happened, action first in sentence case, its verb saying what the tool did; the inspector names the tool
 const action = (x: Entry): string => {
   const d = x.detail
   if (x.kind === 'tool') switch (x.name) {
@@ -474,7 +474,8 @@ const started = new Map<string, number>() // agent id -> spawn time; AgentInfo h
 // is '' (probed on 2.1.294), so it is named `fork` there and by its plugin once that plugin's $.model.fork resolves (the model.fork hook)
 let names: Record<string, string> = {}
 // PostToolUse context to come, per call, in the order its hooks ran: its attachment names only the tool (`PostToolUse:Read hook …`),
-// and parallel calls of one tool run their hooks in turn, so the first waiting call of that tool is the one it belongs to
+// and parallel calls of one tool run their hooks in turn, so the first waiting call of that tool is the one it belongs to.
+// A copy or a replay of an attachment takes no place: its call was served when it first came
 let postCtx: { use: string; tool: string; agent?: string; n: number }[] = []
 const takePost = (tool: string | undefined, agent: string | undefined): string | undefined => {
   const w = postCtx.find(c => c.tool === tool && c.agent === agent)
@@ -559,7 +560,8 @@ let unbilled: { t: number; sig: string; key: string }[] = []
 // what streams or runs right now, for the pane's ● lines: a loop's model request (its phase, and the first line it wrote or thought
 // so far) or a tool call. Gone at its end, when its row is logged. In memory only: a reload starts it empty
 // asking: a call whose permission prompt is up (PermissionRequest), until its decision lands (the collector's tool_decision)
-type Live = { t: number; loop?: string; model?: string; phase?: 'waiting' | 'thinking' | 'writing' | 'calling'; said?: string; tool?: string; row?: Omit<Entry, 't'>; asking?: boolean }
+// wrote: the request has streamed text, so its step row will rank info (lvl): until then it may end as a hidden debug row
+type Live = { t: number; loop?: string; model?: string; phase?: 'waiting' | 'thinking' | 'writing' | 'calling'; said?: string; tool?: string; row?: Omit<Entry, 't'>; asking?: boolean; wrote?: boolean }
 const liveNow = new Map<string, Live>()
 const compactAt = new Map<string, number>() // loop -> when its PreCompact fired: PostCompact's row takes the time
 // the collector's last hook_execution_complete: the settings hooks a classic event just ran, how many failed and how many the engine
@@ -585,23 +587,49 @@ async function tick($: any): Promise<void> {
 // ponytail: 2s poll while pane open, replace if an agent-status event lands in the API
 const startPoll = ($: any) => { timer ??= $.clock.every(2000, () => { tick($) }) }
 
-// The engine caches prompt.attachment answers per plugin instance (d.ts: "asked again on resume"), so a fresh
-// instance, from a resume or a hot reload of this plugin, is asked again for every attachment in the history on
-// its first request (seen: the away summary right after a reload), and prompt.context re-reads the first message's
-// blocks. No per-attachment replay flag exists, so `seen` counts how often each signature entered the context this
-// session, stored beside the entries. A fresh instance owes those counts back: until a loop's first tool call or
-// turn end, an ask that matches an owed copy is a replay and is skipped; one past the count is new and is logged
+// The engine caches prompt.attachment and prompt.context answers, and when the cache drops it asks again for every one
+// in the history, in order, on a loop's next request: for a fresh instance of this plugin (a resume, a hot reload of
+// it), and for a running one whenever the plugin chain changes (another plugin loaded, edited or removed: seen dumping
+// a session's whole history as new rows, its SessionStart text and every prompt's hook text again) or a plugin calls
+// $.ui.invalidate on either event. No per-ask replay flag exists, so `seen` counts how often each signature entered the
+// context this session, stored beside the entries. A fresh instance owes those counts back: until a loop's first tool
+// call or turn end, an ask that matches an owed copy is a replay and is skipped; one past the count is new and is logged.
+// A running instance knows a replay by its lead: per loop and event, the first ask of a kind a context carries once (`once`),
+// which comes back only when the history is asked again. It opens `rerun`, the counts owed back on that event, until the
+// same end. A lead that recurs for real (an environment update exactly as long as the first) hides that request's repeats.
+// What a loop asked before its lead (`pre`: a subagent's history can open with a hook tip) comes back ahead of it and logs
+// as new; once the lead shows, those asks are counted back out and their rows taken away (`unlog`)
 let seen: Record<string, number> = {}
 let owed: Record<string, number> | undefined // undefined: not joining a conversation with history
 let blind = false // a resume whose store is gone (pruned): nothing to match against, so the window logs nothing
 const closed = new Set<string>() // loops ('main' or an agent id) whose first request since the instance began is over
+const lead = new Map<string, string>() // `<loop>|att` or `<loop>|ctx` (prompt.context) -> the lead's signature
+// what a context carries once, from its start: a first-message block, a SessionStart or SubagentStart hook's text, the engine's
+// environment. Not a hook's tip or a reminder: they recur for real, and the first ask of a subagent's history can be one
+const once = (sig: string, via: 'att' | 'ctx') => { const [type, origin] = sig.split('|'); return via === 'ctx' || origin === 'SessionStart' || origin === 'SubagentStart' || type === 'environment' }
+// same keys -> the loop's counts a replay still owes back. All of the loop's: attachment types and block names never collide
+// (`instructions` is an attachment, `claudeMd` a block), so only its own event's asks can match
+const rerun = new Map<string, Record<string, number>>()
+const close = (loop: string) => { closed.add(loop); rerun.delete(`${loop}|att`); rerun.delete(`${loop}|ctx`) }
+const pre = new Map<string, string[]>() // same keys -> what the loop asked before its lead was set, in order
+const recent = new Map<string, { sig: string; t?: number }[]>() // same keys -> the loop's latest asks, as many as its `pre`. t: when one logged as new
+// an ask into its loop's lead, `pre` and `recent`. After the replay check, which reads them as they were before this ask.
+// `pre` stops at 20: a loop that never gets a lead must not grow it all session, and a longer prefix then never matches
+const track = (at: string, sig: string, via: 'att' | 'ctx', t?: number) => {
+  if (!lead.has(at)) { if (once(sig, via)) lead.set(at, sig); else if ((pre.get(at)?.length ?? 0) < 20) pre.set(at, [...pre.get(at) ?? [], sig]) }
+  const n = pre.get(at)?.length
+  if (n) recent.set(at, [...recent.get(at) ?? [], { sig, t }].slice(-n))
+}
 // A fork re-reads its parent's history on its first request: every attachment main already logged comes back under the fork's id
 // (seen: an engine fork between turns logging ~10k tok of environment, skill list and old hook output). Forks are Agent-tool spawns
 // with `fork` and the engine's own (memory, compaction), which raise no agent.spawn and carry ids no list names. While a fork's
 // first request lasts, an attachment matching one main logged is a copy, taken from the fork's own tally of main's counts.
+// A copy logs no row but sits in the fork's context: `took` keeps it for a replay of the fork to owe back, and it can be the
+// fork's lead. In memory, not in `seen`: `seen` is stored, and a session forks several times a turn.
 // A plain subagent starts fresh: its skill list and memory files are its own cost and still log
 const forks = new Set<string>()
 const inherited = new Map<string, Record<string, number>>() // fork id -> main's counts not yet matched
+const took = new Map<string, Record<string, number>>() // fork id -> the copies it matched, under its own signatures
 async function copied($: any, agent: string | undefined, type: string, origin: string | undefined, bytes: number): Promise<boolean> {
   if (!agent || closed.has(agent)) return false
   if (!forks.has(agent) && (started.has(agent) || ((await $.agent.list().catch(() => [])) as AgentInfo[]).some(a => a.id === agent))) return false
@@ -610,6 +638,9 @@ async function copied($: any, agent: string | undefined, type: string, origin: s
   const g = sigOf(type, origin, undefined, bytes)
   if (!left[g]) return false
   left[g]--
+  const own = sigOf(type, origin, agent, bytes), mine = took.get(agent) ?? {}
+  mine[own] = (mine[own] ?? 0) + 1; took.set(agent, mine)
+  track(`${agent}|att`, own, 'att')
   return true
 }
 // type + author + loop + size: different texts of one kind and length (a date change) still count apart per copy,
@@ -636,7 +667,7 @@ async function load($: any): Promise<void> {
   seen = v?.seen && !Array.isArray(v) ? v.seen : seed(entries)
   names = { ...(v?.names && !Array.isArray(v) ? v.names : {}), ...names } // merged: a fresh instance can name a loop before its first load. Ids are unique, and saved() drops the ones no entry shows
   owed = entries.length || Object.keys(seen).length ? { ...seen } : undefined // /clear's empty session owes nothing
-  blind = false; closed.clear(); composed.clear(); checks.clear(); inherited.clear(); postCtx = [] // the old session's calls
+  blind = false; closed.clear(); lead.clear(); rerun.clear(); pre.clear(); recent.clear(); composed.clear(); checks.clear(); inherited.clear(); took.clear(); postCtx = [] // the old session's calls
 }
 const ready = ($: any) => key ? Promise.resolve() : mutate(() => load($)).catch(() => {}) // a fresh instance loads before the replay window is read
 
@@ -658,14 +689,44 @@ function flush($: any): Promise<void> {
 const touch = ($: any) => { dirty = true; flushTimer ??= $.clock.after(1000, () => { flushTimer = undefined; flush($).catch(() => {}) }) }
 
 // true when this ask re-reads history already counted (see `seen`); otherwise counts it. Call after ready()
-function replayed($: any, sig: string, agent?: string): boolean {
-  if (owed && !closed.has(agent ?? 'main')) {
+function replayed($: any, sig: string, agent?: string, via: 'att' | 'ctx' = 'att'): boolean {
+  const at = `${agent ?? 'main'}|${via}`, again = recounted($, sig, agent, at)
+  track(at, sig, via, again ? undefined : Date.now())
+  return again
+}
+function recounted($: any, sig: string, agent: string | undefined, at: string): boolean {
+  const loop = agent ?? 'main', back = lead.get(at) === sig
+  if (owed && !closed.has(loop)) {
     if (blind) return true
     if (owed[sig]) { owed[sig]--; return true }
   }
+  // not gated on `closed`: a chain change before the loop's first tool call replays too
+  if (back && !rerun.has(at)) {
+    // the asks just before the lead were this replay's too, logged as new: count them back out and take their rows away
+    const p = pre.get(at) ?? [], r = recent.get(at) ?? []
+    const ahead = p.length > 0 && r.length === p.length && r.every((a, i) => a.sig === p[i])
+    if (ahead) for (const a of r) if (a.t != null) { if (!--seen[a.sig]!) delete seen[a.sig]; unlog($, a.sig, a.t) }
+    const debt: Record<string, number> = { ...took.get(loop) } // a fork's copies of main's history
+    for (const [g, n] of Object.entries(seen)) if (g.split('|')[2] === (agent ?? '')) debt[g] = (debt[g] ?? 0) + n
+    if (ahead) for (const g of p) if (debt[g]) debt[g]-- // asked again already
+    rerun.set(at, debt)
+  }
+  const debt = rerun.get(at)
+  if (debt?.[sig]) { debt[sig]--; return true } // counted when it first came
   seen[sig] = (seen[sig] ?? 0) + 1
   touch($)
   return false
+}
+// takes away the row logged at t or later for an ask that turned out to be a replay's. The newest that matches: the replay's copy
+function unlog($: any, sig: string, t: number): void {
+  mutate(async () => {
+    const i = entries.findLastIndex(y => y.kind === 'prompt' && y.t >= t && sigOf(y.type ?? '', y.origin, y.agent, y.bytes ?? 0) === sig)
+    if (i < 0) return // counted but never logged (a skipped kind)
+    const gone = entries.splice(i, 1)[0]!
+    if (!gone.again && (gone.src === 'hook' || gone.src === 'plugin')) markAgain(entries, gone)
+    touch($)
+    $.ui.invalidate('ui.render')
+  }).catch(() => {})
 }
 
 // hook text logged before, word for word: every copy of x's text after the first in the log's order is `again`. Over the whole log,
@@ -750,7 +811,7 @@ export const register: Register = (on, options) => {
   // what identifies a call: the scrubbed Bash command, a file target, or a short handle (agent type and task, skill, query, URL).
   // Prompts, file contents and edit bodies stay out of the store
   const RESERVED = new Set(['tool', 'tool_use_id', 'consent', 'agentId']) // tool.call keys that are not the tool's arguments
-  // `tool: arg`. The server is dropped: the column already reads MCP, and the inspector keeps the full name. A handle key
+  // `tool: arg`. The server is dropped: the row stays short, and the inspector keeps the full name. A handle key
   // (url, query, path, command) beats the first string, which is often a mode flag (ctx_execute's language)
   const HANDLES = ['url', 'query', 'queries', 'path', 'file_path', 'command']
   const mcpDetail = (e: any): string => {
@@ -822,7 +883,7 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const began = Date.now() // before ready: a fresh instance's first load can take longer than the gap to a parallel call
     await ready($)
-    closed.add(e.agentId ?? 'main')
+    close(e.agentId ?? 'main')
     const detail = String(detailOf(e)).replace(/\s+/g, ' ').slice(0, 400)
     const cmd = e.tool === 'Bash' && e.command ? scrub(e.command).slice(0, 400) : undefined // newlines kept so heredocs stay readable in the inspector; 400 = the old detail cap, keeping the store budget
     const t0 = Date.now()
@@ -886,7 +947,7 @@ export const register: Register = (on, options) => {
           if (c.kind === 'thinking') { since ??= t; if (thought.length < PEEK) thought += c.text; phase('thinking', first(thought)) }
           else {
             if (since != null) { think += t - since; since = undefined }
-            if (c.kind === 'text') { if (text.length < PEEK) text += c.text; phase('writing', first(text)) }
+            if (c.kind === 'text') { if (text.length < PEEK) text += c.text; now.wrote = true; phase('writing', first(text)) }
             if (c.kind === 'tool') { asked.push(c.name); stepOf.set(c.id, key); if (stepOf.size > 200) stepOf.delete(stepOf.keys().next().value!); now.tool = c.name; phase('calling') }
           }
         }
@@ -999,21 +1060,23 @@ export const register: Register = (on, options) => {
     await ready($)
     for (const b of r.blocks) try {
       if (SENT_AS_ATTACHMENT.has(b.name)) continue // before replayed: never counted in `seen`
-      if (replayed($, sigOf(b.name, undefined, undefined, b.text.length))) continue
+      if (replayed($, sigOf(b.name, undefined, undefined, b.text.length), undefined, 'ctx')) continue
       if (b.name === 'claudeMd') memBytes = b.text.length
       push($, { kind: 'prompt', name: label(b.name), type: b.name, detail: '', outcome: kb(b.text.length), src: 'engine', bytes: b.text.length, peek: peek(b.text) }) } catch {}
     return r
   })
   on('prompt.attachment', async ($, e, next) => {
     const r = await next(e)
-    // a PostToolUse hook's context takes the first call waiting for one, even when left out of the request below: its place in
-    // the queue is spent either way, or the next attachment of that tool would fold under this one's call
-    const post = e.origin.kind === 'hook' && e.origin.event === 'PostToolUse' ? takePost((r.text ?? e.text ?? '').trimStart().match(/^\w+:(\S+) hook\b/)?.[1], e.agentId) : undefined
-    if (r.text == null) return r // left out of the request: never entered the context
+    // a PostToolUse hook's context takes the first call waiting for one, even when left out of the request: its place in the
+    // queue is spent either way, or the next attachment of that tool would fold under this one's call. Not a copy or a replay
+    const isPost = e.origin.kind === 'hook' && e.origin.event === 'PostToolUse'
+    const postTool = isPost ? (r.text ?? e.text ?? '').trimStart().match(/^\w+:(\S+) hook\b/)?.[1] : undefined
+    if (r.text == null) { if (isPost) takePost(postTool, e.agentId); return r } // left out of the request: never entered the context
     await ready($)
     const origin = e.origin.kind === 'engine' ? undefined : e.origin.event
     if (await copied($, e.agentId, e.type, origin, r.text.length)) return r // a fork's copy of main's history: in its context, but not new
     if (replayed($, sigOf(e.type, origin, e.agentId, r.text.length), e.agentId)) return r // counted before the skips below, so noisy and skipped kinds replay-match too
+    const post = isPost ? takePost(postTool, e.agentId) : undefined
     if (e.type === 'instructions' && r.text.length === memBytes) { memBytes = undefined; return r } // same bundle as the claudeMd block: log it once. One skip only, so a later re-injection (e.g. after compaction) still shows
     // the hook's name; its event shows in the inspector. The engine's framing carries the target: `PreToolUse:Bash hook additional context:`
     const target = r.text.trimStart().match(/^\w+:(\S+) hook\b/)?.[1]
@@ -1079,13 +1142,16 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // compaction drops a loop's past attachments from its history, so a later replay no longer asks them: forget their counts
+  // compaction drops a loop's past attachments from its history, so a later replay no longer asks them: forget their counts,
+  // and its lead: a replay starts at the first ask after the compaction
   on('session.compact', async ($, e, next) => {
     const r = await next(e)
     if (!('skip' in r)) {
       await ready($)
       const a = e.agentId ?? ''
       for (const g of Object.keys(seen)) if (g.split('|')[2] === a) delete seen[g]
+      if (e.agentId) took.delete(e.agentId) // a fork's inherited copies went with the rest
+      for (const v of ['att', 'ctx']) for (const m of [lead, rerun, pre, recent]) m.delete(`${e.agentId ?? 'main'}|${v}`)
       touch($)
     }
     return r
@@ -1171,7 +1237,7 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
     await ready($)
-    closed.add(e.agentId ?? 'main')
+    close(e.agentId ?? 'main')
     const status: Status = e.isAborted ? 'aborted' : e.reason === 'answer' ? 'ok' : 'failed' // an API error or a refusal ended it
     // a spawned agent keeps its cost and answer for its Agent row's inspector (linked: a foreground agent ends before its Agent row
     // is pushed). Main's and a plugin fork's are shown nowhere: a fork's reply already sits on its fork row
@@ -1248,7 +1314,7 @@ export const register: Register = (on, options) => {
           <Text> </Text>
           {kv('when', `${x.turn != null ? `${x.turn ? `turn ${x.turn}` : 'session start'} · ` : ''}${new Date(x.t).toLocaleTimeString()} (${ago(Date.now() - x.t)} ago)`)}
           {kv('agent', who)}
-          {steps !== rowsOf && kv('hidden', `${at + 1} of ${steps.length} in this turn, below the ${LEVELS[level]} level`)}
+          {steps !== rowsOf && at >= 0 && kv('hidden', `${at + 1} of ${steps.length} in this turn, below the ${LEVELS[level]} level`)}
           {x.src === 'hook' && x.origin && kv('trigger', [x.origin, x.detail].filter(Boolean).join(' · '))}
           {x.cmd ? kv('command', x.cmd) : x.detail && x.src !== 'hook' && kv(x.name === 'Bash' ? 'command' : 'input', x.detail)}
           {x.cmd && kv('what', x.detail)}
@@ -1256,6 +1322,7 @@ export const register: Register = (on, options) => {
           {x.exit != null && kv('exit', String(x.exit))}
           {x.check && kv('decided', `${x.check}${x.rule ? ` by rule ${x.rule}` : x.check === 'ask' ? `, then ${VIA[x.via ?? ''] ?? (x.via ? `by ${x.via}` : 'the mode or you')}` : ' by a mode, hook or the tool\'s own check'}`)}
           {x.ms != null && kv(x.child ? 'call' : 'took', secs(x.ms))}
+          {x.kind === 'turn' && !x.agent && (m => [splitText(turnOf(x), m) && kv('split', splitText(turnOf(x), m)), m.agents.size > 1 && kv('loops', loops(m.agents))])(turnIn(turnOf(x)))}
           {x.wait != null && kv('waited', `${secs(x.wait)} for ${x.waitFor ?? 'the decision'} before it ran, not in took`)}
           {x.kind === 'step' && kv('model', `${x.name}${x.effort != null ? ` · effort ${x.effort}` : ''}`)}
           {x.kind === 'side' && x.detail && kv('model', x.detail)}
@@ -1279,25 +1346,25 @@ export const register: Register = (on, options) => {
           {end?.outcome && kv('tokens', end.outcome)}
           {x.type && x.type !== x.name && kv('type', x.type)}
           {x.insight && (
-            <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1} marginTop={1}>
+            <Box flexDirection="column" marginTop={1}>
               <Text dimColor>what broke</Text>
               <Text wrap="wrap">{x.insight}</Text>
             </Box>
           )}
           {x.thought && (
-            <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1} marginTop={1}>
+            <Box flexDirection="column" marginTop={1}>
               <Text dimColor>thought, its first line</Text>
               <Text wrap="wrap">{x.thought}</Text>
             </Box>
           )}
           {x.peek && (
-            <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1} marginTop={1}>
+            <Box flexDirection="column" marginTop={1}>
               <Text dimColor>{x.kind === 'event' ? 'details' : x.kind === 'step' || x.kind === 'side' ? (stat(x) === 'failed' && !x.stop ? 'error' : x.peek.length >= PEEK ? `reply, first ${PEEK} chars` : 'reply') : x.kind === 'fork' ? (stat(x) === 'ok' ? 'reply' : 'reason') : x.kind === 'tool' ? (stat(x) === 'denied' ? 'reason' : x.peek.length >= PEEK ? `output, first ${PEEK} chars` : 'output') : stat(x) === 'feedback' ? 'feedback' : x.outcome.startsWith('block') ? 'reason' : 'text'}{x.bytes != null && x.bytes > PEEK ? ` (first ${PEEK} of ${x.bytes} chars)` : ''}</Text>
               <Text wrap="wrap">{x.peek}</Text>
             </Box>
           )}
           {end?.peek && (
-            <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1} marginTop={1}>
+            <Box flexDirection="column" marginTop={1}>
               <Text dimColor>{end.peek.length >= PEEK ? `reply, first ${PEEK} chars` : 'reply'}</Text>
               <Text wrap="wrap">{end.peek}</Text>
             </Box>
@@ -1313,6 +1380,8 @@ export const register: Register = (on, options) => {
     const agents: AgentInfo[] = await $.agent.list().catch(() => [])
     // a numbered name (tagOf) wins over the list's type; else the list's, so a teammate still reads `teammate`. ||: an empty type names nothing
     const nameOf = (id: string) => id === 'main' ? 'main' : / #\d+$/.test(names[id] ?? '') ? names[id]! : agents.find(a => a.id === id)?.type || names[id] || 'subagent'
+    // a row's loop prefix, kept short so the action keeps its room: the type cut to 10, its `#N` kept (`general-… #2 · `)
+    const whoOf = (id: string) => { const [, n = '', tag = ''] = nameOf(id).match(/^(.*?)( #\d+)?$/) ?? []; return `${n.length > 10 ? n.slice(0, 9) + '…' : n}${tag} · ` }
     const kids = new Map<string, AgentInfo[]>()
     const listed = new Set(agents.map(a => a.id))
     // a parent list() does not hold (engine fork, workflow agent) would hide the child: hang it under main
@@ -1359,23 +1428,23 @@ export const register: Register = (on, options) => {
     // autoFocus holds only on a site's first draw, so the ring is moved onto back once the redraw has drawn it
     const show = (x: Entry) => { if (page) pageBack = true; inspect = x; page = undefined; backTo = x; follow = false; $.ui.invalidate('ui.render'); $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}); $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: 'back' }).catch(() => {}) }) }
     // One row: disclosure, action (the only bright text, a button: on a fold's row it opens the fold, on any other the inspector),
-    // tool, status, duration. The right three cells have fixed widths and the action is cut to what is left, so the description
-    // truncates first and the columns line up
+    // then the time cell. No tool column: the action already names its verb (`Read x.ts`, `Run the tests`) and the inspector the
+    // tool. The cell has a fixed width and the action is cut to what is left, so the description truncates first and times line up
     const cols = e.props.bodyColumns ?? 40
-    const TOOL = 11, END = 12 // TOOL fits the longest label, a model's: Sonnet 5.5
+    const END = 9 // fits `● 123.4s`
     const fit = (s: string, n: number) => s.length <= n ? s : s.slice(0, Math.max(0, n - 1)) + '…'
     // mark: drawn in the disclosure's cell when there is none (the header's `›` on the agent the log is filtered to).
     // rail: a fold's tree guides (`│ ├ `), drawn dim in place of the indent. No press: plain text, a line with nothing to open.
-    // away: the place outside the project root the row reached, kept in the tail as ` ↗ ~/dir` (its end, when long) so it survives the cut
-    type Line = { k: string; act: string; press?: () => void; tool?: string; st?: [string, string?]; who?: string; tail?: string; disc?: [boolean, () => void]; indent?: number; rail?: string; mark?: string; away?: string }
-    const line = ({ k, act, press, tool = '', st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ', away }: Line) => {
-      if (away) tail += ` ↗ ${away.length > 32 ? '…' + away.slice(-31) : away}`
-      const room = cols - 2 - rail.length - who.length - tail.length - TOOL - END - 1
+    // away: the place outside the project root the row reached, kept in the tail as ` ↗ dir` (its last folder; the inspector and the
+    // setup page give the full path) so it survives the cut. A fold's ` +N` more places rides along: base() keeps what follows the last `/`
+    type Line = { k: string; act: string; press?: () => void; st?: [string, string?]; who?: string; tail?: string; disc?: [boolean, () => void]; indent?: number; rail?: string; mark?: string; away?: string }
+    const line = ({ k, act, press, st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ', away }: Line) => {
+      if (away) tail += ` ↗ ${fit(base(away), 20)}`
+      const room = cols - 2 - rail.length - who.length - tail.length - END - 1
       return (
         <Box key={k} flexDirection="row" overflow="hidden">
           <Box flexShrink={0} width={2 + rail.length}><Text dimColor>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : <Text>{mark}</Text>}</Box>
           <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{who ? <Text dimColor>{who}</Text> : null}{press ? <Button key={`b${k}`} label={fit(act, room) + tail} plain onPress={press} /> : <Text wrap="truncate-end">{fit(act, room) + tail}</Text>}</Box>
-          <Box flexShrink={0} width={TOOL}><Text dimColor>{fit(tool, TOOL - 1)}</Text></Box>
           <Box flexShrink={0} width={END}><Text color={st[1]} dimColor={!st[1]}>{fit(st[0], END - 1)}</Text></Box>
         </Box>
       )
@@ -1396,11 +1465,11 @@ export const register: Register = (on, options) => {
       if (!hiddenCtx(x)) m.agents.add(x.agent ?? 'main') // a loop whose only rows are hidden context (a fork's first request) shows nothing
       if (!x.agent && x.kind !== 'fork' && x.kind !== 'side') { m.first ??= x.t; m.last = Math.max(m.last ?? 0, x.kind === 'tool' ? x.t + (x.ms ?? 0) + (x.wait ?? 0) : x.kind === 'step' ? x.t + (x.ms ?? 0) : x.t) } // a call's and a step's t is its start. Main's rows only: a fork or a side request logging after the turn would stretch the span (both sit under main)
     }
-    // `model 30.1 s · tools 8.2 s · other 1.0 s`, where the turn's time went (splitOf): each turn end's own split, else counted now
-    // from the rows still logged; the running turn up to now, a turn whose end was never logged over its rows' span. Parts under
-    // 0.1 s are left out; other is the engine's and plugins' own work between steps
+    // `model 30.1s · tools 8.2s · other 1.0s`, where the turn's time went (splitOf), largest first: each turn end's own split, else
+    // counted now from the rows still logged; the running turn up to now, a turn whose end was never logged over its rows' span.
+    // Parts under 0.1 s are left out; other is the engine's and plugins' own work between steps. most: the header's two largest
     const SHOW = ['model', 'tools', 'agents', 'hooks', 'compact', 'permission', 'you', 'other']
-    const splitText = (n: number, m: Turn) => {
+    const splitText = (n: number, m: Turn, most = Infinity) => {
       const parts = SPLIT.map(() => 0)
       let span = 0
       const add = (xs: number[], ms: number) => { xs.forEach((v, i) => { parts[i]! += v }); span += ms }
@@ -1410,7 +1479,7 @@ export const register: Register = (on, options) => {
       else if (!m.ends.length && m.first != null && m.last! > m.first) add(splitOf(m.xs, m.first, m.last!), m.last! - m.first)
       const by: Record<string, number> = { other: span - parts.reduce((a, b) => a + b, 0) }
       SPLIT.forEach((k, i) => { by[k] = parts[i]! })
-      return SHOW.filter(k => by[k]! >= 100).map(k => `${k} ${secs(by[k])}`).join(' · ')
+      return SHOW.filter(k => by[k]! >= 100).sort((p, q) => by[q]! - by[p]!).slice(0, most).map(k => `${k} ${secs(by[k])}`).join(' · ')
     }
     // one name per kind of loop: a plugin that forks every step names four loops in a turn, `you-should-know ×4`; numbered agents
     // count as their type, `general-purpose ×2`
@@ -1422,16 +1491,16 @@ export const register: Register = (on, options) => {
     // a turn whose end was never logged (the plugin reloaded mid-turn: a new instance gets no turn.complete for it) shows the span of
     // main's rows, marked ≈ as an estimate; the current turn counts up while it runs (tick redraws), — when its rows are not in yet
     const took = (n: number, m: Turn) => { const from = turnAt ?? m.first; return n === turnNo && busy && from != null ? `running ${secs(now - from)}` : m.ms != null ? secs(m.ms) : n !== turnNo && m.first != null && m.last! > m.first ? `≈ ${secs(m.last! - m.first)}` : '—' }
-    // `#2 · model 60.1 s · tools 12.0 s · main, scout · 3 hidden    73.4 s`: the split, the loops only when more than one acted, the
-    // count when any row is hidden. The time sits flush right, over the rows' status column, pushed there by a growing spacer; that
-    // cell never shrinks, and on a narrow pane the split and loops truncate first
+    // `#2 · model 60.1s · tools 12.0s · 3 hidden    73.4s`: the split's two largest parts, the count when any row is hidden. `#2`
+    // opens the turn's inspector, which holds the whole split and the loops that acted. The time sits flush right, over the rows'
+    // time cell, pushed there by a growing spacer; that cell never shrinks, and on a narrow pane the split truncates first
     const header = (n: number, k: string) => {
       const m = turnIn(n), hid = hidden.get(n)?.length // not `h`: that name is the JSX factory, and shadowing it breaks every tag below
       const time = `${m.aborted ? '⚠ ' : ''}${took(n, m)}`
       return (
         <Box key={k} flexDirection="row" overflow="hidden">
-          <Box flexShrink={0}><Text weight="semibold">{n ? `#${n}` : 'start'}</Text></Box>
-          <Box flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end" dimColor>{[splitText(n, m), m.agents.size > 1 ? loops(m.agents) : ''].filter(Boolean).map(s => ` · ${s}`).join('')}</Text></Box>
+          <Box flexShrink={0}>{m.ends.length ? <Button key={`th${n}`} label={n ? `#${n}` : 'start'} plain onPress={() => show(m.ends.at(-1)!)} /> : <Text weight="semibold">{n ? `#${n}` : 'start'}</Text>}</Box>
+          <Box flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end" dimColor>{(s => s && ` · ${s}`)(splitText(n, m, 2))}</Text></Box>
           {hid ? <Box flexShrink={0}><Text dimColor> · </Text><Button key={`hid${n}`} label={`${hid} hidden`} plain dimColor onPress={() => show(hidden.get(n)![0]!)} /></Box> : null}
           <Box flexGrow={1} flexShrink={0} minWidth={2} />
           <Box flexShrink={0}>
@@ -1496,7 +1565,11 @@ export const register: Register = (on, options) => {
     const spans = new Map<string, number>() // a group's drawn rows, by its key: how far an opened fold runs, for the window to show it
     const keyOf = (g: Group) => `g${idOf(g.by ?? g.xs[0])}` // a group's own row; its first entry's id keys its fold in expanded
     const inner = (y: Entry) => { const key = `e${idOf(y)}`; where.set(y, key); return key }
-    const entryRow = (y: Entry, k: string, rail: string, who = '') => line({ k, act: action(y), press: () => show(y), tool: toolOf(y), st: cell(y), who, rail, away: y.out })
+    // a model request's row names its model only when it is not main's (a subagent on Haiku, the engine's own on another): the
+    // tool column that named it is gone, and the same model on every request is noise
+    const actOf = (y: Entry) => { const id = y.kind === 'step' ? y.name : y.kind === 'side' ? y.detail : undefined
+      return id && setup.model && modelName(id) !== modelName(setup.model) ? `${modelName(id)} · ${action(y)}` : action(y) }
+    const entryRow = (y: Entry, k: string, rail: string, who = '') => line({ k, act: actOf(y), press: () => show(y), st: cell(y), who, rail, away: y.out })
     // a fold's places outside the root: the first, and how many more
     const awayOf = (ys: Entry[]) => { const o = [...new Set(ys.flatMap(y => y.out ? [y.out] : []))]; return o.length ? `${o[0]}${o.length > 1 ? ` +${o.length - 1}` : ''}` : undefined }
     // a call's wait, drawn from its own fields under it; pressed, the call's inspector
@@ -1520,16 +1593,16 @@ export const register: Register = (on, options) => {
         const body = under.get(x) ?? [], nested = groupsOf(body), reply = first(runs(x.child).at(-1)?.peek)
         const many = new Set(body.map(y => y.agent)).size > 1 // a grandchild shares the fold: rows name their loop
         p = { target: x, members: [x, ...body], nested, // a closed fold's rows: back lands on the fold; drawn ones claim their own
-          head: (rail, who, _, press, disc) => line({ k, act: action(x), press, tool: toolOf(x), st: ran(x), who, disc, rail, away: awayOf(body) }),
+          head: (rail, who, _, press, disc) => line({ k, act: action(x), press, st: ran(x), who, disc, rail, away: awayOf(body) }),
           // the Agent row's inspector last, where the reply came: the row itself opens the fold
           parts: body.length ? [
-            ...nested.map((h, j) => (rail: string, rest: string) => drawGroup(h, rail, rest, many && h.xs[0].agent ? `${nameOf(h.xs[0].agent)} · ` : '', j === nested.length - 1)),
+            ...nested.map((h, j) => (rail: string, rest: string) => drawGroup(h, rail, rest, many && h.xs[0].agent ? whoOf(h.xs[0].agent) : '', j === nested.length - 1)),
             rail => [line({ k: `${k}i`, act: reply ? `reply: ${reply}` : 'input & result', press: () => show(x), rail })],
           ] : [] }
       } else if (g.kind === 'rep') {
         const why = x.kind === 'tool' ? broke(last) : [] // a hook row already reads `name: what it said`
         p = { target: last, members: g.xs, nested: [],
-          head: (rail, who, _, press, disc) => line({ k, act: action(x), tail: n > 1 ? ` ×${n}` : '', press, tool: toolOf(x), st: cell(x, total(g.xs)), who, disc, rail, away: awayOf(g.xs) }),
+          head: (rail, who, _, press, disc) => line({ k, act: action(x), tail: n > 1 ? ` ×${n}` : '', press, st: cell(x, total(g.xs)), who, disc, rail, away: awayOf(g.xs) }),
           parts: [
             ...why.map((s, j) => (rail: string) => [note(`${k}n${j}`, s, j === 0, rail, () => show(last))]),
             ...(hooksUnder.get(last) ?? []).map(y => (rail: string) => [entryRow(y, inner(y), rail)]), // the hook that refused it, beside why
@@ -1539,7 +1612,7 @@ export const register: Register = (on, options) => {
         // a hook that refused or answered the call shows in the event's cell, so the closed fold still says so
         const said = g.xs.find(loud)
         p = { target: x, members: g.xs, nested: [], parts: g.xs.map(y => (rail: string) => [entryRow(y, inner(y), rail)]),
-          head: (rail, who, _, press, disc) => line({ k, act: `${x.origin ?? 'hook'} ×${n}`, press, tool: 'Hook', st: said ? cell(said) : [secs(total(g.xs))], who, disc, rail }) }
+          head: (rail, who, _, press, disc) => line({ k, act: `${x.origin ?? 'hook'} ×${n}`, press, st: said ? cell(said) : [secs(total(g.xs))], who, disc, rail }) }
       } else if (g.kind === 'one' || n === 1) {
         const kids = hooksUnder.get(x) ?? []
         // with hooks the row opens its fold: one line per event, a group of one being its row, and between PreToolUse and the rest
@@ -1554,16 +1627,16 @@ export const register: Register = (on, options) => {
         // the wait comes after the check, before the tool runs: between the PreToolUse hooks and the call's own line
         const waited = x.wait != null ? [(rail: string) => [waitLine(x, rail)]] : []
         // a step's calls the API ran itself (the advisor), each its own timed line: inside the request's time, not beside it
-        const server = (x.server ?? []).map(([n, ms], j) => (rail: string) => [line({ k: `${k}s${j}`, act: cap(n.replace(/_/g, ' ')), press: () => show(x), tool: 'API', st: [secs(ms ?? undefined)], rail })])
+        const server = (x.server ?? []).map(([n, ms], j) => (rail: string) => [line({ k: `${k}s${j}`, act: cap(n.replace(/_/g, ' ')), press: () => show(x), st: [secs(ms ?? undefined)], rail })])
         p = { target: x, members: g.xs, nested,
           parts: kids.length || waited.length || server.length ? [...pre.map(ev), ...waited, ...server, own, ...post.map(ev)] : [],
-          head: (rail, who, _, press, disc) => line({ k, act: action(x), press, tool: toolOf(x), st: cell(x), who, disc, rail, away: x.out }) }
+          head: (rail, who, _, press, disc) => line({ k, act: actOf(x), press, st: cell(x), who, disc, rail, away: x.out }) }
       }
       else if (g.kind === 'ctx' && bucketsOf(g.xs).length > 1) {
         const bs = bucketsOf(g.xs)
         const nested: Group[] = bs.map((b): Group => b.xs.length > 1 ? { kind: 'bucket', xs: b.xs as Group['xs'], by: b.xs[1] } : { kind: 'one', xs: b.xs as Group['xs'] })
         p = { target: x, members: g.xs, nested, parts: nested.map(h => (rail: string, rest: string) => drawGroup(h, rail, rest, '', false)),
-          head: (rail, who, _, press, disc) => line({ k, act: bs.map(b => b.xs.length > 1 ? `${b.name} ×${b.xs.length}` : b.name).join(' · '), press, tool: 'Engine', who, disc, rail }) }
+          head: (rail, who, _, press, disc) => line({ k, act: bs.map(b => b.xs.length > 1 ? `${b.name} ×${b.xs.length}` : b.name).join(' · '), press, who, disc, rail }) }
       }
       else {
         // a member's wait goes just above it, where it happened: the member's own hooks stay in its inspector, as before
@@ -1571,10 +1644,10 @@ export const register: Register = (on, options) => {
           head: (rail, who, newest, press, disc) => {
             const growing = newest && g.kind === 'look' && (x.agent ? agents.find(a => a.id === x.agent)?.status === 'running' : busy && turnOf(x) === turnNo)
             const one = bucketsOf(g.xs)[0]! // a bucket's fold, or a context fold of one bucket
-            const [act, tool, st] = g.kind === 'ctx' || g.kind === 'bucket' ? [one.head === one.name ? `${one.name} ×${n}` : one.head, 'Engine', '']
-              : g.kind === 'edit' ? [`${action(x)} ×${n}`, 'Change', secs(total(g.xs))]
-              : [`Explore ${common(g.xs.map(y => y.detail)) || 'files'} ×${n}${growing ? ` · ${action(last)}` : ''}`, 'Look', secs(total(g.xs))]
-            return line({ k, act, press, tool, st: [st], who, disc, rail, away: awayOf(g.xs) })
+            const [act, st] = g.kind === 'ctx' || g.kind === 'bucket' ? [one.head === one.name ? `${one.name} ×${n}` : one.head, '']
+              : g.kind === 'edit' ? [`${action(x)} ×${n}`, secs(total(g.xs))]
+              : [`Explore ${common(g.xs.map(y => y.detail)) || 'files'} ×${n}${growing ? ` · ${action(last)}` : ''}`, secs(total(g.xs))]
+            return line({ k, act, press, st: [st], who, disc, rail, away: awayOf(g.xs) })
           } }
       }
       memo.set(g, p)
@@ -1611,16 +1684,21 @@ export const register: Register = (on, options) => {
         for (const y of hidden.get(n) ?? []) if (!where.has(y)) where.set(y, hk) // back from a hidden row: its turn's header
       }
       tops.add(keyOf(g))
-      rows.push(...drawGroup(g, '', '', x.agent && turns.get(n)!.agents.size > 1 ? `${nameOf(x.agent)} · ` : '', j === top.length - 1))
+      rows.push(...drawGroup(g, '', '', x.agent && turns.get(n)!.agents.size > 1 ? whoOf(x.agent) : '', j === top.length - 1))
     })
     // What streams or runs right now, below the rows: each loop's model request and each call in flight, ● counting up (tick
     // redraws while a turn or an agent runs). Not entries yet, so nothing to open: plain lines, under the running turn's header
     const nowAct = (l: Live) => l.row ? `${l.asking ? 'Waiting for your permission: ' : ''}${action({ t: l.t, ...l.row })}` : l.phase === 'thinking' ? `Thinking${l.said ? `: ${l.said}` : ''}`
       : l.phase === 'writing' ? l.said || 'Writing' : l.phase === 'calling' ? `Writing a ${l.tool ?? 'tool'} call` : 'Waiting for the first token'
-    const inFlight = view === 'all' || view === 'agent' ? [...liveNow].filter(([, l]) => only === undefined || (l.loop ?? 'main') === only) : []
+    // only a line whose row will stay visible at this level: one that ends as a hidden row would flash and vanish (a request
+    // that only calls tools ranks debug). A permission prompt always shows: it waits for the person
+    const shows = (l: Live) => l.asking || (l.row ? lvl({ t: l.t, ...l.row }) : l.wrote ? 1 : 0) >= level
+    const inFlight = view === 'all' || view === 'agent' ? [...liveNow].filter(([, l]) => (only === undefined || (l.loop ?? 'main') === only) && shows(l)) : []
     if (inFlight.length && busy && cur !== turnNo) { if (cur !== undefined) rows.push(<Text key={`gap${rows.length}`}> </Text>); rows.push(header(turnNo, `turn${turnNo}`)); cur = turnNo }
-    for (const [k, l] of inFlight) rows.push(line({ k: `now${k}`, act: nowAct(l), tool: l.row ? toolOf({ t: l.t, ...l.row }) : modelName(l.model ?? ''), st: [`● ${secs(now - l.t)}`, 'yellow'], who: l.loop ? `${nameOf(l.loop)} · ` : '' }))
-    const LEGEND = ['✗ refused or broke · ↩ hook feedback to the model · ⚠ slow or aborted · ∅ no match · ● running now · ≈ estimated · ↗ outside the project root · ▸ press to open', 'ctrl+↑↓ previous/next prompt · o every fold · s setup · j newest · b back · n p next/prev in the inspector · k this legend']
+    for (const [k, l] of inFlight) rows.push(line({ k: `now${k}`, act: nowAct(l), st: [`● ${secs(now - l.t)}`, 'yellow'], who: l.loop ? whoOf(l.loop) : '' }))
+    // short items packed into as many rows as the width needs (pack), each row one element, so the header's height stays counted
+    const LEGEND = ['✗ refused or broke', '↩ hook feedback to the model', '⚠ slow or aborted', '∅ no match', '● running now', '≈ estimated', '↗ outside the project root', '▸ press to open',
+      'a g h u views', 'l level', 'o every fold', 's setup', 'j newest', 'ctrl+↑↓ previous/next prompt', 'b back', 'n p next/prev in the inspector', 'k this legend']
     // `no agent entries for scout at notice or above · /agentlog level debug: every row · a: all views · main: clear the filter`; only the filters set
     const empty = () => {
       if (!entries.length) return 'no entries yet'
@@ -1628,9 +1706,9 @@ export const register: Register = (on, options) => {
       const tips = [level > 0 && '/agentlog level debug: every row', view !== 'all' && 'a: all views', only && `${only === 'main' ? 'main' : nameOf(only)}: clear the filter`].filter(Boolean)
       return [`no ${view === 'all' ? '' : `${view} `}entries${of}${level > 0 ? ` at ${LEVELS[level]} or above` : ''}`, ...tips].join(' · ')
     }
-    // The controls never clip: one row `view: a: all … level: l: info   o: unfold   k: legend` when it fits, else the bare buttons packed into
-    // as many rows as the width needs. Counted, not wrapped by flex: the window needs the header's exact height. plain + hotkey
-    // draws `a: all`, label + 3 cells; Button takes no bold, so the views not active are drawn dim instead
+    // The controls never clip: the bare buttons, `a: all  g: agent … k: ?  #↑↓`, packed into as many rows as the width needs. Every
+    // button is drawn because a hotkey only presses a drawn Button. Counted, not wrapped by flex: the window needs the header's exact
+    // height. plain + hotkey draws `a: all`, label + 3 cells; Button takes no bold, so the views not active are drawn dim instead
     // the window's top to the previous or next prompt's turn header (`#3`); past the last, the end. From the inspector or the setup page, back to the log first
     const heads = rows.flatMap((r, i) => String(r.props?.key).startsWith('turn') ? [i] : [])
     const toTurn = (dir: -1 | 1) => {
@@ -1657,12 +1735,9 @@ export const register: Register = (on, options) => {
     }} />
     const VIEW_KEYS: Partial<Record<View, string>> = { all: 'a', agent: 'g', harness: 'h', outside: 'u' }
     const items: [number, any][] = SHOWN.map((v): [number, any] => [v.length + 3, vbtn(v, VIEW_KEYS[v]!)])
-    const wide = 'view:'.length + items.reduce((n, [w]) => n + 2 + w, 0) + '   level: '.length + LEVELS[level]!.length + 3 + '   o: unfold'.length + '   k: legend'.length + '   #↑↓'.length
     const bare: [number, any][] = [...items, [LEVELS[level]!.length + 3, lbtn], [9, obtn], [4, kbtn('?')], [3, tbtn]]
-    const controls = wide <= cols - 1
-      ? [<Box key="ctl0" flexDirection="row" overflow="hidden"><Text dimColor>view:</Text>{items.map(([, el], i) => <Box key={`c${i}`} flexShrink={0}><Text>  </Text>{el}</Box>)}<Text dimColor>   level: </Text>{lbtn}<Text>   </Text>{obtn}<Text>   </Text>{kbtn('legend')}<Text>   </Text>{tbtn}</Box>]
-      : pack(bare.map(([w]) => w), cols - 1).map((row, r) => <Box key={`ctl${r}`} flexDirection="row" columnGap={2} overflow="hidden">{row.map(i => bare[i]![1])}</Box>)
-    // An agent reads as a log row: `name: task`, a button that filters the log to it; a teammate's name in the tool column; in the
+    const controls = pack(bare.map(([w]) => w), cols - 1).map((row, r) => <Box key={`ctl${r}`} flexDirection="row" columnGap={2} overflow="hidden">{row.map(i => bare[i]![1])}</Box>)
+    // An agent reads as a log row: `name: task`, a button that filters the log to it, a teammate's name after its type; in the
     // status cell its run as its Agent row shows it (ran), else (a teammate, a fork: no Agent row spawned it) its status glyph.
     // Capped so the header leaves the log room: three rows while finished ones are folded, a third of the body with them shown
     const bodyRows = e.props.scroll?.bodyRows ?? 24
@@ -1673,7 +1748,7 @@ export const register: Register = (on, options) => {
       if (a === TEAM) return <Box key="team" flexDirection="row"><Text dimColor>{' '.repeat(2 + 2 * depth)}team</Text></Box>
       const x = spawnOf.get(a.id), [glyph, c] = STATUS[a.status] ?? ['?'], t = started.get(a.id)
       const st: [string, string?] = x ? ran(x) : [a.status === 'running' && t != null ? `${glyph} ${secs(now - t)}` : glyph, c]
-      return line({ k: `a${a.id}`, act: `${nameOf(a.id)}: ${a.description}`, press: () => pick(a.id), tool: a.name ?? '', st, indent: 2 * depth, mark: only === a.id ? '›' : ' ' })
+      return line({ k: `a${a.id}`, act: `${nameOf(a.id)}${a.name ? ` (${a.name})` : ''}: ${a.description}`, press: () => pick(a.id), st, indent: 2 * depth, mark: only === a.id ? '›' : ' ' })
     }
     const toggle = showDone ? `hide finished ▾${more ? ` · ${more} not shown` : ''}` : `${[more && `+${more} more`, done && `${done} done`].filter(Boolean).join(' · ')} ▸`
     // every element of the header and the log is one row, so the window knows the header's height and how many log rows fit under it
@@ -1681,16 +1756,15 @@ export const register: Register = (on, options) => {
     // the setup page. Counted from every entry, whatever the view, level or filter
     if (!setup.asked) refreshSetup($).then(() => $.ui.invalidate('ui.render')).catch(() => {})
     const problems = problemsOf(entries)
-    const hookN = Object.values(hookCfg ?? {}).reduce((n, hs) => n + hs.length, 0)
+    const hookN = new Set(Object.values(hookCfg ?? {}).flat().map(h => h.cmd ?? h.name)).size // distinct scripts, not registrations: context-mode registers one script on 9 PreToolUse matchers
     const servers = new Map<string, number>() // MCP server -> its tools, from the tool list (`mcp__server__tool`) and the connection records
     for (const t of setup.tools ?? []) if (t.mcp) { const sv = t.name.split('__')[1] ?? t.name; servers.set(sv, (servers.get(sv) ?? 0) + 1) }
     for (const sv of setup.mcp.keys()) if (!servers.has(sv)) servers.set(sv, 0)
     const peak = setup.limits.reduce<Setup['limits'][number] | undefined>((m, l) => !m || l.percentUsed > m.percentUsed ? l : m, undefined)
     const plugins = setup.plugins.size || enabled.length
     const bgN = setup.bg?.tasks.length ?? 0, cronN = setup.bg?.crons.length ?? 0
-    const setupText = [setup.model && `${modelName(setup.model)}${setup.effort != null ? ` ${setup.effort}` : ''}`, setup.mode, hookN && `${hookN} hooks`, plugins && `${plugins} plugins`,
-      servers.size && `${servers.size} MCP`, bgN && `${bgN} in background`, cronN && `${cronN} cron${cronN > 1 ? 's' : ''}`, setup.cost != null && `$${setup.cost.toFixed(2)}`,
-      peak && `limit ${Math.round(peak.percentUsed)}%`].filter(Boolean).join(' · ') || 'setup'
+    // the row itself says only what needs the eye: the model, and a rate limit once it nears (80%); the rest is on the page
+    const setupText = [setup.model && `${modelName(setup.model)}${setup.effort != null ? ` ${setup.effort}` : ''}`, peak && peak.percentUsed >= 80 && `limit ${Math.round(peak.percentUsed)}%`].filter(Boolean).join(' · ') || 'setup'
     const openSetup = () => { page = 'setup'; inspect = undefined; follow = false; $.ui.invalidate('ui.render'); $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}); $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: 'back' }).catch(() => {}) }) }
     // The setup page: the session's setup and how it held up. Hook runs and plugins come from the collector (OTEL export on); without
     // it, the hooks and plugins your settings name. A problem's row opens its inspector
@@ -1726,7 +1800,7 @@ export const register: Register = (on, options) => {
           {kw('calls outside', outs.length ? outs.slice(0, 12).map(([p, n]) => n > 1 ? `${p} ×${n}` : p).join(', ') + (outs.length > 12 ? `, +${outs.length - 12} more` : '') : 'none reached outside the root')}
           {title('pb', problems.length ? `Problems: ${problems.join(', ')}` : 'Problems: none this session')}
           {bad.slice(-20).map(x => <Box key={`p${idOf(x)}`} flexDirection="row"><Button key={`pb${idOf(x)}`} label={fit(`✗ ${action(x)}`, cols - 4)} plain onPress={() => show(x)} /></Box>)}
-          {title('hk', `Hooks: ${hookN} settings and plugin command hooks${setup.runs.size ? '; runs as the collector counted them' : ''}`)}
+          {title('hk', `Hooks: ${hookN} distinct settings and plugin hook commands${setup.runs.size ? '; runs as the collector counted them' : ''}`)}
           {events.map(ev => { const r = setup.runs.get(ev), names = [...new Set((hookCfg?.[ev] ?? []).map(h => h.name))]
             return kw(ev, [names.join(', ') || 'no hook in your settings', r && `${r.n} run${r.n === 1 ? '' : 's'} · ${secs(r.ms)}${r.errors ? ` · ${r.errors} failed` : ''}${r.cancelled ? ` · ${r.cancelled} cancelled` : ''}`].filter(Boolean).join(' — '), `hk${ev}`) })}
           {title('pl', `Plugins: ${plugins}`)}
@@ -1752,13 +1826,14 @@ export const register: Register = (on, options) => {
         {problems.length ? <Box flexShrink={0}><Text color="red">{`✗ ${problems.join(' · ')}  `}</Text></Box> : null}
         <Box flexShrink={1} minWidth={0} overflow="hidden"><Button key="fsetup" label={setupText} hotkey="s" plain dimColor onPress={openSetup} /></Box>
       </Box>,
-      <Box key="main" flexDirection="row" overflow="hidden" columnGap={2}>
+      // the agent tree's root, only once there is a tree or a filter to clear: a session without subagents has nothing to pick
+      ...(agents.length || only ? [<Box key="main" flexDirection="row" overflow="hidden" columnGap={2}>
         <Button key="fmain" label="main" plain onPress={() => pick('main')} />
-        {only ? <Button key="fclear" label={fit(`filter: ${nameOf(only)} ✕`, cols - 8)} plain dimColor onPress={() => pick(only!)} /> : !agents.length && <Text dimColor>no subagents yet</Text>}
-      </Box>,
+        {only ? <Button key="fclear" label={fit(`filter: ${nameOf(only)} ✕`, cols - 8)} plain dimColor onPress={() => pick(only!)} /> : null}
+      </Box>] : []),
       ...tree.slice(0, most).map(agentRow),
       ...(done || more ? [<Box key="done" flexDirection="row"><Text>  </Text><Button key="fdone" label={toggle} plain dimColor onPress={() => { showDone = !showDone; $.ui.invalidate('ui.render') }} /></Box>] : []),
-      ...(legend ? LEGEND.map((l, j) => <Text key={`leg${j}`} dimColor wrap="truncate-end">{l}</Text>) : []),
+      ...(legend ? pack(LEGEND.map(l => l.length), cols - 1).map((row, j) => <Text key={`leg${j}`} dimColor wrap="truncate-end">{row.map(i => LEGEND[i]).join('  ')}</Text>) : []),
       <Text key="rule" dimColor>{'─'.repeat(Math.max(1, cols - 1))}</Text>,
     ]
     // taken before the inspector draws: `o` pressed there must not move the window that back is about to centre

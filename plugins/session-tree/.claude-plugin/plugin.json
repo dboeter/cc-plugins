@@ -1,0 +1,12 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "session-tree",
+  "version": "0.1.0",
+  "description": "Pane with every Claude session on this machine as a tree under its repo; pressing one focuses its herdr pane, or attaches a background one in a new herdr tab; ⋯ shows its info and stops or removes a background one, or kills an interactive one. /sessiontree toggles the pane.",
+  "author": {
+    "name": "dboeter",
+    "email": "daan.boeter@hotmail.com"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/dboeter/cc-plugins"
+}
