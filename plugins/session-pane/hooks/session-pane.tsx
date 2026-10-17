@@ -162,7 +162,7 @@ async function remember($: EngineInterface, snap: SessionModel) {
   const recent = ((await $.store.get('recent').catch(() => undefined)) as string[] | undefined) ?? []
   if (recent[0] === sid) return
   const next = [sid, ...recent.filter(x => x !== sid)]
-  for (const old of next.slice(KEEP_SESSIONS)) await $.store.delete(snapKey(old)).catch(() => {})
+  await Promise.all(next.slice(KEEP_SESSIONS).map(old => $.store.delete(snapKey(old)).catch(() => {})))
   await $.store.set('recent', next.slice(0, KEEP_SESSIONS))
 }
 
