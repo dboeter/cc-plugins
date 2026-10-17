@@ -181,7 +181,7 @@ async function flushOnce($: EngineInterface): Promise<void> {
   if (dir && !full) {
     // the cap: a plugin looping on $ calls (skins' state.get on every redraw) wrote ~250 KB/s; past maxMB the session
     // stops writing for good, its rows only in the pane. Every chunk before the current one holds ≤ROTATE chars
-    for (const c of done) if (c.n * ROTATE <= cap) await $.fs.write(file(c.n), c.text)
+    await Promise.all(done.filter(c => c.n * ROTATE <= cap).map(c => $.fs.write(file(c.n), c.text)))
     if ((chunks.n - 1) * ROTATE + chunks.buf.length > cap) full = true
     else await $.fs.write(file(chunks.n), chunks.buf)
   }
