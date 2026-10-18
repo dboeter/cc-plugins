@@ -249,9 +249,9 @@ const wordsOf = (e: { text: string; command?: { name: string } }): string => {
 const OWN = new Set(['composer', 'bridge', 'sdk']) // PromptOrigin kinds that are the person's own prompt
 let key = '' // this session's store key; one per session so concurrent sessions never clobber each other
 let inspect: Entry | undefined // the entry shown in full; set, the pane draws it in place of the log (a second pane cannot take the keys from this one)
-let page: 'setup' | undefined // the setup page, drawn in place of the log as the inspector is
+let page: 'setup' | 'keys' | undefined // the setup page or the keys page (what each mark and key means), drawn in place of the log as the inspector is
 let pageBack = false // the inspector opened from the setup page: back returns to the page, not the log
-// The session's setup as the hooks saw it, for the setup row and page, in memory only: the engine's version and tools (asked at
+// The session's setup as the hooks saw it, for the setup button and page, in memory only: the engine's version and tools (asked at
 // session.start), the main loop's last model and effort (its steps), the permission mode (every classic event carries it), usage
 // (session.measure), and from the collector, with OTEL export on: the plugins the engine loaded and the MCP servers it connected
 // (records at startup), and per hook event the settings hooks' runs, the silent ones included (hook_execution_complete). bg: the
@@ -279,7 +279,8 @@ const idOf = (x: Entry) => ids.get(x) ?? (ids.set(x, ++seq), seq)
 let expanded = new Set<number>() // expanded groups, keyed by the id of their first entry; kept across views, levels and filters
 let backTo: Entry | undefined // the entry whose row opened the inspector: back scrolls to that row rather than to the end
 let showDone = false // finished agents drawn in the tree rather than counted
-let legend = false
+// turns whose rows below the level are drawn in place, dim, by their header's `N hidden ▸`; kept across views and levels
+const openTurns = new Set<number>()
 let busy = false // main's turn is running: the header counts its time up
 // The pane scrolls its own rows under a header that never moves: the engine's window stays at the top (ui.scroll) and the log
 // draws rows win..win+avail. winMax is the last render's, for the scroll hook; backKey is the row back centres on
@@ -393,7 +394,7 @@ const PATHS = /(?:^|[\s"'=(])((?:~|\$HOME|\$\{HOME\})?\/[^\s"'|;&<>()`]+)/g // t
 // From a command's words only paths under home count: /tmp, /usr and /dev are scratch and system files, not work elsewhere, and
 // a word need not be a path. undefined: inside the root, or not known (no path, a variable left in it)
 // A place outside the root that is routine, not another project: Claude Code's own ~/.claude (memory, plans, settings) and
-// scratch space (/tmp, /var/tmp, macOS /private/tmp). Its ↗ stays dim; any other place draws magenta and counts in the setup row
+// scratch space (/tmp, /var/tmp, macOS /private/tmp). Its ↗ stays dim; any other place draws magenta and counts in the controls
 export const routine = (p: string) => /^~\/\.claude(\/|$)/.test(p) || /^\/(private\/)?(var\/)?tmp(\/|$)/.test(p)
 export const outsideOf = (tool: string, a: { path?: string; cmd?: string }, root: string, cwd: string, home?: string): string | undefined => {
   const away = (p?: string) => p && !under(p, root) ? tilde(p, home) : undefined
@@ -495,14 +496,14 @@ const hiddenCtx = (x: Entry) => x.kind === 'prompt' && (!x.src || x.src === 'eng
 // preset views: one predicate over stored entries, applied alongside the agent filter and the level
 const VIEWS = {
   all: (x: Entry) => !hiddenCtx(x),
-  agent: (x: Entry) => x.kind === 'tool' || x.kind === 'turn' || x.kind === 'fork' || x.kind === 'step', // what the model did: its requests, calls and turns, and what it answered a plugin's fork
+  model: (x: Entry) => x.kind === 'tool' || x.kind === 'turn' || x.kind === 'fork' || x.kind === 'step', // what the model did: its requests, calls and turns, and what it answered a plugin's fork
   harness: (x: Entry) => x.kind === 'hook' || x.kind === 'fork' || x.kind === 'event' || x.kind === 'side' || (x.kind === 'prompt' && !hiddenCtx(x)) || (x.kind === 'tool' && (x.rule != null || x.check === 'deny')), // what your setup and the engine did: hooks, the text they injected, plugins' forks and model calls, rule decisions, the engine's own requests and what it reported happening
   context: (x: Entry) => x.bytes != null && x.kind !== 'hook', // hidden for now: no button, no command. Prompt blocks and attachments, everything with an injected size
   // where the session went beyond its project root: the calls that reached outside it, the directories and worktrees it gained or lost, its cwd changes
   outside: (x: Entry) => !!x.out || (x.kind === 'event' && /^(directory added|worktree created|worktree removed)$/.test(x.name)) || (x.kind === 'prompt' && ctxOf(x)[0] === 'CWD'),
 } satisfies Record<string, (x: Entry) => boolean>
 type View = keyof typeof VIEWS
-const SHOWN: View[] = ['all', 'agent', 'harness', 'outside'] // the views the controls and /agentlog offer
+const SHOWN: View[] = ['all', 'model', 'harness', 'outside'] // the views the controls and /agentlog offer
 let view: View = 'all'
 // How much a row matters, derived at draw time like stat so stored entries rank too and the rules can change. The pane shows
 // rows at `level` or above. error: refused or broke. notice: changed or decided something (shell, edits, agents, web, a rule's
@@ -720,7 +721,7 @@ async function load($: any): Promise<void> {
   if (key) { stepOf.clear(); bills = []; unbilled = [] } // the old session's requests; not on the first load, which a step's push can trigger after its pairing was queued
   if (setup.runsOf !== id) { setup.runs.clear(); setup.runsOf = id } // the old session's hook runs; ones the new session's records counted before this load stay
   key = k
-  words.clear() // the old session's prompts; never stored, so a resumed session's turns have none
+  words.clear(); openTurns.clear() // the old session's prompts (never stored, so a resumed session's turns have none) and opened turns
   entries = Array.isArray(v) ? v : Array.isArray(v?.entries) ? v.entries : []
   turnNo = typeof v?.turn === 'number' ? v.turn : Math.max(0, ...entries.map(x => x.turn ?? 0)) // stores from before turns hold none: start at 0
   seen = v?.seen && !Array.isArray(v) ? v.seen : seed(entries)
@@ -849,7 +850,7 @@ async function prune($: any): Promise<void> {
   for (const k of stale) await $.store.delete(k)
 }
 
-// What broke this session, for the setup row: settings hook runs that failed or were cancelled (the collector's counts, else the red
+// What broke this session, for the controls' red badge and the setup page: settings hook runs that failed or were cancelled (the collector's counts, else the red
 // hook rows), API errors, turns the API failed, MCP servers that did not connect
 const problemsOf = (xs: Entry[]): string[] => {
   const n = (f: (x: Entry) => boolean) => xs.filter(f).length
@@ -1204,7 +1205,7 @@ export const register: Register = (on, options) => {
     return r
   })
 
-  // usage as the engine measures it: context, rate limits and cost, for the setup row
+  // usage as the engine measures it: context, rate limits and cost, for the setup button and page
   on('session.measure', async ($, e, next) => {
     setup.cost = e.cost?.usd; setup.limits = [...e.rateLimits]; setup.context = { tokens: e.context.tokens, window: e.context.window, percent: e.context.percent }
     return next(e)
@@ -1259,7 +1260,7 @@ export const register: Register = (on, options) => {
       return { text: 'agent log cleared' }
     }
     const up = (await $.ui.panes()).some((p: any) => p.id === PANE)
-    const arg = e.args.trim()
+    const arg = e.args.trim() === 'agent' ? 'model' : e.args.trim() // `agent`: the model view's name before it was renamed, kept as an alias
     const lv = /^level\s/.test(arg) ? LEVELS.indexOf(arg.replace(/^level\s+/, '') as any) : -1
     if (arg && !SHOWN.includes(arg as View) && lv < 0) return { text: `usage: /agentlog [clear|${SHOWN.join('|')}|level ${LEVELS.join('|')}]` } // a typo must not toggle the pane shut
     if (arg) { // set, not toggled: the command names the view or level it wants
@@ -1381,10 +1382,12 @@ export const register: Register = (on, options) => {
         : x.kind === 'event' ? `${EVENT_WHAT[x.name] ?? 'Something the engine reported'}${x.agent ? `, in the ${who}` : ''}`
         : x.kind === 'side' ? (x.src === 'plugin' ? `A model call the ${x.name} plugin made ($.model.complete), outside the conversation` : `A model request the engine made on its own (${x.name}), outside the conversation's turns`)
         : `Session ${x.name}`
-      // the inspector steps through the rows the log shows, in its order; a row the level hides, through its turn's hidden rows
-      // in the order the log draws them (order), a call's hook rows around it
-      const steps = order.includes(x) ? order : hidden.get(turnOf(x)) ?? []
+      // the inspector steps through the rows the log shows, in its order (order): a call's hook rows around it, a turn's hidden
+      // rows once its header opened them in place. A row the log does not show (a problem the setup page opened) steps nowhere
+      const steps = order
       const at = steps.indexOf(x)
+      // an Agent row's agent: the log filtered to its rows (pick), back on the log; pressed again there, every loop's
+      const only1 = () => { const id = x.child!; inspect = undefined; pageBack = false; backTo = undefined; follow = true; $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}); pick(id) }
       const kv = (k: string, v: string) => <Box key={k} flexDirection="row"><Box flexShrink={0} width={8}><Text dimColor>{k}</Text></Box><Text wrap="wrap">{v}</Text></Box>
       return (
         <Box key="inspect" flexDirection="column" width={e.props.bodyColumns}>
@@ -1392,6 +1395,7 @@ export const register: Register = (on, options) => {
             <Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} />
             {at > 0 && <Button key="prev" label="↑ prev" hotkey="p" plain onPress={() => show(steps[at - 1]!)} />}
             {at >= 0 && at < steps.length - 1 && <Button key="next" label="↓ next" hotkey="n" plain onPress={() => show(steps[at + 1]!)} />}
+            {x.child && <Button key="fonly" label={only === x.child ? 'every agent' : 'only this agent'} hotkey="f" plain onPress={only1} />}
           </Box>
           <Text> </Text>
           <Box flexDirection="row"><Text weight="semibold">{action(x)}</Text><Text dimColor>  {x.kind === 'tool' ? x.name : toolOf(x)}</Text>{out(cell(x))}</Box>
@@ -1399,7 +1403,6 @@ export const register: Register = (on, options) => {
           <Text> </Text>
           {kv('when', `${x.turn != null ? `${x.turn ? `turn ${x.turn}` : 'session start'} · ` : ''}${new Date(x.t).toLocaleTimeString()} (${ago(Date.now() - x.t)} ago)`)}
           {kv('agent', who)}
-          {steps !== order && at >= 0 && kv('hidden', `${at + 1} of ${steps.length} in this turn, below the ${LEVELS[level]} level`)}
           {x.src === 'hook' && x.origin && kv('trigger', [x.origin, x.detail].filter(Boolean).join(' · '))}
           {/* a hook's input: the call it ran on, as its row stores it; its command as your settings or the plugin's hooks.json write it */}
           {x.kind === 'hook' && x.use && (c => c && kv('input', `${c.name}: ${c.cmd ?? c.detail}`))(entries.find(y => y.kind === 'tool' && y.use === x.use))}
@@ -1465,7 +1468,9 @@ export const register: Register = (on, options) => {
     // folds stay as they were: a fold's id is its first entry's, the same in every view, level and filter that draws it
     const pick = (id: string) => { only = only === id ? undefined : id; $.ui.invalidate('ui.render') }
     const setView = (v: View) => { view = view === v ? 'all' : v; follow = true; $.ui.invalidate('ui.render') }
-    const nextLevel = () => { level = (level + 1) % LEVELS.length; follow = true; $.ui.invalidate('ui.render') }
+    // `l` toggles the two levels a log is read at: info, notice. Debug's rows open per turn in place (openTurns), error is
+    // the setup page's problems; `/agentlog level` still sets all four. From debug or error, back to info
+    const nextLevel = () => { level = level === 1 ? 2 : 1; follow = true; $.ui.invalidate('ui.render') }
     const agents: AgentInfo[] = await $.agent.list().catch(() => [])
     // a numbered name (tagOf) wins over the list's type; else the list's, so a teammate still reads `teammate`. ||: an empty type names nothing
     const nameOf = (id: string) => id === 'main' ? 'main' : / #\d+$/.test(names[id] ?? '') ? names[id]! : agents.find(a => a.id === id)?.type || names[id] || 'subagent'
@@ -1499,10 +1504,11 @@ export const register: Register = (on, options) => {
     const turnOf = (x: Entry) => root(x)?.turn ?? x.turn ?? 0
     const runs = (id?: string) => id ? entries.filter(y => y.kind === 'turn' && y.agent === id) : [] // a spawned agent's turn ends: one per run
     const kept = entries.filter(x => (only === undefined || (x.agent ?? 'main') === only) && VIEWS[view](x)).sort((p, q) => turnOf(p) - turnOf(q))
-    const shown = kept.filter(x => lvl(x) >= level).flatMap(splitHooks) // the level by the merged row, so a slow chain keeps all its hooks
+    // the level by the merged row, so a slow chain keeps all its hooks; an opened turn's rows below it too, drawn dim (partsOf)
+    const shown = kept.filter(x => lvl(x) >= level || openTurns.has(turnOf(x))).flatMap(splitHooks)
     const rowsOf = shown.filter(x => x.kind !== 'turn')
-    // rows the level alone hides, per turn: the header counts them and its `N hidden` opens them in the inspector, which steps
-    // through them with prev/next. A turn with none at or above the level draws no header at all
+    // rows the level alone hides, per turn, opened or not: the header counts them, and its `N hidden ▸` draws them in place
+    // (openTurns). A turn with none at or above the level draws no header at all
     const hidden = new Map<number, Entry[]>()
     for (const x of kept) if (x.kind !== 'turn' && lvl(x) < level) { const n = turnOf(x); if (!hidden.has(n)) hidden.set(n, []); hidden.get(n)!.push(...splitHooks(x)) } // turn ends are never drawn
     // a spawned agent's rows fold under its Agent row while that row is drawn; without it (a view or level that hides it, a filter
@@ -1599,7 +1605,12 @@ export const register: Register = (on, options) => {
         <Box key={k} flexDirection="row" overflow="hidden">
           <Box flexShrink={0}>{m.ends.length ? <Button key={`th${n}`} label={n ? `#${n}` : 'start'} plain onPress={() => show(m.ends.at(-1)!)} /> : <Text weight="semibold">{n ? `#${n}` : 'start'}</Text>}</Box>
           <Box flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end" dimColor>{`${said ? ` ${said}` : ''}${split ? ` · ${split}` : ''}`}</Text></Box>
-          {hid ? <Box flexShrink={0}><Text dimColor> · </Text><Button key={`hid${n}`} label={`${hid} hidden`} plain dimColor onPress={() => show(hidden.get(n)![0]!)} /></Box> : null}
+          {hid ? <Box flexShrink={0}><Text dimColor> · </Text><Button key={`hid${n}`} label={openTurns.has(n) ? `hide ${hid} ▾` : `${hid} hidden ▸`} plain dimColor onPress={() => {
+            if (!openTurns.delete(n)) openTurns.add(n)
+            const at = rowAt(k) // the header keeps its line, as a fold's row does
+            if (at >= 0) anchor = { k, off: at - win }
+            $.ui.invalidate('ui.render')
+          }} /></Box> : null}
           <Box flexGrow={1} flexShrink={0} minWidth={2} />
           <Box flexShrink={0}>
             <Text color={m.aborted ? 'yellow' : undefined} dimColor={!m.aborted}>{time}</Text>
@@ -1757,13 +1768,16 @@ export const register: Register = (on, options) => {
     // only a line whose row will stay visible at this level: one that ends as a hidden row would flash and vanish (a request
     // that only calls tools ranks debug). A permission prompt always shows: it waits for the person
     const shows = (l: Live) => l.asking || (l.row ? lvl({ t: l.t, ...l.row }) : l.wrote ? 1 : 0) >= level
-    const inFlight = view === 'all' || view === 'agent' ? [...liveNow].filter(([, l]) => (only === undefined || (l.loop ?? 'main') === only) && shows(l)) : []
+    const inFlight = view === 'all' || view === 'model' ? [...liveNow].filter(([, l]) => (only === undefined || (l.loop ?? 'main') === only) && shows(l)) : []
     if (inFlight.length && busy && cur !== turnNo) { if (cur !== undefined) rows.push(<Text key={`gap${rows.length}`}> </Text>); rows.push(header(turnNo, `turn${turnNo}`)); cur = turnNo }
     for (const [k, l] of inFlight) rows.push(line({ k: `now${k}`, act: nowAct(l), st: [`● ${secs(now - l.t)}`, 'green'], who: l.loop ? whoOf(l.loop) : '' }))
-    // short items packed into as many rows as the width needs (pack), each row one element, so the header's height stays counted
-    const LEGEND = ['✗ red: broke', '⊘ cyan: refused, by a hook, a rule, the classifier or you', '⚠ ■ yellow: ended early or slow (■ a hook stopped the session)', '↩ blue: hook feedback to the model', '● green: running now',
-      '↗ magenta: another project; dim, ~/.claude or /tmp', '+ a hook added context', '· a hook changed nothing', '∅ no match', '≈ estimated', 'bright: did something; dim: routine', '▸ open the fold',
-      'a g h u views', 'l level', 'o every fold', 's setup', 'j newest', 'ctrl+↑↓ previous/next prompt', 'b back', 'n p next/prev in the inspector', 'k this legend']
+    // the keys page (i): what each mark means, then what each key does, one per line
+    const MARKS = ['✗ red: broke', '⊘ cyan: refused, by a hook, a rule, the classifier or you', '⚠ ■ yellow: ended early or slow (■: a hook stopped the session)', '↩ blue: a hook\'s feedback to the model',
+      '● green: running now', '↗ magenta: a place in another project; dim: ~/.claude or /tmp', '+ a hook added context', '· a hook changed nothing', '∅ found nothing', '≈ estimated',
+      'bright: a row that did something; dim: routine, or below the level', '▸ ▾ open, close an Agent fold or a turn\'s hidden rows']
+    const KEYS: [string, string][] = [['a m h u', 'views: all, what the model did, the harness, outside the root'], ['l', 'level: info or notice (/agentlog level sets debug and error)'],
+      ['o', 'open or close every Agent fold'], ['s', 'the setup page'], ['i', 'this page'], ['j', 'the newest row'], ['ctrl+↑ ↓', 'the previous or next prompt'], ['enter', 'open the focused row'],
+      ['b', 'back'], ['n p', 'in the inspector: the next or previous row'], ['f', 'in an Agent row\'s inspector: only its agent\'s rows']]
     // `no agent entries for scout at notice or above · /agentlog level debug: every row · a: all views · main: clear the filter`; only the filters set
     const empty = () => {
       if (!entries.length) return 'no entries yet'
@@ -1771,10 +1785,7 @@ export const register: Register = (on, options) => {
       const tips = [level > 0 && '/agentlog level debug: every row', view !== 'all' && 'a: all views', only && `${only === 'main' ? 'main' : nameOf(only)}: clear the filter`].filter(Boolean)
       return [`no ${view === 'all' ? '' : `${view} `}entries${of}${level > 0 ? ` at ${LEVELS[level]} or above` : ''}`, ...tips].join(' · ')
     }
-    // The controls never clip: the bare buttons, `a: all  g: agent … k: ?  #↑↓`, packed into as many rows as the width needs. Every
-    // button is drawn because a hotkey only presses a drawn Button. Counted, not wrapped by flex: the window needs the header's exact
-    // height. plain + hotkey draws `a: all`, label + 3 cells; Button takes no bold, so the views not active are drawn dim instead
-    // the window's top to the previous or next prompt's turn header (`#3`); past the last, the end. From the inspector or the setup page, back to the log first
+    // the window's top to the previous or next prompt's turn header (`#3`); past the last, the end. From the inspector or a page, back to the log first
     const heads = rows.flatMap((r, i) => String(r.props?.key).startsWith('turn') ? [i] : [])
     const toTurn = (dir: -1 | 1) => {
       if (inspect || page) { inspect = undefined; page = undefined; pageBack = false; backTo = undefined; $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}) } // the engine's window, which the inspector or page may have moved
@@ -1783,11 +1794,13 @@ export const register: Register = (on, options) => {
       $.ui.invalidate('ui.render')
     }
     const vbtn = (v: View, k: string) => <Button key={`v${v}`} label={v} hotkey={k} plain dimColor={view !== v} onPress={() => setView(v)} />
-    const lbtn = <Button key="lvl" label={LEVELS[level]} hotkey="l" plain onPress={nextLevel} />
-    const kbtn = (label: string) => <Button key="legend" label={label} hotkey="k" plain dimColor={!legend} onPress={() => { legend = !legend; $.ui.invalidate('ui.render') }} />
-    // `#↑↓`: ctrl+↑ and ctrl+↓ press these from the prompt or the pane. They are the engine's Global chords for the diff panel's file
+    // one width whatever the level (`level info  `), as `fold  ` is: a label that changed width could repack the controls
+    const LVW = Math.max(...LEVELS.map(l => l.length)) + 6
+    const lbtn = <Button key="lvl" label={`level ${LEVELS[level]}`.padEnd(LVW)} hotkey="l" plain onPress={nextLevel} />
+    const kbtn = <Button key="legend" label="keys" hotkey="i" plain dimColor={page !== 'keys'} onPress={() => openPage('keys')} />
+    // `turn ↑↓`: ctrl+↑ and ctrl+↓ press these from the prompt or the pane. They are the engine's Global chords for the diff panel's file
     // list (app:diffFileListUp/Down, also meta+↑↓), which a Button's `action` takes while that panel is closed; open, the panel keeps them
-    const tbtn = <Box key="turns" flexDirection="row"><Text dimColor>#</Text><Button key="tprev" label="↑" plain dimColor action="app:diffFileListUp" onPress={() => toTurn(-1)} /><Button key="tnext" label="↓" plain dimColor action="app:diffFileListDown" onPress={() => toTurn(1)} /></Box>
+    const tbtn = <Box key="turns" flexDirection="row"><Text dimColor>turn </Text><Button key="tprev" label="↑" plain dimColor action="app:diffFileListUp" onPress={() => toTurn(-1)} /><Button key="tnext" label="↓" plain dimColor action="app:diffFileListDown" onPress={() => toTurn(1)} /></Box>
     // `o: unfold` opens every fold while one is closed, `o: fold` closes them all; the nearest top row at or above the window's
     // top keeps its line. Always drawn, one width (`fold` padded): a label that changed width could change how the controls
     // pack, and with it the header's height, moving the anchored row
@@ -1798,10 +1811,6 @@ export const register: Register = (on, options) => {
       if (at >= 0) anchor = { k: String(rows[at].props.key), off: at - win }
       $.ui.invalidate('ui.render')
     }} />
-    const VIEW_KEYS: Partial<Record<View, string>> = { all: 'a', agent: 'g', harness: 'h', outside: 'u' }
-    const items: [number, any][] = SHOWN.map((v): [number, any] => [v.length + 3, vbtn(v, VIEW_KEYS[v]!)])
-    const bare: [number, any][] = [...items, [LEVELS[level]!.length + 3, lbtn], [9, obtn], [4, kbtn('?')], [3, tbtn]]
-    const controls = pack(bare.map(([w]) => w), cols - 1).map((row, r) => <Box key={`ctl${r}`} flexDirection="row" columnGap={2} overflow="hidden">{row.map(i => bare[i]![1])}</Box>)
     // An agent reads as a log row: `name: task`, a button that filters the log to it, a teammate's name after its type; in the
     // status cell its run as its Agent row shows it (ran), else (a teammate, a fork: no Agent row spawned it) its status glyph.
     // Capped so the header leaves the log room: three rows while finished ones are folded, a third of the body with them shown
@@ -1817,11 +1826,11 @@ export const register: Register = (on, options) => {
     }
     const toggle = showDone ? `hide finished ▾${more ? ` · ${more} not shown` : ''}` : `${[more && `+${more} more`, done && `${done} done`].filter(Boolean).join(' · ')} ▸`
     // every element of the header and the log is one row, so the window knows the header's height and how many log rows fit under it
-    // The setup row: what the session runs on, as the hooks saw it (Setup), and first, in red, what broke this session. Pressed (or s),
+    // The setup button, last in the controls: what the session runs on, as the hooks saw it (Setup), after what broke this session, in red. Pressed (or s),
     // the setup page. Counted from every entry, whatever the view, level or filter
     if (!setup.asked) refreshSetup($).then(() => $.ui.invalidate('ui.render')).catch(() => {})
     const problems = problemsOf(entries)
-    const elsewhere = entries.filter(x => x.out && !routine(x.out)).length // calls into another project, magenta in the setup row (u: the outside view lists them)
+    const elsewhere = entries.filter(x => x.out && !routine(x.out)).length // calls into another project, magenta in the controls (u: the outside view lists them)
     const hookN = new Set(Object.values(hookCfg ?? {}).flat().map(h => h.cmd ?? h.name)).size // distinct scripts, not registrations: context-mode registers one script on 9 PreToolUse matchers
     const servers = new Map<string, number>() // MCP server -> its tools, from the tool list (`mcp__server__tool`) and the connection records
     for (const t of setup.tools ?? []) if (t.mcp) { const sv = t.name.split('__')[1] ?? t.name; servers.set(sv, (servers.get(sv) ?? 0) + 1) }
@@ -1831,7 +1840,22 @@ export const register: Register = (on, options) => {
     const bgN = setup.bg?.tasks.length ?? 0, cronN = setup.bg?.crons.length ?? 0
     // the row itself says only what needs the eye: the model, and a rate limit once it nears (80%); the rest is on the page
     const setupText = [setup.model && `${modelName(setup.model)}${setup.effort != null ? ` ${setup.effort}` : ''}`, peak && peak.percentUsed >= 80 && `limit ${Math.round(peak.percentUsed)}%`].filter(Boolean).join(' · ') || 'setup'
-    const openSetup = () => { page = 'setup'; inspect = undefined; follow = false; $.ui.invalidate('ui.render'); $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}); $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: 'back' }).catch(() => {}) }) }
+    // a page in place of the log; its own key pressed on it again, back to the log
+    const openPage = (p: NonNullable<typeof page>) => {
+      if (page === p && !inspect) return back()
+      page = p; inspect = undefined; pageBack = false; follow = false; $.ui.invalidate('ui.render'); $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}); $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: 'back' }).catch(() => {}) })
+    }
+    const keysPage = () => (
+      <Box key="keys" flexDirection="column" width={e.props.bodyColumns}>
+        <Box flexDirection="row" columnGap={2}><Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} /></Box>
+        <Text key="gapmk"> </Text>
+        <Text key="tmk" weight="semibold">Marks</Text>
+        {MARKS.map((l, i) => <Text key={`mk${i}`} wrap="wrap">{l}</Text>)}
+        <Text key="gapky"> </Text>
+        <Text key="tky" weight="semibold">Keys</Text>
+        {KEYS.map(([k, v]) => <Box key={`ky${k}`} flexDirection="row"><Box flexShrink={0} width={11}><Text dimColor>{k}</Text></Box><Text wrap="wrap">{v}</Text></Box>)}
+      </Box>
+    )
     // The setup page: the session's setup and how it held up. Hook runs and plugins come from the collector (OTEL export on); without
     // it, the hooks and plugins your settings name. A problem's row opens its inspector
     const setupPage = (at?: [string, string, string | undefined]) => {
@@ -1892,26 +1916,34 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
+    // The controls never clip: views, level, folds, keys, the prompt jumps, then what broke first (`✗ 1 API error +1`), the calls
+    // into another project and the setup, packed into as many rows as the width needs. Every button is drawn because a hotkey
+    // only presses a drawn Button. Counted, not wrapped by flex: the window needs the header's exact height. plain + hotkey draws
+    // `a: all`, label + 3 cells; Button takes no bold, so the views not active are drawn dim instead
+    const VIEW_KEYS: Partial<Record<View, string>> = { all: 'a', model: 'm', harness: 'h', outside: 'u' }
+    const items: [number, any][] = SHOWN.map((v): [number, any] => [v.length + 3, vbtn(v, VIEW_KEYS[v]!)])
+    const broke = problems.length ? `✗ ${problems[0]}${problems.length > 1 ? ` +${problems.length - 1}` : ''}` : '', away = elsewhere ? `↗ ${elsewhere} outside root` : ''
+    const bare: [number, any][] = [...items, [LVW + 3, lbtn], [9, obtn], [7, kbtn], [7, tbtn],
+      ...(broke ? [[broke.length, <Text key="broke" color="red">{broke}</Text>] as [number, any]] : []),
+      ...(away ? [[away.length, <Text key="away" color="magenta">{away}</Text>] as [number, any]] : []),
+      [setupText.length + 3, <Button key="fsetup" label={setupText} hotkey="s" plain dimColor onPress={() => openPage('setup')} />]]
+    const controls = pack(bare.map(([w]) => w), cols - 1).map((row, r) => <Box key={`ctl${r}`} flexDirection="row" columnGap={2} overflow="hidden">{row.map(i => bare[i]![1])}</Box>)
+    // the agent tree, only while an agent runs or the log is filtered: a finished agent is filtered to from its Agent row's
+    // inspector (f), so a tree of finished agents would only take the log's rows
+    const treeOn = agents.some(a => a.status === 'running') || only !== undefined
     const head = [
       ...controls,
-      <Box key="setuprow" flexDirection="row" overflow="hidden">
-        {problems.length ? <Box flexShrink={0}><Text color="red">{`✗ ${problems.join(' · ')}  `}</Text></Box> : null}
-        {elsewhere ? <Box flexShrink={0}><Text color="magenta">{`↗ ${elsewhere} outside root  `}</Text></Box> : null}
-        <Box flexShrink={1} minWidth={0} overflow="hidden"><Button key="fsetup" label={setupText} hotkey="s" plain dimColor onPress={openSetup} /></Box>
-      </Box>,
-      // the agent tree's root, only once there is a tree or a filter to clear: a session without subagents has nothing to pick
-      ...(agents.length || only ? [<Box key="main" flexDirection="row" overflow="hidden" columnGap={2}>
+      ...(treeOn ? [<Box key="main" flexDirection="row" overflow="hidden" columnGap={2}>
         <Button key="fmain" label="main" plain onPress={() => pick('main')} />
         {only ? <Button key="fclear" label={fit(`filter: ${nameOf(only)} ✕`, cols - 8)} plain dimColor onPress={() => pick(only!)} /> : null}
-      </Box>] : []),
-      ...tree.slice(0, most).map(agentRow),
-      ...(done || more ? [<Box key="done" flexDirection="row"><Text>  </Text><Button key="fdone" label={toggle} plain dimColor onPress={() => { showDone = !showDone; $.ui.invalidate('ui.render') }} /></Box>] : []),
-      ...(legend ? pack(LEGEND.map(l => l.length), cols - 1).map((row, j) => <Text key={`leg${j}`} dimColor wrap="truncate-end">{row.map(i => LEGEND[i]).join('  ')}</Text>) : []),
+      </Box>, ...tree.slice(0, most).map(agentRow)] : []),
+      ...(treeOn && (done || more) ? [<Box key="done" flexDirection="row"><Text>  </Text><Button key="fdone" label={toggle} plain dimColor onPress={() => { showDone = !showDone; $.ui.invalidate('ui.render') }} /></Box>] : []),
       <Text key="rule" dimColor>{'─'.repeat(Math.max(1, cols - 1))}</Text>,
     ]
     // taken before the inspector draws: `o` pressed there must not move the window that back is about to centre
     const held = anchor; anchor = undefined
     if (inspect) return <Box flexDirection="column">{head}{await inspector(inspect)}</Box>
+    if (page === 'keys') return <Box flexDirection="column">{head}{keysPage()}</Box>
     if (page) { // where the session is: asked on each draw of the page, as /cd and a worktree move change it
       const at = await Promise.all([$.session.root(), $.session.cwd(), homeOf($)]).catch(() => undefined)
       return <Box flexDirection="column">{head}{setupPage(at)}</Box>

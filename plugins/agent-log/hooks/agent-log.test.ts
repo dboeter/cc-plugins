@@ -117,7 +117,7 @@ test('a spawned agent\'s rows fold under its Agent row, which shows the agent\'s
   expect(await m.find({ type: 'Button', text: /^general-purpose #2: probe B$/ })).toBe(undefined) // finished: folded into the toggle row
   await m.press({ key: 'fdone' }) // B has finished: the header lists it once finished ones are shown
   expect(await m.find({ type: 'Button', text: /^general-purpose #2: probe B$/ })).toBeDefined() // and tells it from A
-  const folds = await m.findAll({ type: 'Button', text: '▸' })
+  const folds = await m.findAll({ type: 'Button', text: /^▸$/ })
   expect(folds.length).toBe(2) // A and B; C's turn end opens no fold
   await m.press({ key: folds[0]!.key! })
   expect(await m.find({ text: /List files A/ })).toBeDefined()
@@ -212,7 +212,7 @@ test('a cwd change shows at notice; the context beside it, each entry its own ro
   await m.press({ key: 'lvl' }) // info -> notice
   expect(await m.find({ text: /^CWD → claude$/ })).toBeDefined()
   expect(await m.find({ text: /^Changed: x\.ts$/ })).toBe(undefined)
-  for (let i = 0; i < 3; i++) await m.press({ key: 'lvl' }) // error, debug, info: the level is module state
+  await m.press({ key: 'lvl' }) // back to info: the level is module state
 })
 
 test('engine context draws one row per entry, nothing folded', async ($, on) => {
@@ -227,7 +227,7 @@ test('engine context draws one row per entry, nothing folded', async ($, on) => 
   const m = await pane($, 40, 100)
   expect(await m.find({ type: 'Button', text: /^Changed: x\.ts$/ })).toBeDefined()
   expect(await m.find({ type: 'Button', text: /^Tools removed$/ })).toBeDefined()
-  expect(await m.find({ type: 'Button', text: '▸' })).toBe(undefined)
+  expect(await m.find({ type: 'Button', text: /^▸$/ })).toBe(undefined)
 })
 
 test('engine context that only composes the request is logged but not shown, its view hidden', async ($, on) => {
@@ -375,13 +375,15 @@ const session = (on: any, id: string, entries?: object[], { turn = 1, names = {}
   on('session.id', () => ({ value: id }))
   on('agent.list', () => ({ value: agents }))
   on('config.list', () => ({ value: [] }))
+  on('ui.panes', () => ({ value: [{ id: 'agent-log' }] })) // the pane is up: /agentlog sets the level, it does not toggle it shut
   mock.store(on, entries ? { [`r:${id}`]: { entries, seen: {}, turn, names } } : {})
 }
 type Engine = Parameters<TestBody>[0] // a test's `$`
 const pane = ($: Engine, bodyRows = 60, bodyColumns = 120) => $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns, scroll: { offset: 0, bodyRows } } as any })
-// the level is module state, cycled by `l`: a test that changes it goes back to info before it ends
-const toLevel = async (m: any, level: 'debug' | 'info' | 'notice' | 'error') => {
-  for (let i = 0; i < 4 && !(await m.find({ type: 'Button', text: new RegExp(`^${level}$`) })); i++) await m.press({ key: 'lvl' })
+// the level is module state, set by /agentlog (`l` toggles only info and notice): a test that changes it goes back to info before it ends
+const toLevel = async ($: Engine, m: any, level: 'debug' | 'info' | 'notice' | 'error') => {
+  await ($ as any).command.run({ command: 'agentlog', args: `level ${level}`, origin: { kind: 'composer' }, presentation: 'text' })
+  await m.redraw()
 }
 const steps = () => Array.from({ length: 30 }, (_, i) => ({ t: Date.now() - 60000 + i, turn: 1, kind: 'tool', name: 'Bash', detail: `step ${i + 1}`, outcome: 'ok', status: 'ok', ms: 10 }))
 const ctlRows = async (m: any) => { let n = 0; while (await m.find({ key: `ctl${n}` })) n++; return n }
@@ -391,8 +393,8 @@ test('the log draws only the rows that fit under the header, which never scrolls
   on('agent.list', () => ({ value: [] }))
   on('config.list', () => ({ value: [] }))
   mock.store(on, { 'r:W': { entries: steps(), seen: {}, turn: 1, names: {} } })
-  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 12 } } as any })
-  expect((await m.find({ type: 'Box' }))!.children.length).toBe(12) // controls, setup row, rule (no main row: no subagents), then 9 of the 31 log rows
+  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 11 } } as any })
+  expect((await m.find({ type: 'Box' }))!.children.length).toBe(11) // controls, rule (no main row: no agent running), then 9 of the 31 log rows
   expect(await m.find({ text: /^Step 30$/ })).toBeDefined() // following: the newest
   expect(await m.find({ text: /^Step 22$/ })).toBeDefined()
   expect(await m.find({ text: /^Step 21$/ })).toBe(undefined)
@@ -403,7 +405,7 @@ test('the log draws only the rows that fit under the header, which never scrolls
   expect(await m.find({ text: /^Step 23$/ })).toBeDefined()
   expect(await m.find({ text: /^Step 30$/ })).toBe(undefined)
   expect(await m.find({ key: 'jump' })).toBeDefined()
-  expect((await m.find({ type: 'Box' }))!.children.length).toBe(12)
+  expect((await m.find({ type: 'Box' }))!.children.length).toBe(11)
   await m.press({ key: 'jump' })
   expect(await m.find({ text: /^Step 30$/ })).toBeDefined()
   // back onto the newest row keeps following: no jump row
@@ -420,14 +422,15 @@ test('the controls take as many rows as the width needs, never clipping one', as
   mock.store(on, { 'r:C': { entries: steps(), seen: {}, turn: 1, names: {} } })
   const props = (bodyColumns: number) => ({ ...PANE_PROPS, bodyColumns, scroll: { offset: 0, bodyRows: 20 } }) as any
   const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: props(100) })
-  expect(await ctlRows(m)).toBe(1) // `a: all  g: agent  h: harness  u: outside  l: info  o: unfold  k: ?  #↑↓`
-  const bare = [6, 8, 10, 10, 'info'.length + 3, 9, 4, 3] // a: all, g: agent, h: harness, u: outside, l: info, o: unfold, k: ?, #↑↓
+  expect(await ctlRows(m)).toBe(1) // `a: all  m: model  h: harness  u: outside  l: level info    o: unfold  i: keys  turn ↑↓  s: setup`
+  // a: all, m: model, h: harness, u: outside, l: level info (padded to `level notice`), o: unfold, i: keys, turn ↑↓, s: the setup's label
+  const bare = [6, 8, 10, 10, 15, 9, 7, 7, String((await m.find({ key: 'fsetup' }))!.props.label).length + 3]
   for (const cols of [50, 30]) {
     await m.redraw(props(cols))
     expect(await ctlRows(m)).toBe(pack(bare, cols - 1).length)
-    for (const k of ['vall', 'vagent', 'vharness', 'voutside', 'lvl', 'folds', 'legend', 'tprev', 'tnext']) expect(await m.find({ key: k })).toBeDefined()
+    for (const k of ['vall', 'vmodel', 'vharness', 'voutside', 'lvl', 'folds', 'legend', 'tprev', 'tnext', 'fsetup']) expect(await m.find({ key: k })).toBeDefined()
   }
-  expect(await ctlRows(m)).toBe(3) // 30 columns: three views; outside and level; folds, legend and the prompt jumps
+  expect(await ctlRows(m)).toBe(4) // 30 columns: three views; outside and level; folds, keys and the prompt jumps; the setup
 })
 
 test('ctrl+↑↓ (the #↑↓ buttons) put the previous or next prompt\'s turn header at the top', async ($, on) => {
@@ -437,9 +440,9 @@ test('ctrl+↑↓ (the #↑↓ buttons) put the previous or next prompt\'s turn 
   // three turns of ten: rows #1, Step 1-10, gap, #2, Step 11-20, gap, #3, Step 21-30
   const entries = steps().map((x, i) => ({ ...x, turn: Math.floor(i / 10) + 1 }))
   mock.store(on, { 'r:T': { entries, seen: {}, turn: 3, names: {} } })
-  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 13 } } as any })
+  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 12 } } as any })
   expect(await m.find({ text: /^Step 30$/ })).toBeDefined()
-  expect(await m.find({ text: /^#3$/ })).toBe(undefined) // 9 rows show: Step 22-30
+  expect(await m.find({ text: /^#3$/ })).toBe(undefined) // 10 rows show: Step 21-30
   await m.press({ key: 'tprev' })
   expect(await m.find({ text: /^#3$/ })).toBeDefined()
   expect(await m.find({ text: /^Step 30$/ })).toBe(undefined)
@@ -458,7 +461,7 @@ test('ctrl+↑↓ (the #↑↓ buttons) put the previous or next prompt\'s turn 
 const reads = (t0: number, extra: object = {}, files = ['a', 'b', 'c']) => files.map((f, i) => ({ t: t0 + i, turn: 1, kind: 'tool', name: 'Read', detail: `/home/u/hooks/${f}.ts`, outcome: 'ok', status: 'ok', ms: 10, ...extra }))
 // an Agent row that spawned agent A, then A's reads: the one fold the log keeps
 const spawn = (t0: number, files = ['a', 'b', 'c']) => [{ t: t0, turn: 1, kind: 'tool', name: 'Agent', detail: 'scout: look around', outcome: 'ok', status: 'ok', ms: 10, child: 'A' }, ...reads(t0 + 1, { agent: 'A' }, files)]
-// the line a row sits on in the pane's body, the header's rows counted (3 at 100 columns with no subagents: controls, setup, rule): the same line
+// the line a row sits on in the pane's body, the header's rows counted (2 at 100 columns with no agent running: controls, rule): the same line
 // before and after means it did not move
 const lineOf = async (m: any, k: string) => (await m.find({ type: 'Box' }))!.children.findIndex((c: any) => c.props?.key === k)
 
@@ -466,8 +469,8 @@ test('a fold opens where it was pressed, its rows on tree guides, each opening i
   // #1, Step 1-25, the Agent row's fold, Step 26-30: following, 9 rows show (Step 23-25, the fold, Step 26-30)
   const s = steps(), entries = [...s.slice(0, 25), ...spawn(s[24]!.t), ...s.slice(25).map(x => ({ ...x, t: x.t + 4 }))]
   session(on, 'F', entries, { names: { A: 'scout' } })
-  const m = await pane($, 13, 100)
-  const fold = await m.find({ type: 'Button', text: '▸' })
+  const m = await pane($, 12, 100)
+  const fold = await m.find({ type: 'Button', text: /^▸$/ })
   expect(fold).toBeDefined()
   const row = fold!.key!.slice(1), at = await lineOf(m, row)
   expect(await m.find({ text: /^Step 23$/ })).toBeDefined()
@@ -485,7 +488,7 @@ test('a fold opens where it was pressed, its rows on tree guides, each opening i
   await m.press({ key: 'folds' }) // o in the inspector closes the fold, but must not move the window back centres
   await m.press({ key: 'back' })
   expect(await m.find({ text: /^Read a\.ts$/ })).toBe(undefined)
-  expect(await lineOf(m, row)).toBe(3 + 5) // the closed fold that holds Read a.ts, centred: 5 of the 10 log rows above it
+  expect(await lineOf(m, row)).toBe(2 + 5) // the closed fold that holds Read a.ts, centred: 5 of the 10 log rows above it
 })
 
 test('the header hangs each agent under its parent on the log\'s tree guides', async ($, on) => {
@@ -501,10 +504,10 @@ test('the header hangs each agent under its parent on the log\'s tree guides', a
 test('opening the newest fold while following shows it, its row staying on screen', async ($, on) => {
   const s = steps().slice(0, 25), entries = [...s, ...spawn(s[24]!.t + 1)] // the fold is the last row, on the last line
   session(on, 'N', entries, { names: { A: 'scout' } })
-  const m = await pane($, 12, 100)
-  const fold = await m.find({ type: 'Button', text: '▸' })
+  const m = await pane($, 11, 100)
+  const fold = await m.find({ type: 'Button', text: /^▸$/ })
   await m.press({ key: fold!.key! })
-  expect(await lineOf(m, fold!.key!.slice(1))).toBeGreaterThanOrEqual(3) // still drawn, not under the jump row
+  expect(await lineOf(m, fold!.key!.slice(1))).toBeGreaterThanOrEqual(2) // still drawn, not under the jump row
   expect(await m.find({ text: /^Read c\.ts$/ })).toBeDefined() // the window moved down just far enough to show the fold
   expect(await m.find({ key: 'jump' })).toBe(undefined) // which put it at the end: following
   await m.press({ key: fold!.key! })
@@ -514,11 +517,11 @@ test('o keeps the turn header at the window\'s top in place, though folds above 
   // #1, the fold, Step 1-3, gap, #2, Step 4-20
   const entries = [...reads(Date.now() - 70000), ...steps().slice(0, 20).map((x, i) => ({ ...x, turn: i < 3 ? 1 : 2 }))]
   session(on, 'H', entries, { turn: 2 })
-  const m = await pane($, 12, 100)
+  const m = await pane($, 11, 100)
   await m.press({ key: 'tprev' })
-  expect(await lineOf(m, 'turn2')).toBe(3) // the first log row
+  expect(await lineOf(m, 'turn2')).toBe(2) // the first log row
   await m.press({ key: 'folds' })
-  expect(await lineOf(m, 'turn2')).toBe(3)
+  expect(await lineOf(m, 'turn2')).toBe(2)
   await m.press({ key: 'folds' })
 })
 
@@ -526,9 +529,9 @@ test('o from inside an open fold keeps the fold\'s row at the window\'s top', as
   // #1, Step 1, the fold of ten, Step 2-16
   const s = steps().slice(0, 16), entries = [s[0]!, ...spawn(s[0]!.t, [...'abcdefghij']), ...s.slice(1).map(x => ({ ...x, t: x.t + 11 }))]
   session(on, 'I', entries, { names: { A: 'scout' } })
-  const m = await pane($, 12, 100)
+  const m = await pane($, 11, 100)
   await m.press({ key: 'tprev' })
-  const row = (await m.find({ type: 'Button', text: '▸' }))!.key!.slice(1)
+  const row = (await m.find({ type: 'Button', text: /^▸$/ }))!.key!.slice(1)
   await m.press({ key: 'folds' })
   await m.press({ key: 'tprev' }) // #1 on top: #1, Step 1, the fold, Read a-e
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read e\.ts$/ }))!.key! })
@@ -536,7 +539,7 @@ test('o from inside an open fold keeps the fold\'s row at the window\'s top', as
   expect(await m.find({ text: /^Step 1$/ })).toBe(undefined)
   expect(await lineOf(m, row)).toBe(-1) // its row is above the window
   await m.press({ key: 'folds' })
-  expect(await lineOf(m, row)).toBe(3)
+  expect(await lineOf(m, row)).toBe(2)
 })
 
 test('o opens and closes every fold', async ($, on) => {
@@ -560,7 +563,7 @@ test('a PreToolUse hook\'s context, sent with the request after the call, sits a
   await $.tool.call({ tool: 'Read', tool_use_id: 'ub', file_path: '/home/u/b.ts' } as any)
   await $.prompt.attachment({ type: 'hook_additional_context', text: 'PreToolUse:Read hook additional context: tip for b', origin: { kind: 'hook', event: 'PreToolUse' } } as any)
   const m = await pane($, 40, 100)
-  expect(await m.find({ type: 'Button', text: '▸' })).toBe(undefined) // nothing folds
+  expect(await m.find({ type: 'Button', text: /^▸$/ })).toBe(undefined) // nothing folds
   const labels = (await m.findAll({ type: 'Button' })).map(b => String(b.text))
   const at = (re: RegExp) => labels.findIndex(l => re.test(l))
   const tips = labels.flatMap((l, i) => / context$/.test(l) ? [i] : [])
@@ -581,15 +584,15 @@ test('a call\'s hook rows sit around it, linked: PreToolUse above, the rest belo
     pre('guard'), pre('test-gate'), pre('contract-guard'),
     hookRow({ name: 'lint-feedback', origin: 'PostToolUse', use: 'ue', outcome: 'block', status: 'feedback' }),
   ])
-  await toLevel(m, 'debug') // a fast hook that changed nothing ranks debug
+  await toLevel($, m, 'debug') // a fast hook that changed nothing ranks debug
   const labels = (await m.findAll({ type: 'Button' })).map(b => String(b.text))
   const at = (re: RegExp) => labels.findIndex(l => re.test(l))
   for (const n of ['guard', 'test-gate', 'contract-guard']) { expect(at(new RegExp(`^${n}$`))).toBeGreaterThan(-1); expect(at(new RegExp(`^${n}$`))).toBeLessThan(at(/^Edit x\.ts$/)) } // by name alone: the side says the event, the call the tool
   expect(at(/^Edit x\.ts$/)).toBeLessThan(at(/^lint-feedback$/))
   // one bracket: opened by the first hook, the call marked between, closed by the last
   for (const [g, n] of [['╭', 1], ['│', 2], ['├', 1], ['╰', 1]] as const) expect((await m.findAll({ type: 'Text', text: g })).length).toBe(n)
-  expect(await m.find({ type: 'Button', text: '▸' })).toBe(undefined)
-  await toLevel(m, 'info')
+  expect(await m.find({ type: 'Button', text: /^▸$/ })).toBe(undefined)
+  await toLevel($, m, 'info')
 })
 
 test('a call\'s row keeps its own time; each of its hooks times its own row', async ($, on) => {
@@ -598,10 +601,10 @@ test('a call\'s row keeps its own time; each of its hooks times its own row', as
     hookRow({ name: 'guard', use: 'us', ms: 100 }),
     hookRow({ name: 'file-change-log', origin: 'PostToolUse', use: 'us', ms: 100 }),
   ])
-  await toLevel(m, 'debug')
+  await toLevel($, m, 'debug')
   expect(await m.find({ text: /^5\.5s$/ })).toBeDefined()
   expect((await m.findAll({ type: 'Text', text: /^· 100ms$/ })).length).toBe(2)
-  await toLevel(m, 'info')
+  await toLevel($, m, 'info')
 })
 
 const wait = (ms: number) => new Promise(res => (globalThis as any).setTimeout(res, ms)) // no DOM or node lib in this tsconfig
@@ -666,11 +669,11 @@ test('a slow SessionStart hook is not flagged; a slow ConfigChange hook is', asy
     call({ detail: 'between' }),
     hookRow({ name: 'config-change-guard', origin: 'ConfigChange', detail: 'user_settings', ms: 2100 }),
   ])
-  await toLevel(m, 'debug')
+  await toLevel($, m, 'debug')
   expect(await m.find({ type: 'Text', text: '· 2.0s' })).toBeDefined() // changed nothing: dim ·, no ⚠
   expect(await m.find({ type: 'Text', text: '⚠ 2.0s' })).toBe(undefined)
   expect(await m.find({ type: 'Text', text: '⚠ 2.1s' })).toBeDefined()
-  await toLevel(m, 'info')
+  await toLevel($, m, 'info')
 })
 
 test('hook text draws a row each time; text the session already logged ranks info', async ($, on) => {
@@ -684,9 +687,9 @@ test('hook text draws a row each time; text the session already logged ranks inf
   await $.prompt.attachment(tip)
   const m = await pane($)
   expect((await m.findAll({ type: 'Button', text: /^UserPromptSubmit hook context$/ })).length).toBe(3)
-  await toLevel(m, 'notice') // only the first
+  await toLevel($, m, 'notice') // only the first
   expect((await m.findAll({ type: 'Button', text: /^UserPromptSubmit hook context/ })).length).toBe(1)
-  await toLevel(m, 'info')
+  await toLevel($, m, 'info')
 })
 
 test('a cwd change back to where the session began ranks info', async ($, on) => {
@@ -694,10 +697,10 @@ test('a cwd change back to where the session began ranks info', async ($, on) =>
   on('prompt.attachment', (_$, e: any) => ({ text: e.text }))
   const m = await mountWith($, on, 'D2', [{ t: T0, turn: 0, kind: 'session', name: 'start', detail: '/home/u/repo', outcome: '' }])
   for (const d of ['sub', 'repo']) await $.prompt.attachment({ type: 'environment', text: env(d), origin: { kind: 'engine' } } as any)
-  await toLevel(m, 'notice')
+  await toLevel($, m, 'notice')
   expect(await m.find({ text: /^CWD → sub$/ })).toBeDefined()
   expect(await m.find({ text: /^CWD → repo$/ })).toBe(undefined)
-  await toLevel(m, 'info')
+  await toLevel($, m, 'info')
 })
 
 test('the first session.start of a process is the session beginning; a later one, a reload, ranks debug and is not home', async ($, on) => {
@@ -710,11 +713,11 @@ test('the first session.start of a process is the session beginning; a later one
   const m = await pane($, 40, 100)
   expect(await m.find({ type: 'Button', text: /^Session init in repo$/ })).toBeDefined()
   expect(await m.find({ type: 'Button', text: /^Plugin reloaded$/ })).toBe(undefined) // debug
-  await toLevel(m, 'notice')
+  await toLevel($, m, 'notice')
   expect(await m.find({ text: /^CWD → sub$/ })).toBeDefined() // home stays repo, not the reload's cwd
-  await toLevel(m, 'debug')
+  await toLevel($, m, 'debug')
   expect(await m.find({ type: 'Button', text: /^Plugin reloaded$/ })).toBeDefined()
-  await toLevel(m, 'info')
+  await toLevel($, m, 'info')
 })
 
 test('turns count from your first prompt; rows before it head `start`', async ($, on) => {
@@ -751,11 +754,11 @@ test('a call\'s hook text is linked to it while the call is drawn, unlinked when
   ])
   expect(await m.find({ type: 'Button', text: /^context-mode context$/ })).toBeDefined()
   expect((await m.findAll({ type: 'Text', text: '╭' })).length).toBe(1)
-  await toLevel(m, 'notice') // the Read is hidden, its hook text is not
+  await toLevel($, m, 'notice') // the Read is hidden, its hook text is not
   expect(await m.find({ type: 'Button', text: /^Read a\.ts$/ })).toBe(undefined)
   expect(await m.find({ type: 'Button', text: /^context-mode context on PreToolUse$/ })).toBeDefined() // unlinked, it names its event again
   expect((await m.findAll({ type: 'Text', text: '╭' })).length).toBe(0)
-  await toLevel(m, 'info')
+  await toLevel($, m, 'info')
 })
 
 test('a hook\'s row reads by its name and event, never by what it said', async ($, on) => {
@@ -763,11 +766,11 @@ test('a hook\'s row reads by its name and event, never by what it said', async (
     hookRow({ name: 'question-mode', origin: 'UserPromptSubmit', detail: '', outcome: 'context x1 ~10 tok', ms: 2000, peek: 'UserPromptSubmit hook success: question-mode: Rule for THIS message' }),
     hookRow({ name: 'context-mode', origin: 'ConfigChange', detail: '', outcome: 'context x1 ~10 tok', ms: 2000, peek: 'SessionStart hook additional context: \n<context_window_protection>\n  <priority_instructions>\n    Every byte a tool returns' }),
   ])
-  await toLevel(m, 'debug')
+  await toLevel($, m, 'debug')
   expect(await m.find({ type: 'Button', text: /^question-mode on UserPromptSubmit$/ })).toBeDefined()
   expect(await m.find({ type: 'Button', text: /^context-mode on ConfigChange$/ })).toBeDefined()
   expect(await m.find({ text: /Rule for THIS|Every byte/ })).toBe(undefined) // their text stays in the inspector
-  await toLevel(m, 'info')
+  await toLevel($, m, 'info')
 })
 
 test('PostToolUse context goes with the call whose hook added it, not the newest of that tool', async ($, on) => {
@@ -808,7 +811,7 @@ test('a hook row steps with its call in the inspector, and back lands on it', as
   const read = (f: string, use: string) => call({ name: 'Read', detail: `/home/u/${f}.ts`, use })
   const tipOf = (use: string) => hookRow({ name: 'context-mode', detail: 'Read', outcome: 'context x1 ~10 tok', peek: `tip ${use}`, use })
   const m = await mountWith($, on, 'K1', [read('a', 'k1'), tipOf('k1'), read('b', 'k2'), tipOf('k2'), ...steps()], 1, 14)
-  await toLevel(m, 'debug') // the hook rows are in the log, above their calls
+  await toLevel($, m, 'debug') // the hook rows are in the log, above their calls
   await m.press({ key: 'tprev' }) // the turn's header on top: the reads are in view, the newest rows are not
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read a\.ts$/ }))!.key! })
   await m.press({ key: 'prev' }) // its PreToolUse hook, drawn above it
@@ -816,7 +819,7 @@ test('a hook row steps with its call in the inspector, and back lands on it', as
   await m.press({ key: 'back' })
   expect(await m.find({ type: 'Button', text: /^context-mode$/ })).toBeDefined()
   expect(await m.find({ text: /^Step 30$/ })).toBe(undefined)
-  await toLevel(m, 'info')
+  await toLevel($, m, 'info')
 })
 
 test('feedback reads as feedback in the inspector', async ($, on) => {
@@ -982,7 +985,7 @@ test('a request that wrote text is a row; one that only called tools hides at in
   for (const f of ['a', 'b', 'c']) expect(await m.find({ type: 'Button', text: `Read ${f}.ts` })).toBeDefined() // the silent requests between the reads hide
   expect(await m.find({ text: /Thought: Checking the hooks/ })).toBe(undefined)
   expect(await m.find({ text: /model 10\.4s · other 5\.1s/ })).toBeDefined() // the header's split: the reads take under 0.1s
-  expect(await m.find({ type: 'Button', text: /^2 hidden$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /^2 hidden ▸$/ })).toBeDefined()
   await m.press({ key: 'th1' }) // `#1` opens the turn: its whole split, which the header cuts to two parts
   expect(await m.find({ text: 'A turn of the main loop ended' })).toBeDefined()
   expect(await m.find({ text: /^model 10\.4s · other 5\.1s/ })).toBeDefined()
@@ -998,10 +1001,10 @@ test('a request that wrote text is a row; one that only called tools hides at in
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read a\.ts$/ }))!.key! }) // a call's inspector names the request before it
   expect(await m.find({ text: 'by Opus 5.5 in a 4.2s request: Checking the hooks' })).toBeDefined()
   await m.press({ key: 'back' })
-  await toLevel(m, 'debug') // every request a row: what it thought, else the calls it made
+  await toLevel($, m, 'debug') // every request a row: what it thought, else the calls it made
   expect(await m.find({ type: 'Button', text: /^Thought: Checking the hooks$/ })).toBeDefined()
   expect(await m.find({ type: 'Button', text: /^Called Read$/ })).toBeDefined()
-  await toLevel(m, 'info')
+  await toLevel($, m, 'info')
 })
 
 test('what streams or runs right now is a ● line below the rows, gone once it ends', async ($, on) => {
@@ -1117,7 +1120,7 @@ test('an event row reads what happened, a failure red; the engine\'s frequent re
   expect(await m.find({ text: /A model call the auto-title plugin made/ })).toBeDefined()
   expect(await m.find({ text: '10 in (0 cached, 0 written) · 5 out' })).toBeDefined()
   await m.press({ key: 'back' })
-  await m.press({ key: 'vagent' }) // what the model did: none of these
+  await m.press({ key: 'vmodel' }) // what the model did: none of these
   expect(await m.find({ type: 'Button', text: /^Turn failed/ })).toBe(undefined)
   await m.press({ key: 'vharness' })
   expect(await m.find({ type: 'Button', text: /^Turn failed/ })).toBeDefined()
@@ -1162,7 +1165,7 @@ test('the setup row reads what the session runs on, what broke first and red; s 
   await drain(($ as any).turn.step(STEP)) // main's model and effort
   await ($ as any).session.measure({ context: { tokens: 41000, window: 200000, percent: 20.5 }, rateLimits: [{ kind: 'five_hour', percentUsed: 42 }], cost: { usd: 1.234 }, changed: ['context', 'rateLimits', 'cost'] })
   const m = await pane($, 60, 160)
-  expect(await m.find({ type: 'Text', text: /^✗ 1 hook run failed · 1 API error · 1 MCP server down/ })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: /^✗ 1 hook run failed \+2$/ })).toBeDefined() // the first problem, the rest counted: the page lists them
   expect(await m.find({ type: 'Button', text: /^Opus 5\.5 high$/ })).toBeDefined() // the rest is on the page; a limit under 80% says nothing here
   await m.press({ key: 'fsetup' })
   expect(await m.find({ text: 'Opus 5.5 (claude-opus-5-5) · effort high' })).toBeDefined()
@@ -1231,7 +1234,7 @@ test('a row outside the root reads ↗ where; the outside view keeps it and the 
   expect((await m.find({ type: 'Text', text: ' ↗ ~/dotagents' }))?.props).toMatchObject({ color: 'magenta' })
   expect((await m.find({ type: 'Text', text: ' ↗ /tmp/probe' }))?.props).toMatchObject({ dimColor: true })
   expect((await m.find({ type: 'Text', text: ' ↗ …/acme/projects/dv' }))?.props).toMatchObject({ color: 'magenta' })
-  expect(await m.find({ type: 'Text', text: '↗ 2 outside root  ' })).toBeDefined() // the setup row counts the two calls into other projects, not /tmp
+  expect(await m.find({ type: 'Text', text: '↗ 2 outside root' })).toBeDefined() // the controls count the two calls into other projects, not /tmp
   await m.press({ key: 'voutside' })
   expect(await m.find({ type: 'Button', text: /^Run tests/ })).toBe(undefined)
   expect(await m.find({ type: 'Button', text: /^Directory added: ~\/other/ })).toBeDefined()
@@ -1282,10 +1285,10 @@ test('a row of several hooks draws one row per hook, by name', async ($, on) => 
   const m = await mountWith($, on, 'HK', [
     { t: T0, turn: 1, kind: 'hook', name: 'guard, test-gate, context-mode', origin: 'PreToolUse', detail: 'Bash', outcome: 'ok', status: 'ok', ms: 100 },
   ])
-  await toLevel(m, 'debug') // a fast hook that changed nothing ranks debug
+  await toLevel($, m, 'debug') // a fast hook that changed nothing ranks debug
   for (const n of ['guard', 'test-gate', 'context-mode']) expect(await m.find({ type: 'Button', text: `${n} on PreToolUse Bash` })).toBeDefined()
   expect(await m.find({ type: 'Button', text: /hooks on/ })).toBe(undefined)
-  await toLevel(m, 'info')
+  await toLevel($, m, 'info')
 })
 
 test('each hook of a row of several marks what it did on its own row: + the one that added context, · the silent ones, ✗ one that broke', async ($, on) => {
@@ -1293,23 +1296,23 @@ test('each hook of a row of several marks what it did on its own row: + the one 
     { t: T0, turn: 1, kind: 'hook', name: 'context-mode, guard, test-gate, install-cooldown', origin: 'PreToolUse', detail: 'Bash', outcome: 'context x1 0.4 KB', ms: 100, peek: 'When you intend to PROCESS the output',
       each: { guard: 20, 'test-gate': 100, 'install-cooldown': 30 }, spoke: ['context-mode'], errs: ['install-cooldown'] },
   ])
-  await toLevel(m, 'debug')
+  await toLevel($, m, 'debug')
   expect(await m.find({ text: /^\+ —$/ })).toBeDefined() // context-mode: a plugin hook, untimed
   expect(await m.find({ text: /^· 20ms$/ })).toBeDefined() // guard
   expect(await m.find({ text: /^· 100ms$/ })).toBeDefined() // test-gate
   expect(await m.find({ text: /^✗ 30ms$/ })).toBeDefined() // install-cooldown
-  await toLevel(m, 'info')
+  await toLevel($, m, 'info')
 })
 
 test('a hook hook-timer wraps shows its own time on its row; one it does not wrap shows none', async ($, on) => {
   const m = await mountWith($, on, 'HT', [
     { t: T0, turn: 1, kind: 'hook', name: 'guard, test-gate, context-mode', origin: 'PreToolUse', detail: 'Bash', outcome: 'ok', status: 'ok', ms: 900, each: { guard: 300, 'test-gate': 800 } },
   ])
-  await toLevel(m, 'debug')
+  await toLevel($, m, 'debug')
   expect(await m.find({ text: /^· 300ms$/ })).toBeDefined()
   expect(await m.find({ text: /^· 800ms$/ })).toBeDefined()
   expect(await m.find({ text: /^· —$/ })).toBeDefined() // context-mode: a plugin hook, untimed
-  await toLevel(m, 'info')
+  await toLevel($, m, 'info')
 })
 
 test('a hook of a row of several opens alone: its own text, time and exit; prev and next step through its neighbours', async ($, on) => {
@@ -1317,7 +1320,7 @@ test('a hook of a row of several opens alone: its own text, time and exit; prev 
     { t: T0, turn: 1, kind: 'hook', name: 'context-mode, test-gate, guard', origin: 'PreToolUse', detail: 'Bash', outcome: 'context x2 0.1 KB', ms: 100, peek: 'use ctx_execute\nrun the tests first',
       each: { 'test-gate': 80, guard: 20 }, spoke: ['context-mode', 'test-gate'], says: { 'context-mode': 'use ctx_execute', 'test-gate': 'run the tests first' }, exits: { guard: 3 }, errs: ['guard'] },
   ])
-  await toLevel(m, 'debug')
+  await toLevel($, m, 'debug')
   await m.press({ key: (await m.find({ type: 'Button', text: 'test-gate on PreToolUse Bash' }))!.key! })
   expect(await m.find({ text: 'test-gate ran on PreToolUse and added context for the model' })).toBeDefined()
   expect(await m.find({ text: 'run the tests first' })).toBeDefined()
@@ -1332,7 +1335,7 @@ test('a hook of a row of several opens alone: its own text, time and exit; prev 
   expect(await m.find({ key: 'next' })).toBe(undefined) // the last row
   await m.press({ key: 'back' })
   expect(await m.find({ type: 'Button', text: 'guard on PreToolUse Bash' })).toBeDefined()
-  await toLevel(m, 'info')
+  await toLevel($, m, 'info')
 })
 
 test('hook-timer lines count for the event, call and span they ran in', () => {
@@ -1370,11 +1373,11 @@ test('each hook outcome has its mark: + context, · nothing, ■ a stop (amber, 
     hookRow({ name: 'halt', origin: 'Stop', detail: '', outcome: 'stop', ms: 300 }),
     hookRow({ name: 'guard', outcome: 'block', ms: 400 }),
   ])
-  await toLevel(m, 'debug')
+  await toLevel($, m, 'debug')
   expect(await m.find({ type: 'Text', text: '+ 100ms' })).toBeDefined()
   expect(await m.find({ type: 'Text', text: '· 200ms' })).toBeDefined()
   expect(await m.find({ type: 'Text', text: '■ 300ms' })).toBeDefined()
   expect(await m.find({ type: 'Text', text: '⊘ 400ms' })).toBeDefined()
   expect(await m.find({ type: 'Text', text: /^✗/ })).toBe(undefined)
-  await toLevel(m, 'info')
+  await toLevel($, m, 'info')
 })

@@ -119,7 +119,7 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   expect(all.some(l => /Reply: The test fails because the header grew a row\./.test(l))).toBe(true)
   expect(all.some(l => /\b0\.0s/.test(l))).toBe(false)
   expect(all.some(l => /\b40ms\b/.test(l))).toBe(true)
-  expect(plainOf(all.find(l => /^start/.test(plainOf(l)))!).trimEnd()).toBe('start · 2 hidden') // no turn: no split, no time
+  expect(plainOf(all.find(l => /^start/.test(plainOf(l)))!).trimEnd()).toBe('start · 2 hidden ▸') // no turn: no split, no time
   // weight and colour: one ⊘ per refusal, its hook named once on the bracket; lookups dim, calls that change things bright
   expect(all.join('\n').match(/⊘/g)?.length).toBe(1)
   expect(all.some(l => /Clean the build output\*? *‹cyan:⊘ denied›/.test(l))).toBe(true)
@@ -127,6 +127,20 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   expect(all.some(l => /^  Read index\.ts‹magenta: ↗ ~\/other-project\/src›/.test(l))).toBe(true)
   expect(all.some(l => /\*Edit agent-log\.tsx\*/.test(l))).toBe(true)
   expect(all.some(l => /‹blue:↩ 1\.3s›/.test(l))).toBe(true)
+  // the header: the controls, what broke and the setup packed in two rows, then the rule; no agent tree while none runs
+  expect(ruleAt(all)).toBe(2)
+  expect(all.some(l => /^‹red:✗ 1 API error \+1›  ‹magenta:↗ 1 outside root›  s: Opus 5\.5/.test(l))).toBe(true)
+  expect(all.some(l => /^\*?main\*?\s*$|done ▸/.test(plainOf(l)))).toBe(false)
+  // a turn's hidden rows open in place under its header, dim
+  await m.press({ key: 'hid0' })
+  const opened = await frame(m, 100, 'start: hidden rows opened in place')
+  expect(opened.some(l => /^start · hide 2 ▾/.test(plainOf(l)))).toBe(true)
+  expect(opened.some(l => /^  install-check on SessionStart startup +· 2\.1s/.test(l))).toBe(true)
+  await m.press({ key: 'hid0' })
+  // l toggles info and notice
+  await m.press({ key: 'lvl' })
+  expect((await frame(m, 100, 'notice, by l')).some(l => /\*l: level notice\*/.test(l))).toBe(true)
+  await m.press({ key: 'lvl' })
   await agentlog($, 'level debug'); await m.redraw()
   const debug = await frame(m, 100, 'debug level')
   expect(debug.some(l => /install-check/.test(l))).toBe(true) // a fast hook that changed nothing ranks debug
@@ -141,6 +155,25 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   expect(open.some(l => /input & result|reply: /.test(l))).toBe(false) // the Agent row's inspector holds them
   await m.press({ key: fold!.key! })
   await m.press({ key: 'vharness' }); await frame(m, 100, 'harness view'); await m.press({ key: 'vharness' })
+  await m.press({ key: 'vmodel' })
+  const model = await frame(m, 100, 'model view')
+  expect(model.some(l => /context-mode|lint-feedback/.test(l))).toBe(false) // what the model did: no hooks
+  expect(model.some(l => /Clean the build output · guard\*/.test(l))).toBe(true) // so the call names its refuser
+  await m.press({ key: 'vmodel' })
+  // the keys page, in place of the log; i again goes back
+  await m.press({ key: 'legend' })
+  const keys = await frame(m, 100, 'keys page')
+  expect(keys.some(l => /^✗ red: broke$/.test(l))).toBe(true)
+  expect(keys.some(l => /^i +this page$/.test(l))).toBe(true)
+  await m.press({ key: 'legend' })
+  expect(ruleAt(await frame(m, 100, 'back from the keys page'))).toBe(2)
+  // an Agent row opens its inspector, whose f filters the log to its agent
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Explore: map how hooks are named$/ }))!.key! })
+  await m.press({ key: 'fonly' })
+  const onlyA = await frame(m, 100, 'filtered to Explore, from its Agent row')
+  expect(onlyA.some(l => /filter: Explore ✕/.test(l))).toBe(true)
+  expect(onlyA.some(l => /Run the tests/.test(l))).toBe(false)
+  await m.press({ key: 'fclear' })
   await m.press({ key: (await m.find({ type: 'Button', text: /^Run the tests/ }))!.key! }); await frame(m, 100, 'inspector: failed Bash'); await m.press({ key: 'back' })
   await m.press({ key: 'th1' }); await frame(m, 100, 'inspector: turn #1'); await m.press({ key: 'back' })
   await m.press({ key: 'fsetup' }); await frame(m, 100, 'setup page'); await m.press({ key: 'back' })
@@ -149,6 +182,8 @@ test('the review\'s session at 100×60: every level, view and page draws', async
 test('the review\'s session at 60×20: the header leaves the log its room', async ($, on) => {
   const m = await mountAt($, on, 'RV2', 60, 20)
   const lines = await frame(m, 60, 'default at 60×20')
-  expect(ruleAt(lines)).toBeGreaterThan(0)
-  expect(lines.length).toBeLessThanOrEqual(20)
+  // the controls in rows of the width, none clipped: three here, two without the two badges; then the rule, no agent tree
+  expect(ruleAt(lines)).toBe(3)
+  for (const l of lines.slice(0, 3)) expect(plainOf(l).length).toBeLessThanOrEqual(59)
+  expect(lines.length).toBe(20) // the window fills the rest
 })
