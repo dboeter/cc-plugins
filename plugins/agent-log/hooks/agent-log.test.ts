@@ -629,15 +629,16 @@ const call = (extra: object) => ({ t: T0, turn: 1, kind: 'tool', name: 'Bash', d
 const mountWith = ($: Engine, on: any, id: string, entries: object[], turn = 1, bodyRows = 60) => (session(on, id, entries, { turn }), pane($, bodyRows))
 const GUARD = 'PreToolUse:Bash hook error: [$HOME/.claude/hooks/security/guard.sh]: guard.sh blocked this command: rm -rf'
 
-test('a hook\'s block marks the call it refused, naming the hook; the hook\'s own row sits above it, linked', async ($, on) => {
+test('a hook\'s block marks the call it refused with one ⊘; the hook\'s own row above it, linked, names it', async ($, on) => {
   const m = await mountWith($, on, 'B1', [
     hookRow({ name: 'guard', outcome: 'block', peek: GUARD, use: 'u1' }),
     call({ detail: 'Clean up', cmd: 'rm -rf x', outcome: 'error', status: 'denied', peek: GUARD, use: 'u1' }),
   ])
-  expect((await m.findAll({ type: 'Text', text: /^⊘/ })).length).toBe(2) // the hook's row and the call's: refused, not broke: ⊘, not ✗
+  expect((await m.findAll({ type: 'Text', text: /^⊘/ })).length).toBe(1) // the call's: refused, not broke: ⊘, not ✗
+  expect((await m.find({ type: 'Text', text: '50ms' }))?.props).toMatchObject({ color: 'cyan' }) // the hook's time, in the refusal's colour
   expect(await m.find({ type: 'Text', text: /^✗/ })).toBe(undefined)
-  expect(await m.find({ type: 'Button', text: /^Clean up ⊘ guard$/ })).toBeDefined()
-  expect(await m.find({ type: 'Button', text: /^guard$/ })).toBeDefined() // by name, its reason in the inspector
+  expect(await m.find({ type: 'Button', text: /^Clean up$/ })).toBeDefined() // the hook on its bracket names the refuser
+  expect((await m.find({ type: 'Button', text: /^guard$/ }))?.props.dimColor).toBeFalsy() // by name, bright; its reason in the inspector
   expect((await m.findAll({ type: 'Text', text: '╭' })).length).toBe(1)
 })
 
@@ -648,7 +649,7 @@ test('a PreToolUse block marks its call denied', async ($, on) => {
   await $.tool.call({ tool: 'Bash', tool_use_id: 'u9', command: 'rm -rf x', description: 'Clean up' } as any)
   const m = await pane($)
   expect(await m.find({ type: 'Button', text: /^rm$/ })).toBe(undefined) // a refused call never ran: no output to boil down
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Clean up ⊘ / }))!.key! })
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Clean up$/ }))!.key! })
   expect(await m.find({ text: /refused before it ran/ })).toBeDefined()
   await m.press({ key: 'back' })
 })
@@ -1226,10 +1227,10 @@ test('a row outside the root reads ↗ where; the outside view keeps it and the 
     call({ t: T0 + 5, name: 'Read', detail: '/tmp/probe/x.log', out: '/tmp/probe' }),
   ])
   expect(await m.find({ type: 'Button', text: 'Read RULES.md' })).toBeDefined()
-  // the place after the action, its ~ path: amber for another project, dim for scratch; a long one cut from the left
-  expect((await m.find({ type: 'Text', text: ' ↗ ~/dotagents' }))?.props).toMatchObject({ color: 'yellow' })
+  // the place after the action, its ~ path: magenta for another project, dim for scratch; a long one cut from the left
+  expect((await m.find({ type: 'Text', text: ' ↗ ~/dotagents' }))?.props).toMatchObject({ color: 'magenta' })
   expect((await m.find({ type: 'Text', text: ' ↗ /tmp/probe' }))?.props).toMatchObject({ dimColor: true })
-  expect((await m.find({ type: 'Text', text: ' ↗ …/acme/projects/dv' }))?.props).toMatchObject({ color: 'yellow' })
+  expect((await m.find({ type: 'Text', text: ' ↗ …/acme/projects/dv' }))?.props).toMatchObject({ color: 'magenta' })
   expect(await m.find({ type: 'Text', text: '↗ 2 outside root  ' })).toBeDefined() // the setup row counts the two calls into other projects, not /tmp
   await m.press({ key: 'voutside' })
   expect(await m.find({ type: 'Button', text: /^Run tests/ })).toBe(undefined)

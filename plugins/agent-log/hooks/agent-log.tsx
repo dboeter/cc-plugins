@@ -206,7 +206,7 @@ const DEBUG_ATTACHMENTS = new Set(['total_tokens_reminder', 'output_style', 'sil
 // first-message blocks the engine sends as attachments, not as themselves (read from 2.1.296): email and project inside
 // `session_context` (beside git status, which has no block), the date as `date`. The attachment row carries the size
 const SENT_AS_ATTACHMENT = new Set(['userEmail', 'attachedProject', 'currentDate'])
-const STATUS: Record<string, [string, string?]> = { running: ['●', 'yellow'], completed: ['✓', 'green'], failed: ['✗', 'red'], killed: ['■'] } // no color = dim
+const STATUS: Record<string, [string, string?]> = { running: ['●', 'green'], completed: ['✓'], failed: ['✗', 'red'], killed: ['■', 'yellow'] } // cell's colours
 const TEAM = 'team' as const // pseudo node: header over main's direct teammate children
 const SLOW = 1000 // ms: a classic hook this slow logs even when it changed nothing
 // slow enough to flag ⚠. SessionStart is exempt: its hooks set the session up once and take seconds every time (context-mode's
@@ -292,15 +292,16 @@ let fresh = 0 // entries logged while not following: the jump button's "N new ev
 let chain: Promise<void> = Promise.resolve() // all store mutations run one after another, so no write lands a stale snapshot
 let only: string | undefined // agent filter: an agent id, 'main', or undefined for every loop
 // A row reads: disclosure, action, tool (muted), then one right cell (fixed width, so the action truncates first): the time.
-// A flag rides in front of the time in its color: cyan ⊘ = refused, red ✗ = broke, amber ■ = a hook stopped the session (on purpose,
-// but it ends the turn), cyan ↩ = a hook's feedback, green + = a hook added context, dim · = a hook changed nothing, amber ⚠ = slow or
-// aborted, muted ∅ = found nothing (grep/diff exit 1). No time (a denied call never ran) -> the status word stands in for it.
+// A flag rides in front of the time in its color, one meaning per colour: red ✗ = broke, cyan ⊘ = refused, yellow ■ ⚠ = ended
+// early or slow (■ a hook stopped the session: on purpose, but it ends the turn), blue ↩ = a hook's feedback, green ● = running
+// (ran, the live lines), magenta ↗ = another project (line). Dim: + = a hook added context, · = it changed nothing, ∅ = found
+// nothing (grep/diff exit 1): routine, no colour. No time (a denied call never ran) -> the status word stands in for it.
 // Derived at draw time so stored entries relabel too. Injected text shows no size for now (`+N tok` was a chars/4 guess)
 const cell = (x: Entry, ms = x.ms): [string, string?] => {
   const s = stat(x), time = ms == null ? undefined : secs(ms)
-  return REFUSED.has(s) ? [`⊘ ${time ?? s}`, 'cyan'] : s === 'stopped' ? [`■ ${time ?? s}`, 'yellow'] : BAD.has(s) ? [`✗ ${time ?? s}`, 'red'] : s === 'feedback' ? [`↩ ${time ?? s}`, 'cyan'] : s === 'aborted' ? [`⚠ ${time ?? s}`, 'yellow'] : s === 'nomatch' ? [`∅ ${time ?? 'no match'}`]
+  return REFUSED.has(s) ? [`⊘ ${time ?? s}`, 'cyan'] : s === 'stopped' ? [`■ ${time ?? s}`, 'yellow'] : BAD.has(s) ? [`✗ ${time ?? s}`, 'red'] : s === 'feedback' ? [`↩ ${time ?? s}`, 'blue'] : s === 'aborted' ? [`⚠ ${time ?? s}`, 'yellow'] : s === 'nomatch' ? [`∅ ${time ?? 'no match'}`]
     : slow(x, ms) ? [`⚠ ${time}`, 'yellow'] // over + and ·: slowness is what a slow hook's row has to say
-    : x.kind === 'hook' ? (x.outcome.startsWith('context') ? [`+ ${time ?? '—'}`, 'green'] : [`· ${time ?? '—'}`])
+    : x.kind === 'hook' ? (x.outcome.startsWith('context') ? [`+ ${time ?? '—'}`] : [`· ${time ?? '—'}`])
     : [time ?? (x.kind === 'tool' ? '—' : '')]
 }
 // a time in the unit that reads it best: `40ms` under a second, `18.4s` under a minute, then `ago`'s `2m05s`, `1h05m`. At most 6
@@ -392,7 +393,7 @@ const PATHS = /(?:^|[\s"'=(])((?:~|\$HOME|\$\{HOME\})?\/[^\s"'|;&<>()`]+)/g // t
 // From a command's words only paths under home count: /tmp, /usr and /dev are scratch and system files, not work elsewhere, and
 // a word need not be a path. undefined: inside the root, or not known (no path, a variable left in it)
 // A place outside the root that is routine, not another project: Claude Code's own ~/.claude (memory, plans, settings) and
-// scratch space (/tmp, /var/tmp, macOS /private/tmp). Its ↗ stays dim; any other place draws amber and counts in the setup row
+// scratch space (/tmp, /var/tmp, macOS /private/tmp). Its ↗ stays dim; any other place draws magenta and counts in the setup row
 export const routine = (p: string) => /^~\/\.claude(\/|$)/.test(p) || /^\/(private\/)?(var\/)?tmp(\/|$)/.test(p)
 export const outsideOf = (tool: string, a: { path?: string; cmd?: string }, root: string, cwd: string, home?: string): string | undefined => {
   const away = (p?: string) => p && !under(p, root) ? tilde(p, home) : undefined
@@ -430,6 +431,8 @@ export const ctxOf = (x: Entry): [string, string?] => {
   if (t === 'mcp_instructions_delta' && gone) return ['MCP disconnected']
   return [Object.hasOwn(LABEL, t) ? LABEL[t]! : x.name] // no label: as logged, e.g. `skill code-review`
 }
+// a request's reply, its first line; '' when it wrote none. One that threw keeps its error in peek: no reply
+const replyOf = (x: Entry) => x.kind === 'step' && !(stat(x) === 'failed' && !x.stop) ? first(x.peek) : ''
 // what happened, action first in sentence case, its verb saying what the tool did; the inspector names the tool
 // bare: a hook's or its text's name alone, for its row on its call's bracket, where the event and tool are plain
 const action = (x: Entry, bare = false): string => {
@@ -466,9 +469,9 @@ const action = (x: Entry, bare = false): string => {
   if (x.kind === 'session') return x.name === 'reload' ? 'Plugin reloaded' : `Session init${d ? ` in ${base(d)}` : ''}` // `init`: `session start` is the engine context it sent
   if (x.kind === 'fork') return `Fork by ${x.name}: ${first(x.peek) || stat(x)}`
   // a request reads by what it did: the first line of its reply, else of its thinking, else the calls it made, else why it
-  // stopped. The rest of what it said or thought is the inspector's. A request that threw keeps its error in peek: no reply
+  // stopped (replyOf). The rest of what it said or thought is the inspector's
   if (x.kind === 'step') {
-    const said = stat(x) === 'failed' && !x.stop ? '' : first(x.peek)
+    const said = replyOf(x)
     return (said ? `Reply: ${said}` : '') || (x.thought ? `Thought: ${x.thought}` : '') || (x.asked?.length ? `Called ${counted(x.asked)}` : '') || STOPPED[x.stop ?? ''] || (stat(x) === 'aborted' ? 'Interrupted' : 'No response')
   }
   if (x.kind === 'event') return x.name === 'model switch' ? `Model: ${x.detail.split(' → ').map(modelName).join(' → ')}${x.outcome ? ` (${x.outcome})` : ''}`
@@ -518,6 +521,9 @@ const lvl = (x: Entry): number => {
   if (x.kind === 'side') return x.src === 'plugin' || !CHATTER.has(x.name) ? (x.name === 'compact' ? 2 : 1) : 0
   return stat(x) === 'aborted' ? 2 : 1
 }
+// a row that did something, drawn bright when its cell has no colour: a call at notice or above (shell, edits, agents, web, a
+// rule's verdict), a request that replied, a plugin's fork. The rest (lookups, hook runs, context, engine events) draws dim
+const bright = (x: Entry) => (x.kind === 'tool' && lvl(x) >= 2) || !!replyOf(x) || x.kind === 'fork'
 
 // === STATE AND STORE ===
 const started = new Map<string, number>() // agent id -> spawn time; AgentInfo has no timestamp. Teammates raise no agent.spawn, so they have none
@@ -1524,9 +1530,9 @@ export const register: Register = (on, options) => {
     // mark: drawn in the disclosure's cell when there is none (the header's `›` on the agent the log is filtered to).
     // rail: a fold's tree guides (`│ ├ `), drawn dim in place of the indent. No press: plain text, a line with nothing to open.
     // away: the places outside the project root the row reached (awayOf), drawn after the action as ` ↗ ~/path` (the first, cut from
-    // the left so its last folders stay; a fold's ` +N` more), so it survives the cut. Amber unless every place is routine()
+    // the left so its last folders stay; a fold's ` +N` more), so it survives the cut. Magenta unless every place is routine()
     // link: the row's place on its call's bracket (bracketed), drawn dim in the mark's cell so a bracketed row keeps the column of
-    // one without. dim: a hook's row, quiet beside the call it is linked to
+    // one without. dim: a routine row, drawn quiet (partsOf's brightness rule)
     type Line = { k: string; act: string; press?: () => void; st?: [string, string?]; who?: string; tail?: string; disc?: [boolean, () => void]; indent?: number; rail?: string; mark?: string; link?: string; dim?: boolean; away?: string[] }
     const line = ({ k, act, press, st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ', link, dim, away }: Line) => {
       const there = away?.length ? ` ↗ ${lfit(away[0]!, 24)}${away.length > 1 ? ` +${away.length - 1}` : ''}` : ''
@@ -1534,7 +1540,7 @@ export const register: Register = (on, options) => {
       return (
         <Box key={k} flexDirection="row" overflow="hidden">
           <Box flexShrink={0} width={2 + rail.length}><Text dimColor>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : link ? <Text dimColor>{link}</Text> : <Text>{mark}</Text>}</Box>
-          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{who ? <Text dimColor>{who}</Text> : null}{press ? <Button key={`b${k}`} label={fit(act, room) + tail} plain dimColor={dim} onPress={press} /> : <Text wrap="truncate-end" dimColor={dim}>{fit(act, room) + tail}</Text>}{there ? <Text color={away!.every(routine) ? undefined : 'yellow'} dimColor={away!.every(routine)}>{there}</Text> : null}</Box>
+          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{who ? <Text dimColor>{who}</Text> : null}{press ? <Button key={`b${k}`} label={fit(act, room) + tail} plain dimColor={dim} onPress={press} /> : <Text wrap="truncate-end" dimColor={dim}>{fit(act, room) + tail}</Text>}{there ? <Text color={away!.every(routine) ? undefined : 'magenta'} dimColor={away!.every(routine)}>{there}</Text> : null}</Box>
           {/* flush right, as the turn header's time: times of any width end on the same column */}
           <Box flexShrink={0} width={END} justifyContent="flex-end"><Text color={st[1]} dimColor={!st[1]}>{fit(st[0], END - 1)}</Text></Box>
         </Box>
@@ -1630,9 +1636,9 @@ export const register: Register = (on, options) => {
     const ran = (x: Entry): [string, string?] => {
       if (BAD.has(stat(x))) return cell(x) // refused: no agent ran
       const a = agents.find(y => y.id === x.child)
-      if (a?.status === 'running') return [`● ${secs(now - (started.get(a.id) ?? x.t))}`, 'yellow']
+      if (a?.status === 'running') return [`● ${secs(now - (started.get(a.id) ?? x.t))}`, 'green']
       const ts = runs(x.child), ms = total(ts)
-      return a?.status === 'failed' || ts.some(y => stat(y) === 'failed') ? [`✗ ${secs(ms)}`, 'red'] : a?.status === 'killed' ? [`■ ${secs(ms)}`]
+      return a?.status === 'failed' || ts.some(y => stat(y) === 'failed') ? [`✗ ${secs(ms)}`, 'red'] : a?.status === 'killed' ? [`■ ${secs(ms)}`, 'yellow']
         : ts.some(y => stat(y) === 'aborted') ? [`⚠ ${secs(ms)}`, 'yellow'] : [secs(ms)]
     }
     const rows: any[] = []
@@ -1646,12 +1652,15 @@ export const register: Register = (on, options) => {
     const actOf = (y: Entry) => { const id = (y.kind === 'step' && y.agent) ? y.name : y.kind === 'side' ? y.detail : undefined
       const main = id ? entries.findLast(z => z.kind === 'step' && !z.agent && z.t <= y.t)?.name ?? setup.model : undefined
       return id && main && modelName(id) !== modelName(main) ? `${modelName(id)} · ${action(y)}` : action(y) }
-    // who refused a call, after its action (`Clean up ⊘ guard`): the hook that blocked it, else the rule, the classifier or you
+    // who refused a call, named once. A refusing hook on the call's bracket names itself there: nothing. Else after the action,
+    // no glyph (`Clean up · you`): the hook (its row not drawn, a view without hooks), the rule, the classifier or you. The ⊘
+    // is the call's cell's alone
     const byOf = (y: Entry) => {
       if (y.kind !== 'tool' || !REFUSED.has(stat(y))) return ''
-      const hook = [...new Set((hooksUnder.get(y) ?? []).filter(z => REFUSED.has(stat(z))).map(z => z.name))].join(', ')
+      if ((hooksUnder.get(y) ?? []).some(z => REFUSED.has(stat(z)))) return ''
+      const hook = [...new Set((y.use ? entries.filter(z => z.kind === 'hook' && z.use === y.use && REFUSED.has(stat(z))) : []).map(z => z.name))].join(', ')
       const by = hook || y.rule || (y.via === 'classifier' ? 'classifier' : /^user_/.test(y.via ?? '') ? 'you' : '')
-      return by ? ` ⊘ ${by}` : ''
+      return by ? ` · ${by}` : ''
     }
     // a row's or a fold's places outside the root, each once; another project's first, so the one the fold names is the one to look at
     const awayOf = (ys: Entry[]) => [...new Set(ys.flatMap(y => y.out ? [y.out] : []))].sort((p, q) => +routine(p) - +routine(q))
@@ -1689,11 +1698,16 @@ export const register: Register = (on, options) => {
         // a hook's row on its call's bracket names just the hook: the call beside it names the tool, the side names the event.
         // Dim unless its cell has a colour: a hook that blocked or broke stays as loud as the call. A row with no use is no
         // call's hook: a model request sits on a bracket only for its server rows (the advisor), and keeps its own name
-        const hooked = x.kind !== 'tool' && !!x.use && !!g.link, c = cell(x)
+        const hooked = x.kind !== 'tool' && !!x.use && !!g.link
+        // a refusing hook on its call's bracket: the call's cell carries the ⊘, the hook's its time in the same cyan
+        const c: [string, string?] = hooked && REFUSED.has(stat(x)) ? [secs(x.ms), 'cyan'] : cell(x)
+        // Bright is what did something: a row whose cell has a colour (it broke, was refused, ended early or slow) or bright().
+        // A row below the level (a turn's hidden rows, opened in place) is dim whatever it did
+        const dim = lvl(x) < level || (!c[1] && !bright(x))
         p = { target: x, members: [x], nested: [], parts: [],
           head: (rail, who, press) => [
             ...(waits(x) ? [waitLine(x, rail, g.wait)] : []),
-            line({ k, act: hooked ? action(x, true) : actOf(x), tail: byOf(x), press, st: c, who, rail, link: g.link, dim: hooked && !c[1], away: awayOf([x]) }),
+            line({ k, act: hooked ? action(x, true) : actOf(x), tail: byOf(x), press, st: c, who, rail, link: g.link, dim, away: awayOf([x]) }),
             ...server.map(f => f(rail)),
           ] }
       }
@@ -1745,9 +1759,10 @@ export const register: Register = (on, options) => {
     const shows = (l: Live) => l.asking || (l.row ? lvl({ t: l.t, ...l.row }) : l.wrote ? 1 : 0) >= level
     const inFlight = view === 'all' || view === 'agent' ? [...liveNow].filter(([, l]) => (only === undefined || (l.loop ?? 'main') === only) && shows(l)) : []
     if (inFlight.length && busy && cur !== turnNo) { if (cur !== undefined) rows.push(<Text key={`gap${rows.length}`}> </Text>); rows.push(header(turnNo, `turn${turnNo}`)); cur = turnNo }
-    for (const [k, l] of inFlight) rows.push(line({ k: `now${k}`, act: nowAct(l), st: [`● ${secs(now - l.t)}`, 'yellow'], who: l.loop ? whoOf(l.loop) : '' }))
+    for (const [k, l] of inFlight) rows.push(line({ k: `now${k}`, act: nowAct(l), st: [`● ${secs(now - l.t)}`, 'green'], who: l.loop ? whoOf(l.loop) : '' }))
     // short items packed into as many rows as the width needs (pack), each row one element, so the header's height stays counted
-    const LEGEND = ['⊘ refused: a hook, a rule, the classifier or you', '✗ broke', '■ a hook stopped the session', '+ a hook added context', '· a hook changed nothing', '↩ hook feedback to the model', '⚠ slow or aborted', '∅ no match', '● running now', '≈ estimated', '↗ outside the project root: amber, another project; dim, ~/.claude or /tmp', '▸ press to open',
+    const LEGEND = ['✗ red: broke', '⊘ cyan: refused, by a hook, a rule, the classifier or you', '⚠ ■ yellow: ended early or slow (■ a hook stopped the session)', '↩ blue: hook feedback to the model', '● green: running now',
+      '↗ magenta: another project; dim, ~/.claude or /tmp', '+ a hook added context', '· a hook changed nothing', '∅ no match', '≈ estimated', 'bright: did something; dim: routine', '▸ open the fold',
       'a g h u views', 'l level', 'o every fold', 's setup', 'j newest', 'ctrl+↑↓ previous/next prompt', 'b back', 'n p next/prev in the inspector', 'k this legend']
     // `no agent entries for scout at notice or above · /agentlog level debug: every row · a: all views · main: clear the filter`; only the filters set
     const empty = () => {
@@ -1806,7 +1821,7 @@ export const register: Register = (on, options) => {
     // the setup page. Counted from every entry, whatever the view, level or filter
     if (!setup.asked) refreshSetup($).then(() => $.ui.invalidate('ui.render')).catch(() => {})
     const problems = problemsOf(entries)
-    const elsewhere = entries.filter(x => x.out && !routine(x.out)).length // calls into another project, amber in the setup row (u: the outside view lists them)
+    const elsewhere = entries.filter(x => x.out && !routine(x.out)).length // calls into another project, magenta in the setup row (u: the outside view lists them)
     const hookN = new Set(Object.values(hookCfg ?? {}).flat().map(h => h.cmd ?? h.name)).size // distinct scripts, not registrations: context-mode registers one script on 9 PreToolUse matchers
     const servers = new Map<string, number>() // MCP server -> its tools, from the tool list (`mcp__server__tool`) and the connection records
     for (const t of setup.tools ?? []) if (t.mcp) { const sv = t.name.split('__')[1] ?? t.name; servers.set(sv, (servers.get(sv) ?? 0) + 1) }
@@ -1881,7 +1896,7 @@ export const register: Register = (on, options) => {
       ...controls,
       <Box key="setuprow" flexDirection="row" overflow="hidden">
         {problems.length ? <Box flexShrink={0}><Text color="red">{`✗ ${problems.join(' · ')}  `}</Text></Box> : null}
-        {elsewhere ? <Box flexShrink={0}><Text color="yellow">{`↗ ${elsewhere} outside root  `}</Text></Box> : null}
+        {elsewhere ? <Box flexShrink={0}><Text color="magenta">{`↗ ${elsewhere} outside root  `}</Text></Box> : null}
         <Box flexShrink={1} minWidth={0} overflow="hidden"><Button key="fsetup" label={setupText} hotkey="s" plain dimColor onPress={openSetup} /></Box>
       </Box>,
       // the agent tree's root, only once there is a tree or a filter to clear: a session without subagents has nothing to pick
