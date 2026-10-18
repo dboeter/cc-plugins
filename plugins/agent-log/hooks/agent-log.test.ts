@@ -393,8 +393,8 @@ test('the log draws only the rows that fit under the header, which never scrolls
   on('agent.list', () => ({ value: [] }))
   on('config.list', () => ({ value: [] }))
   mock.store(on, { 'r:W': { entries: steps(), seen: {}, turn: 1, names: {} } })
-  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 11 } } as any })
-  expect((await m.find({ type: 'Box' }))!.children.length).toBe(11) // controls, rule (no main row: no agent running), then 9 of the 31 log rows
+  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 12 } } as any })
+  expect((await m.find({ type: 'Box' }))!.children.length).toBe(12) // two rows of controls, rule (no main row: no agent running), then 9 of the 31 log rows
   expect(await m.find({ text: /^Step 30$/ })).toBeDefined() // following: the newest
   expect(await m.find({ text: /^Step 22$/ })).toBeDefined()
   expect(await m.find({ text: /^Step 21$/ })).toBe(undefined)
@@ -405,7 +405,7 @@ test('the log draws only the rows that fit under the header, which never scrolls
   expect(await m.find({ text: /^Step 23$/ })).toBeDefined()
   expect(await m.find({ text: /^Step 30$/ })).toBe(undefined)
   expect(await m.find({ key: 'jump' })).toBeDefined()
-  expect((await m.find({ type: 'Box' }))!.children.length).toBe(11)
+  expect((await m.find({ type: 'Box' }))!.children.length).toBe(12)
   await m.press({ key: 'jump' })
   expect(await m.find({ text: /^Step 30$/ })).toBeDefined()
   // back onto the newest row keeps following: no jump row
@@ -422,15 +422,40 @@ test('the controls take as many rows as the width needs, never clipping one', as
   mock.store(on, { 'r:C': { entries: steps(), seen: {}, turn: 1, names: {} } })
   const props = (bodyColumns: number) => ({ ...PANE_PROPS, bodyColumns, scroll: { offset: 0, bodyRows: 20 } }) as any
   const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: props(100) })
-  expect(await ctlRows(m)).toBe(1) // `a: all  m: model  h: harness  u: outside  l: level info    o: unfold  i: keys  turn ↑↓  s: setup`
-  // a: all, m: model, h: harness, u: outside, l: level info (padded to `level notice`), o: unfold, i: keys, turn ↑↓, s: the setup's label
-  const bare = [6, 8, 10, 10, 15, 9, 7, 7, String((await m.find({ key: 'fsetup' }))!.props.label).length + 3]
+  expect(await ctlRows(m)).toBe(2) // `a: all  m: model  h: harness  u: outside  l: level info    o: unfold  i: keys  turn ↑↓  j: ↓  k: ↑`, then `s: setup`
+  // a: all, m: model, h: harness, u: outside, l: level info (padded to `level notice`), o: unfold, i: keys, turn ↑↓, j: ↓, k: ↑, s: the setup's label
+  const bare = [6, 8, 10, 10, 15, 9, 7, 7, 4, 4, String((await m.find({ key: 'fsetup' }))!.props.label).length + 3]
   for (const cols of [50, 30]) {
     await m.redraw(props(cols))
     expect(await ctlRows(m)).toBe(pack(bare, cols - 1).length)
-    for (const k of ['vall', 'vmodel', 'vharness', 'voutside', 'lvl', 'folds', 'legend', 'tprev', 'tnext', 'fsetup']) expect(await m.find({ key: k })).toBeDefined()
+    for (const k of ['vall', 'vmodel', 'vharness', 'voutside', 'lvl', 'folds', 'legend', 'tprev', 'tnext', 'cdown', 'cup', 'fsetup']) expect(await m.find({ key: k })).toBeDefined()
   }
-  expect(await ctlRows(m)).toBe(4) // 30 columns: three views; outside and level; folds, keys and the prompt jumps; the setup
+  expect(await ctlRows(m)).toBe(4) // 30 columns: three views; outside and level; folds, keys and the prompt jumps; the cursor and the setup
+})
+
+test('k and j move a row cursor the window keeps in view; e goes back to the newest', async ($, on) => {
+  session(on, 'CU', steps())
+  const m = await pane($, 12, 100) // 9 log rows: Step 22-30
+  await m.press({ key: 'cup' }) // the cursor starts on the window's last row: Step 30
+  for (let i = 0; i < 9; i++) await m.press({ key: 'cup' }) // up to Step 21, above the window
+  expect(await m.find({ text: /^Step 21$/ })).toBeDefined()
+  expect(await m.find({ text: /^Step 30$/ })).toBe(undefined) // the window moved up with it
+  expect(await m.find({ key: 'jump' })).toBeDefined()
+  await m.press({ key: 'cdown' }) // Step 22: in view, the window stays
+  expect(await m.find({ text: /^Step 21$/ })).toBeDefined()
+  await m.press({ key: 'jump' }) // e: the newest, the cursor starts over
+  expect(await m.find({ text: /^Step 30$/ })).toBeDefined()
+  await m.press({ key: 'cup' })
+  expect(await m.find({ key: 'jump' })).toBe(undefined) // a cursor on the last page leaves the window following
+  // in the inspector j and k step to its next and previous row, as n and p do; on a page they do nothing
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Step 25$/ }))!.key! })
+  await m.press({ key: 'cdown' })
+  expect(await m.find({ text: /^step 26$/ })).toBeDefined()
+  await m.press({ key: 'cup' }); await m.press({ key: 'cup' })
+  expect(await m.find({ text: /^step 24$/ })).toBeDefined()
+  await m.press({ key: 'back' }) // the cursor on the row back lands on
+  await m.press({ key: 'legend' }); await m.press({ key: 'cdown' }); await m.press({ key: 'legend' })
+  expect(await m.find({ text: /^Step 24$/ })).toBeDefined() // the page's way back follows the newest again
 })
 
 test('ctrl+↑↓ (the #↑↓ buttons) put the previous or next prompt\'s turn header at the top', async ($, on) => {
@@ -440,7 +465,7 @@ test('ctrl+↑↓ (the #↑↓ buttons) put the previous or next prompt\'s turn 
   // three turns of ten: rows #1, Step 1-10, gap, #2, Step 11-20, gap, #3, Step 21-30
   const entries = steps().map((x, i) => ({ ...x, turn: Math.floor(i / 10) + 1 }))
   mock.store(on, { 'r:T': { entries, seen: {}, turn: 3, names: {} } })
-  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 12 } } as any })
+  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 13 } } as any })
   expect(await m.find({ text: /^Step 30$/ })).toBeDefined()
   expect(await m.find({ text: /^#3$/ })).toBe(undefined) // 10 rows show: Step 21-30
   await m.press({ key: 'tprev' })
@@ -461,7 +486,7 @@ test('ctrl+↑↓ (the #↑↓ buttons) put the previous or next prompt\'s turn 
 const reads = (t0: number, extra: object = {}, files = ['a', 'b', 'c']) => files.map((f, i) => ({ t: t0 + i, turn: 1, kind: 'tool', name: 'Read', detail: `/home/u/hooks/${f}.ts`, outcome: 'ok', status: 'ok', ms: 10, ...extra }))
 // an Agent row that spawned agent A, then A's reads: the one fold the log keeps
 const spawn = (t0: number, files = ['a', 'b', 'c']) => [{ t: t0, turn: 1, kind: 'tool', name: 'Agent', detail: 'scout: look around', outcome: 'ok', status: 'ok', ms: 10, child: 'A' }, ...reads(t0 + 1, { agent: 'A' }, files)]
-// the line a row sits on in the pane's body, the header's rows counted (2 at 100 columns with no agent running: controls, rule): the same line
+// the line a row sits on in the pane's body, the header's rows counted (3 at 100 columns with no agent running: two of controls, the rule): the same line
 // before and after means it did not move
 const lineOf = async (m: any, k: string) => (await m.find({ type: 'Box' }))!.children.findIndex((c: any) => c.props?.key === k)
 
@@ -469,7 +494,7 @@ test('a fold opens where it was pressed, its rows on tree guides, each opening i
   // #1, Step 1-25, the Agent row's fold, Step 26-30: following, 9 rows show (Step 23-25, the fold, Step 26-30)
   const s = steps(), entries = [...s.slice(0, 25), ...spawn(s[24]!.t), ...s.slice(25).map(x => ({ ...x, t: x.t + 4 }))]
   session(on, 'F', entries, { names: { A: 'scout' } })
-  const m = await pane($, 12, 100)
+  const m = await pane($, 13, 100)
   const fold = await m.find({ type: 'Button', text: /^▸$/ })
   expect(fold).toBeDefined()
   const row = fold!.key!.slice(1), at = await lineOf(m, row)
@@ -488,7 +513,7 @@ test('a fold opens where it was pressed, its rows on tree guides, each opening i
   await m.press({ key: 'folds' }) // o in the inspector closes the fold, but must not move the window back centres
   await m.press({ key: 'back' })
   expect(await m.find({ text: /^Read a\.ts$/ })).toBe(undefined)
-  expect(await lineOf(m, row)).toBe(2 + 5) // the closed fold that holds Read a.ts, centred: 5 of the 10 log rows above it
+  expect(await lineOf(m, row)).toBe(3 + 5) // the closed fold that holds Read a.ts, centred: 5 of the 10 log rows above it
 })
 
 test('the header hangs each agent under its parent on the log\'s tree guides', async ($, on) => {
@@ -504,10 +529,10 @@ test('the header hangs each agent under its parent on the log\'s tree guides', a
 test('opening the newest fold while following shows it, its row staying on screen', async ($, on) => {
   const s = steps().slice(0, 25), entries = [...s, ...spawn(s[24]!.t + 1)] // the fold is the last row, on the last line
   session(on, 'N', entries, { names: { A: 'scout' } })
-  const m = await pane($, 11, 100)
+  const m = await pane($, 12, 100)
   const fold = await m.find({ type: 'Button', text: /^▸$/ })
   await m.press({ key: fold!.key! })
-  expect(await lineOf(m, fold!.key!.slice(1))).toBeGreaterThanOrEqual(2) // still drawn, not under the jump row
+  expect(await lineOf(m, fold!.key!.slice(1))).toBeGreaterThanOrEqual(3) // still drawn, not under the jump row
   expect(await m.find({ text: /^Read c\.ts$/ })).toBeDefined() // the window moved down just far enough to show the fold
   expect(await m.find({ key: 'jump' })).toBe(undefined) // which put it at the end: following
   await m.press({ key: fold!.key! })
@@ -517,11 +542,11 @@ test('o keeps the turn header at the window\'s top in place, though folds above 
   // #1, the fold, Step 1-3, gap, #2, Step 4-20
   const entries = [...reads(Date.now() - 70000), ...steps().slice(0, 20).map((x, i) => ({ ...x, turn: i < 3 ? 1 : 2 }))]
   session(on, 'H', entries, { turn: 2 })
-  const m = await pane($, 11, 100)
+  const m = await pane($, 12, 100)
   await m.press({ key: 'tprev' })
-  expect(await lineOf(m, 'turn2')).toBe(2) // the first log row
+  expect(await lineOf(m, 'turn2')).toBe(3) // the first log row
   await m.press({ key: 'folds' })
-  expect(await lineOf(m, 'turn2')).toBe(2)
+  expect(await lineOf(m, 'turn2')).toBe(3)
   await m.press({ key: 'folds' })
 })
 
@@ -529,7 +554,7 @@ test('o from inside an open fold keeps the fold\'s row at the window\'s top', as
   // #1, Step 1, the fold of ten, Step 2-16
   const s = steps().slice(0, 16), entries = [s[0]!, ...spawn(s[0]!.t, [...'abcdefghij']), ...s.slice(1).map(x => ({ ...x, t: x.t + 11 }))]
   session(on, 'I', entries, { names: { A: 'scout' } })
-  const m = await pane($, 11, 100)
+  const m = await pane($, 12, 100)
   await m.press({ key: 'tprev' })
   const row = (await m.find({ type: 'Button', text: /^▸$/ }))!.key!.slice(1)
   await m.press({ key: 'folds' })
@@ -539,7 +564,7 @@ test('o from inside an open fold keeps the fold\'s row at the window\'s top', as
   expect(await m.find({ text: /^Step 1$/ })).toBe(undefined)
   expect(await lineOf(m, row)).toBe(-1) // its row is above the window
   await m.press({ key: 'folds' })
-  expect(await lineOf(m, row)).toBe(2)
+  expect(await lineOf(m, row)).toBe(3)
 })
 
 test('o opens and closes every fold', async ($, on) => {

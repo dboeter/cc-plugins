@@ -289,6 +289,13 @@ let backKey: string | undefined
 // a row that opened or closed a fold, and its line in the window: the next draw keeps it on that line rather than pinning the end
 let anchor: { k: string; off: number } | undefined
 let follow = true // auto-scroll to the newest entry; off once the person scrolls up, on again at the bottom or via the jump button
+// The row cursor: sel is the key of the row it is on (a line's k), the focus ring on that row's Button so Enter opens it. j, k
+// or an arrow ask a move of `move` rows, which the next draw makes (the rows exist only there); winEnd: the last row the window
+// drew, where a cursor starts. nav: the inspector's previous and next rows, which j and k step to while it is open
+let sel: string | undefined
+let move = 0
+let winEnd = 0
+let nav: { prev?: Entry; next?: Entry } = {}
 let fresh = 0 // entries logged while not following: the jump button's "N new events"; the render zeroes it once following again
 let chain: Promise<void> = Promise.resolve() // all store mutations run one after another, so no write lands a stale snapshot
 let only: string | undefined // agent filter: an agent id, 'main', or undefined for every loop
@@ -721,7 +728,7 @@ async function load($: any): Promise<void> {
   if (key) { stepOf.clear(); bills = []; unbilled = [] } // the old session's requests; not on the first load, which a step's push can trigger after its pairing was queued
   if (setup.runsOf !== id) { setup.runs.clear(); setup.runsOf = id } // the old session's hook runs; ones the new session's records counted before this load stay
   key = k
-  words.clear(); openTurns.clear() // the old session's prompts (never stored, so a resumed session's turns have none) and opened turns
+  words.clear(); openTurns.clear(); sel = undefined // the old session's prompts (never stored, so a resumed session's turns have none), opened turns, the cursor
   entries = Array.isArray(v) ? v : Array.isArray(v?.entries) ? v.entries : []
   turnNo = typeof v?.turn === 'number' ? v.turn : Math.max(0, ...entries.map(x => x.turn ?? 0)) // stores from before turns hold none: start at 0
   seen = v?.seen && !Array.isArray(v) ? v.seen : seed(entries)
@@ -1340,15 +1347,25 @@ export const register: Register = (on, options) => {
 
   // The person's moves shift the log's own window (win) and never the engine's, so the header above the rows stays put (d.ts
   // ui.scroll: a hook drawing its own rows under a header moves them by e.by and invalidates). The tree fits the body, so the
-  // engine reports Home and End as contentRows: about a page; j still jumps to the newest row
+  // engine reports Home and End as contentRows: about a page; e still jumps to the newest row. An arrow (one row, no pointer:
+  // a wheel tick carries one) moves the row cursor instead, as j and k do; the wheel and the page keys move the window
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
-    if (inspect || page) return next(e) // the inspector and the setup page wrap text, so their height is unknown: the engine scrolls them
+    if (inspect || page) return next(e) // the inspector and the pages wrap text, so their height is unknown: the engine scrolls them
+    if (e.origin.kind === 'person' && !e.pointer && Math.abs(e.by) === 1) { move = e.by; $.ui.invalidate('ui.render'); return {} }
     if (e.origin.kind === 'person') {
       win = Math.max(0, Math.min(winMax, win + e.by)); follow = win >= winMax // the render decides again with the rows it draws
       $.ui.invalidate('ui.render')
       return {}
     }
     return next({ ...e, offset: 0 }) // back's reset of the window the inspector moved: to the top, where it stays
+  })
+
+  // the ring moved by the person (Tab, the arrows, a click) onto a row's Button: the cursor is there now, so j and k go on from
+  // it. A row Button's key is `b` and its line's (`bg12`, `bg12s0` an advisor's, `be12w` a wait's); the plugin's own moves
+  // (show, a cursor move) are ours already
+  on('ui.focus', { requestId: PANE }, async ($, e, next) => {
+    if (e.origin.kind === 'person' && e.element && /^b(g\d+(s\d+)?|e\d+w)$/.test(e.element)) sel = e.element.slice(1)
+    return next(e)
   })
 
   // === PANE ===
@@ -1363,6 +1380,8 @@ export const register: Register = (on, options) => {
       const key = backTo && where.get(backTo)
       inspect = undefined; page = undefined; pageBack = false; backTo = undefined; backKey = key; follow = !key; $.ui.invalidate('ui.render')
       $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}) // the engine's window, which the inspector may have moved
+      // the cursor on the row back lands on, the ring with it: j and k go on from the row the inspector showed last
+      if (key) { sel = key; $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: `b${key}` }).catch(() => {}) }) }
     }
     const inspector = async (x: Entry) => {
       const a = x.agent ? ((await $.agent.list().catch(() => [])) as AgentInfo[]).find(y => y.id === x.agent) : undefined
@@ -1386,6 +1405,7 @@ export const register: Register = (on, options) => {
       // rows once its header opened them in place. A row the log does not show (a problem the setup page opened) steps nowhere
       const steps = order
       const at = steps.indexOf(x)
+      nav = { prev: at > 0 ? steps[at - 1] : undefined, next: at >= 0 ? steps[at + 1] : undefined }
       // an Agent row's agent: the log filtered to its rows (pick), back on the log; pressed again there, every loop's
       const only1 = () => { const id = x.child!; inspect = undefined; pageBack = false; backTo = undefined; follow = true; $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}); pick(id) }
       const kv = (k: string, v: string) => <Box key={k} flexDirection="row"><Box flexShrink={0} width={8}><Text dimColor>{k}</Text></Box><Text wrap="wrap">{v}</Text></Box>
@@ -1464,7 +1484,7 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
-    const jump = () => { follow = true; $.ui.invalidate('ui.render') } // following, the draw pins the window to the end
+    const jump = () => { follow = true; sel = undefined; $.ui.invalidate('ui.render') } // following, the draw pins the window to the end; the cursor starts over
     // folds stay as they were: a fold's id is its first entry's, the same in every view, level and filter that draws it
     const pick = (id: string) => { only = only === id ? undefined : id; $.ui.invalidate('ui.render') }
     const setView = (v: View) => { view = view === v ? 'all' : v; follow = true; $.ui.invalidate('ui.render') }
@@ -1540,7 +1560,9 @@ export const register: Register = (on, options) => {
     // link: the row's place on its call's bracket (bracketed), drawn dim in the mark's cell so a bracketed row keeps the column of
     // one without. dim: a routine row, drawn quiet (partsOf's brightness rule)
     type Line = { k: string; act: string; press?: () => void; st?: [string, string?]; who?: string; tail?: string; disc?: [boolean, () => void]; indent?: number; rail?: string; mark?: string; link?: string; dim?: boolean; away?: string[] }
+    const pressable = new Set<string>() // this draw's lines that open something: where the row cursor can stop
     const line = ({ k, act, press, st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ', link, dim, away }: Line) => {
+      if (press) pressable.add(k)
       const there = away?.length ? ` ↗ ${lfit(away[0]!, 24)}${away.length > 1 ? ` +${away.length - 1}` : ''}` : ''
       const room = cols - 2 - rail.length - who.length - tail.length - there.length - END - 1
       return (
@@ -1776,8 +1798,9 @@ export const register: Register = (on, options) => {
       '● green: running now', '↗ magenta: a place in another project; dim: ~/.claude or /tmp', '+ a hook added context', '· a hook changed nothing', '∅ found nothing', '≈ estimated',
       'bright: a row that did something; dim: routine, or below the level', '▸ ▾ open, close an Agent fold or a turn\'s hidden rows']
     const KEYS: [string, string][] = [['a m h u', 'views: all, what the model did, the harness, outside the root'], ['l', 'level: info or notice (/agentlog level sets debug and error)'],
-      ['o', 'open or close every Agent fold'], ['s', 'the setup page'], ['i', 'this page'], ['j', 'the newest row'], ['ctrl+↑ ↓', 'the previous or next prompt'], ['enter', 'open the focused row'],
-      ['b', 'back'], ['n p', 'in the inspector: the next or previous row'], ['f', 'in an Agent row\'s inspector: only its agent\'s rows']]
+      ['o', 'open or close every Agent fold'], ['s', 'the setup page'], ['i', 'this page'], ['j k', 'the row cursor down, up; in the inspector, the next or previous row'], ['↓ ↑', 'the row cursor too'],
+      ['enter', 'open the row under the cursor'], ['e', 'the newest row'], ['ctrl+↑ ↓', 'the previous or next prompt'], ['b', 'back'], ['n p', 'in the inspector: the next or previous row'],
+      ['f', 'in an Agent row\'s inspector: only its agent\'s rows']]
     // `no agent entries for scout at notice or above · /agentlog level debug: every row · a: all views · main: clear the filter`; only the filters set
     const empty = () => {
       if (!entries.length) return 'no entries yet'
@@ -1801,6 +1824,13 @@ export const register: Register = (on, options) => {
     // `turn ↑↓`: ctrl+↑ and ctrl+↓ press these from the prompt or the pane. They are the engine's Global chords for the diff panel's file
     // list (app:diffFileListUp/Down, also meta+↑↓), which a Button's `action` takes while that panel is closed; open, the panel keeps them
     const tbtn = <Box key="turns" flexDirection="row"><Text dimColor>turn </Text><Button key="tprev" label="↑" plain dimColor action="app:diffFileListUp" onPress={() => toTurn(-1)} /><Button key="tnext" label="↓" plain dimColor action="app:diffFileListDown" onPress={() => toTurn(1)} /></Box>
+    // `j: ↓  k: ↑`, the row cursor. Drawn in the header, so the inspector and the pages draw them too: in the inspector they step
+    // to its next and previous row (nav), as n and p do; on a page they do nothing, so no move waits to fire on back
+    const cbtn = (d: 1 | -1) => <Button key={d > 0 ? 'cdown' : 'cup'} label={d > 0 ? '↓' : '↑'} hotkey={d > 0 ? 'j' : 'k'} plain dimColor onPress={() => {
+      if (inspect) { const y = d > 0 ? nav.next : nav.prev; if (y) show(y); return }
+      if (page) return
+      move = d; $.ui.invalidate('ui.render')
+    }} />
     // `o: unfold` opens every fold while one is closed, `o: fold` closes them all; the nearest top row at or above the window's
     // top keeps its line. Always drawn, one width (`fold` padded): a label that changed width could change how the controls
     // pack, and with it the header's height, moving the anchored row
@@ -1923,7 +1953,7 @@ export const register: Register = (on, options) => {
     const VIEW_KEYS: Partial<Record<View, string>> = { all: 'a', model: 'm', harness: 'h', outside: 'u' }
     const items: [number, any][] = SHOWN.map((v): [number, any] => [v.length + 3, vbtn(v, VIEW_KEYS[v]!)])
     const broke = problems.length ? `✗ ${problems[0]}${problems.length > 1 ? ` +${problems.length - 1}` : ''}` : '', away = elsewhere ? `↗ ${elsewhere} outside root` : ''
-    const bare: [number, any][] = [...items, [LVW + 3, lbtn], [9, obtn], [7, kbtn], [7, tbtn],
+    const bare: [number, any][] = [...items, [LVW + 3, lbtn], [9, obtn], [7, kbtn], [7, tbtn], [4, cbtn(1)], [4, cbtn(-1)],
       ...(broke ? [[broke.length, <Text key="broke" color="red">{broke}</Text>] as [number, any]] : []),
       ...(away ? [[away.length, <Text key="away" color="magenta">{away}</Text>] as [number, any]] : []),
       [setupText.length + 3, <Button key="fsetup" label={setupText} hotkey="s" plain dimColor onPress={() => openPage('setup')} />]]
@@ -1948,6 +1978,16 @@ export const register: Register = (on, options) => {
       const at = await Promise.all([$.session.root(), $.session.cwd(), homeOf($)]).catch(() => undefined)
       return <Box flexDirection="column">{head}{setupPage(at)}</Box>
     }
+    // The cursor's move: by `move` rows that open something (pressable), in the log's order, stopping at either end. None yet (or
+    // its row gone: evicted, another view), it starts on the last such row the window drew. The window below keeps it in view
+    let moved = false
+    if (move) {
+      const ts = rows.flatMap((r, i) => pressable.has(String(r.props?.key)) ? [[String(r.props.key), i] as const] : [])
+      const i = sel ? ts.findIndex(([k]) => k === sel) : -1
+      const to = i >= 0 ? Math.max(0, Math.min(ts.length - 1, i + move)) : Math.max(0, ts.findLastIndex(([, at]) => at <= winEnd))
+      if (ts[to]) { sel = ts[to][0]; moved = true }
+      move = 0
+    }
     if (!rows.length) { winMax = 0; return <Box flexDirection="column">{head}<Text dimColor wrap="truncate-end">{empty()}</Text></Box> } // a stale winMax would let a scroll turn follow off
     // The window: decide follow against the rows without the jump row first, then give the jump row its own row when not
     // following, so landing on the newest row never shows `↓ newest`
@@ -1962,15 +2002,23 @@ export const register: Register = (on, options) => {
     win = Math.max(0, Math.min(max0, win))
     const room = Math.max(1, avail0 - 1)
     if (pin && win < max0 && pin[1] > win + room - 1) win = Math.min(max0, pin[0], pin[1] - room + 1)
+    // the cursor's row in view: at the top when it went above the window, at the bottom when below (the end: following)
+    if (moved) {
+      const at = rowAt(sel!)
+      if (at >= 0 && at < win) win = at; else if (at > win + room - 1) win = Math.min(max0, at - room + 1)
+      const k = `b${sel}` // the ring onto its Button once this draw is in, as show does for back: Enter then opens it
+      $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: k }).catch(() => {}) })
+    }
     follow = win >= max0
     if (follow) fresh = 0
     const avail = follow ? avail0 : Math.max(1, avail0 - 1)
     winMax = Math.max(0, rows.length - avail)
+    winEnd = win + avail - 1
     return (
       <Box flexDirection="column">
         {head}
         {rows.slice(win, win + avail)}
-        {!follow && <Box key="jumprow" flexDirection="row" justifyContent="flex-end"><Button key="jump" label={fresh ? `↓ ${fresh} new event${fresh > 1 ? 's' : ''} (j)` : '↓ newest (j)'} hotkey="j" onPress={jump} /></Box>}
+        {!follow && <Box key="jumprow" flexDirection="row" justifyContent="flex-end"><Button key="jump" label={fresh ? `↓ ${fresh} new event${fresh > 1 ? 's' : ''} (e)` : '↓ newest (e)'} hotkey="e" onPress={jump} /></Box>}
       </Box>
     )
   })
