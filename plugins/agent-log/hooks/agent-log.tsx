@@ -5,7 +5,7 @@ import type { AgentInfo, ModelUsage, Register, Timer, ToolInfo, TurnStepResult }
 // ENTRIES AND TEXT, HOOK NAMES, ROWS, STATE AND STORE, HOOKS, PANE
 
 // === ENTRIES AND TEXT ===
-type Src = 'engine' | 'hook' | 'plugin' // who authored injected text: the engine's own framing, a settings hook, or a plugin chain; only engine entries fold
+type Src = 'engine' | 'hook' | 'plugin' // who authored injected text: the engine's own framing, a settings hook, or a plugin chain
 // agent: the loop's agentId, absent on main. bytes: injected size (kept, not shown for now). ms: tool run time, minus its wait.
 // wait/waitFor: on a tool row, the time between tool.check's verdict and the engine's decision, and what it waited on
 // type: the engine's attachment kind or context-block name, kept beside the readable `name`. origin: the settings hook event that produced the text or, on a hook row, ran the hook (its trigger; `name` is then the hook's own name).
@@ -17,7 +17,7 @@ type Src = 'engine' | 'hook' | 'plugin' // who authored injected text: the engin
 // status: a tool call's result as data, so views and folds never parse the `outcome` label; entries from before it derive one (stat).
 // exit/insight: a failed call's exit code and its output boiled down (insightOf)
 // child: on an Agent row, the id of the agent it spawned; that agent's rows fold under it (rootOf)
-// use: the tool_use_id of the call a row belongs to: on a tool row, and on its PreToolUse/PostToolUse hook rows and their text, which fold under it
+// use: the tool_use_id of the call a row belongs to: on a tool row, and on its PreToolUse/PostToolUse hook rows and their text, which the log draws around it, linked
 // again: hook text the session already logged word for word (a plugin's tip on every call), or a cwd change back to where the session began: ranked info
 type Status = 'ok' | 'failed' | 'denied' | 'blocked' | 'feedback' | 'stopped' | 'aborted' | 'nomatch'
 // fork: a plugin's $.model.fork, logged under main; name is the plugin, outcome its token cost, peek its reply or why it has none
@@ -28,18 +28,26 @@ type Status = 'ok' | 'failed' | 'denied' | 'blocked' | 'feedback' | 'stopped' | 
 // cost/req: the collector's price and request id for it, when OTEL export is on
 // split: on main's turn row, where its time went as splitOf counts it, kept so evicting the turn's rows does not lose it
 // out: on a tool row, the place outside the session's project root the call reached (outsideOf), `~`-shortened; absent inside it
+// each: on a row of several hooks, each hook's own ms, by name, as hook-timer recorded it (pickRuns); hooks it does not wrap are absent
+// spoke: on such a row, the hooks whose text (context, a block, feedback) the row's outcome is; errs: the wrapped hooks that exited
+// neither 0 nor 2 (2 is a block) without saying anything. Each hook's own row (hookOf) takes its mark from them; a row stored before
+// they existed shows times only. says: on such a row, each hook's own text (peek), by the hook it is credited to (speaker,
+// hookName); exits: each wrapped hook's nonzero exit code. Both feed the inspector a hook's line opens (hookOf)
 // event: something the engine reports happening (eventOf, harnessOf): name is what (`model switch`, `API error`), detail and outcome
 // its particulars. side: a model request outside the turns: the engine's own (src engine, name its query source: a title, a
 // prompt suggestion, compaction) or a plugin's $.model.complete (src plugin, name the plugin); detail is the model
 type Entry = { t: number; turn?: number; kind: 'tool' | 'hook' | 'session' | 'prompt' | 'turn' | 'fork' | 'step' | 'event' | 'side'; name: string; detail: string; outcome: string; status?: Status; src?: Src; bytes?: number; agent?: string; ms?: number; type?: string; origin?: string; peek?: string; cmd?: string; check?: 'allow' | 'ask' | 'deny'; rule?: string; exit?: number; insight?: string; child?: string; use?: string; wait?: number; waitFor?: string; again?: boolean
-  via?: string; step?: string; effort?: string | number; ttft?: number; think?: number; stop?: string; tok?: number[]; asked?: string[]; server?: [string, number | null][]; thought?: string; cost?: number; req?: string; split?: number[]; out?: string }
+  via?: string; step?: string; effort?: string | number; ttft?: number; think?: number; stop?: string; tok?: number[]; asked?: string[]; server?: [string, number | null][]; thought?: string; cost?: number; req?: string; split?: number[]; out?: string; each?: Record<string, number>; spoke?: string[]; errs?: string[]; says?: Record<string, string>; exits?: Record<string, number> }
 
 const PANE = 'agent-log'
 // a block after the fact refuses nothing: PostToolUse's tool already ran and Stop's turn already ended, so the hook's text is
 // feedback the model reads next (lint-feedback's lint errors), not a refusal
 const FEEDBACK = new Set(['PostToolUse', 'PostToolUseFailure', 'PostToolBatch', 'Stop', 'SubagentStop'])
 const stat = (x: Entry): Status => x.status ?? (x.outcome === 'deny' ? 'denied' : x.outcome === 'error' ? 'failed' : x.outcome.startsWith('block') ? (FEEDBACK.has(x.origin ?? '') ? 'feedback' : 'blocked') : x.outcome === 'stop' ? 'stopped' : x.outcome === 'aborted' ? 'aborted' : 'ok')
-const BAD = new Set<Status>(['failed', 'denied', 'blocked', 'stopped']) // shown red and ranked error (lvl)
+const BAD = new Set<Status>(['failed', 'denied', 'blocked', 'stopped']) // ranked error (lvl); drawn red, save REFUSED and a stop
+// refused before it ran: by a hook (your guard), a rule, the classifier, you, or the model. Drawn a cyan ⊘, not a red ✗: a safety
+// check doing its job, not something that broke
+const REFUSED = new Set<Status>(['denied', 'blocked'])
 const loud = (x: Entry) => BAD.has(stat(x)) || stat(x) === 'feedback' // a hook row that refused its call or answered it
 const num = (t: number) => t < 1000 ? String(t) : `${(t / 1000).toFixed(1)}k`
 const toks = (t: number) => `${num(t)} tok`
@@ -54,18 +62,8 @@ const peek = (s: unknown): string | undefined => typeof s === 'string' && s.trim
 const noCd = (s: string) => s.replace(/^\s*cd\s+\S+\s*(&&|;)\s*/, '') // a Bash command minus its leading `cd <dir> &&` / `;`
 const first = (s?: string) => (s ?? '').split('\n').find(l => l.trim())?.trim() ?? ''
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-// a hook's text minus its own name, which the row already shows: most hooks print it, as a header line
-// (`Preflight (preflight-context hook):`) or a prefix (`install-check: 1 problem`), and hookName picks names that way
-// The engine's framing goes first (`PreToolUse:Bash hook error: [$HOME/…/guard.sh]: `), and lines that are only an XML tag
-// (`<context_guidance>`): neither says anything. Nothing left -> '', and the row reads by the hook's name alone
+// the engine's framing in front of a hook's text (`PreToolUse:Bash hook error: [$HOME/…/guard.sh]: `), which hookName reads past
 const FRAME = /^\w+(:\S+)? hook [^:\n]*:\s*(\[[^\]\n]*\]:\s*)?/
-const said = (x: Entry): string => {
-  const names = x.name.split(', ')
-  const ls = (x.peek ?? '').split('\n').map(l => l.trim().replace(FRAME, '').trim()).filter(l => l && !/^<\/?[\w-]+>$/.test(l))
-  const top = ls[0] ?? ''
-  if (ls.length > 1 && top.endsWith(':') && names.some(n => top.toLowerCase().includes(n.toLowerCase()))) ls.shift()
-  return names.reduce((s, n) => s.replace(new RegExp(`^${esc(n)}\\s*:\\s*`, 'i'), ''), ls[0] ?? '')
-}
 
 // A failed call's output boiled down before the PEEK cap: the program, its error count, the lines that say what broke.
 // tool.call sees the whole text, so this beats the raw first 300 chars, which are often a command echo or a progress bar
@@ -134,8 +132,44 @@ const fits = (matcher: string, target?: string) => {
   if (!matcher || matcher === '*' || target == null) return true
   try { return new RegExp(`^(?:${matcher})$`).test(target) } catch { return true }
 }
+// hook-timer's runs (~/.claude/hooks/hook-timer, which settings.json puts in front of each hook command): `{name, event, use,
+// t0, t1, exit, say}` per run, one file per session; say is the first line of what the hook handed back. The engine times an
+// event's chain whole and merges its hooks' text, so these are what name a wrapped hook, time it and credit its text to it;
+// hooks it does not wrap (a plugin's) are still read from the settings and their text (hookName).
+// keep: the runs that count; reading goes newest first and stops at the first run that ended before `from`
+type Run = { name: string; ms: number; say?: string; exit?: number }
+export const pickRuns = (text: string, keep: (r: any) => boolean, from: number): Run[] => {
+  const out: Run[] = [], lines = text.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let r: any
+    try { r = JSON.parse(lines[i]!) } catch { continue }
+    if (r.t1 < from - SKEW) break
+    if (keep(r)) out.unshift({ name: String(r.name), ms: r.t1 - r.t0, say: r.say ?? undefined, exit: r.exit ?? undefined })
+  }
+  return out
+}
+const SKEW = 100 // ms: the wrapper's clock read sits a process start inside the engine's
+const LATE = 30 * 60_000 // ms: how far back a hook's text can have been said: a PreToolUse hook's goes out with the request after its call
+const runsOf = async ($: any, keep: (r: any) => boolean, from: number) => {
+  try { return pickRuns(await $.fs.read(`${await $.env.get('HOME')}/.claude/hook-times/${await $.session.id()}.jsonl`), keep, from) } catch { return [] } // no file yet
+}
+const timed = (h: { cmd?: string }) => !!h.cmd?.includes('hook-timer')
+// whether hook-timer wraps any hook this event runs: else there is nothing to read
+const wraps = (cfg: HookCfg, event: string, target?: string) => (cfg[event] ?? []).some(h => timed(h) && fits(h.matcher, target))
+// the hook that handed back a text: the wrapped run whose first line it holds
+export const speaker = (runs: Run[], text: string) => [...runs].reverse().find(r => r.say && text.includes(r.say))?.name
+// a classic event's hooks, given its runs: each text (pieces) by its speaker, else by hookName; with nothing said, the wrapped
+// hooks that ran and the unwrapped ones that fit
+export const runNames = (cfg: HookCfg, event: string, target: string | undefined, runs: Run[], pieces: string[]) => {
+  if (pieces.length) return [...new Set(pieces.flatMap(p => (speaker(runs, p) ?? hookName(cfg, event, target, p)).split(', ')))].join(', ')
+  const other = (cfg[event] ?? []).filter(h => !timed(h) && fits(h.matcher, target)).map(h => h.name)
+  return [...new Set([...runs.map(r => r.name), ...other])].join(', ')
+}
+// the hooks that spoke, then the rest that ran in silence (runNames with nothing said)
+export const withSilent = (cfg: HookCfg, event: string, target: string | undefined, runs: Run[], spoke: string) =>
+  [...new Set([...spoke.split(', '), ...runNames(cfg, event, target, runs, []).split(', ')])].filter(Boolean).join(', ')
 // '' = no hook fits: the event ran its chain, but no hook of yours or a plugin's
-export const hookName = (cfg: HookCfg, event: string, target?: string, text?: string): string => {
+export const hookName =(cfg: HookCfg, event: string, target?: string, text?: string): string => {
   const fit = (cfg[event] ?? []).filter(h => fits(h.matcher, target))
   const names = (hs: typeof fit) => [...new Set(hs.map(h => h.name))]
   if (!text?.trim()) return names(fit).join(', ')
@@ -176,6 +210,20 @@ const TEAM = 'team' as const // pseudo node: header over main's direct teammate 
 const SLOW = 1000 // ms: a classic hook this slow logs even when it changed nothing
 // slow enough to flag ⚠. SessionStart is exempt: its hooks set the session up once and take seconds every time (context-mode's
 // 1.7-2.9 s), so a ⚠ on every session's first rows would teach you to read past the ⚠ on a slow ConfigChange
+// one hook of a row of several, as a row of its own for its line's mark and its inspector: its own time, exit and text, the row's
+// outcome only if it said it. A row stored before says existed gives the whole text to its one speaker, else none
+export const hookOf = (x: Entry, n: string): Entry => {
+  const spoke = x.spoke?.includes(n)
+  return { ...x, name: n, ms: x.each?.[n], exit: x.exits?.[n], outcome: spoke ? x.outcome : '', status: x.errs?.includes(n) ? 'failed' : spoke ? x.status : undefined,
+    peek: x.says ? x.says[n] : spoke && x.spoke!.length === 1 ? x.peek : undefined, each: undefined, spoke: undefined, errs: undefined, says: undefined, exits: undefined }
+}
+// a row of several hooks as the log draws it: one row per hook (hookOf). The same objects on every draw, so ids, the inspector and back hold
+const perHook = new WeakMap<Entry, Entry[]>()
+const splitHooks = (x: Entry): Entry[] => {
+  if (x.kind !== 'hook' || !x.name.includes(', ')) return [x]
+  if (!perHook.has(x)) perHook.set(x, x.name.split(', ').map(n => hookOf(x, n)))
+  return perHook.get(x)!
+}
 const slow = (x: Entry, ms = x.ms) => x.kind === 'hook' && ms != null && ms >= SLOW && x.origin !== 'SessionStart'
 const ago = (ms: number) => { const s = Math.floor(ms / 1000); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s` : `${Math.floor(s / 3600)}h${String(Math.floor(s / 60) % 60).padStart(2, '0')}m` }
 
@@ -229,14 +277,16 @@ let fresh = 0 // entries logged while not following: the jump button's "N new ev
 let chain: Promise<void> = Promise.resolve() // all store mutations run one after another, so no write lands a stale snapshot
 let only: string | undefined // agent filter: an agent id, 'main', or undefined for every loop
 // A row reads: disclosure, action, tool (muted), then one right cell (fixed width, so the action truncates first): the time.
-// A flag rides in front of the time in its color: red ✗ = refused or broke, cyan ↩ = a hook's feedback, amber ⚠ = slow or
+// A flag rides in front of the time in its color: cyan ⊘ = refused, red ✗ = broke, amber ■ = a hook stopped the session (on purpose,
+// but it ends the turn), cyan ↩ = a hook's feedback, green + = a hook added context, dim · = a hook changed nothing, amber ⚠ = slow or
 // aborted, muted ∅ = found nothing (grep/diff exit 1). No time (a denied call never ran) -> the status word stands in for it.
 // Derived at draw time so stored entries relabel too. Injected text shows no size for now (`+N tok` was a chars/4 guess)
 const cell = (x: Entry, ms = x.ms): [string, string?] => {
   const s = stat(x), time = ms == null ? undefined : secs(ms)
-  return BAD.has(s) ? [`✗ ${time ?? s}`, 'red'] : s === 'feedback' ? [`↩ ${time ?? s}`, 'cyan'] : s === 'aborted' ? [`⚠ ${time ?? s}`, 'yellow'] : s === 'nomatch' ? [`∅ ${time ?? 'no match'}`]
-    : slow(x, ms) ? [`⚠ ${time}`, 'yellow']
-    : [time ?? (x.kind === 'tool' || x.kind === 'hook' ? '—' : '')]
+  return REFUSED.has(s) ? [`⊘ ${time ?? s}`, 'cyan'] : s === 'stopped' ? [`■ ${time ?? s}`, 'yellow'] : BAD.has(s) ? [`✗ ${time ?? s}`, 'red'] : s === 'feedback' ? [`↩ ${time ?? s}`, 'cyan'] : s === 'aborted' ? [`⚠ ${time ?? s}`, 'yellow'] : s === 'nomatch' ? [`∅ ${time ?? 'no match'}`]
+    : slow(x, ms) ? [`⚠ ${time}`, 'yellow'] // over + and ·: slowness is what a slow hook's row has to say
+    : x.kind === 'hook' ? (x.outcome.startsWith('context') ? [`+ ${time ?? '—'}`, 'green'] : [`· ${time ?? '—'}`])
+    : [time ?? (x.kind === 'tool' ? '—' : '')]
 }
 const secs = (ms?: number) => ms == null ? '—' : `${(ms / 1000).toFixed(1)}s` // one unit everywhere; unknown is —, never a guess
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
@@ -248,7 +298,7 @@ export const modelName = (id: string) => {
   const o = id.match(/claude-(\d+)(?:-(\d))?-([a-z]+)/)
   return o ? `${cap(o[3]!)} ${o[1]}${o[2] ? `.${o[2]}` : ''}` : id
 }
-// a step's result: cut off at the output limit reads ⚠ like an interrupt; a refusal, a full context window or no response at all, ✗
+// a step's result: cut off at the output limit reads ⚠ like an interrupt; a refusal ⊘; a full context window or no response at all, ✗
 const stepStatus = (stop: string | null | undefined): Status => stop === 'max_tokens' ? 'aborted' : stop === 'refusal' ? 'denied' : stop === 'model_context_window_exceeded' || stop == null ? 'failed' : 'ok'
 const STOPPED: Record<string, string> = { max_tokens: 'Cut off at the output limit', refusal: 'Refused', model_context_window_exceeded: 'Context window full' }
 // the engine's own requests by query source; the frequent ones rank debug: a prompt suggestion after most turns, a running agent's progress summary
@@ -323,6 +373,9 @@ const PATHS = /(?:^|[\s"'=(])((?:~|\$HOME|\$\{HOME\})?\/[^\s"'|;&<>()`]+)/g // t
 // else the loop's cwd); for Bash its leading `cd`'s folder, else the cwd, else the first path its command names under your home.
 // From a command's words only paths under home count: /tmp, /usr and /dev are scratch and system files, not work elsewhere, and
 // a word need not be a path. undefined: inside the root, or not known (no path, a variable left in it)
+// A place outside the root that is routine, not another project: Claude Code's own ~/.claude (memory, plans, settings) and
+// scratch space (/tmp, /var/tmp, macOS /private/tmp). Its ↗ stays dim; any other place draws amber and counts in the setup row
+export const routine = (p: string) => /^~\/\.claude(\/|$)/.test(p) || /^\/(private\/)?(var\/)?tmp(\/|$)/.test(p)
 export const outsideOf = (tool: string, a: { path?: string; cmd?: string }, root: string, cwd: string, home?: string): string | undefined => {
   const away = (p?: string) => p && !under(p, root) ? tilde(p, home) : undefined
   if (/^(Read|Edit|Write|NotebookEdit)$/.test(tool)) { const p = a.path ? absOf(a.path, cwd, home) : undefined; return away(p && (p.replace(/\/[^/]*$/, '') || '/')) }
@@ -343,7 +396,7 @@ const ABOUT: Record<string, [string, RegExp]> = {
   file: ['mentioned', /"file_path":"([^"]+)"/], nested_memory: ['memory', /^Contents of (.+?):?$/],
 }
 // Engine context named at draw time from its type and stored text, so rows logged under an older name read the current one.
-// kind: what folds and tallies count by (`changed ×3`); tail: what this row is about, with its own glue (` → agent-log`, `: x.md`).
+// kind: what tallies count by (`changed ×3`); tail: what this row is about, with its own glue (` → agent-log`, `: x.md`).
 // A hook's or plugin's row keeps its stored name: the hook's, which its attachment kind (`output`) would hide
 export const ctxOf = (x: Entry): [string, string?] => {
   if (x.kind !== 'prompt' || (x.src && x.src !== 'engine')) return [x.name]
@@ -359,36 +412,9 @@ export const ctxOf = (x: Entry): [string, string?] => {
   if (t === 'mcp_instructions_delta' && gone) return ['MCP disconnected']
   return [Object.hasOwn(LABEL, t) ? LABEL[t]! : x.name] // no label: as logged, e.g. `skill code-review`
 }
-// what made the engine send it, for a context fold: a loop starting, a change in what the model can call, files, a mode, your
-// own input, or the reminders it sends with every request. Unknown kinds: `other`. By kind alone, so a kind always lands in one
-// bucket: the first tool/agent/MCP/skill lists and auto mode, sent with a loop's start, still read as capabilities and mode
-const BUCKET: Record<string, string> = {
-  system_prompt: 'setup', claudeMd: 'setup', instructions: 'setup', model: 'setup', session_context: 'setup', output_style_instructions: 'setup',
-  advisor_tool: 'setup', userEmail: 'setup', currentDate: 'setup', attachedProject: 'setup', environment: 'setup', date: 'setup',
-  deferred_tools_delta: 'capabilities', agent_listing_delta: 'capabilities', mcp_instructions_delta: 'capabilities', skill_listing: 'capabilities',
-  edited_text_file: 'files', nested_memory: 'files', compact_file_reference: 'files', read_truncation_notice: 'files',
-  plan_mode: 'mode', plan_mode_exit: 'mode', plan_mode_reentry: 'mode', plan_file_reference: 'mode', auto_mode: 'mode', remote_session_change: 'mode',
-  queued_command: 'your input', file: 'your input', skill_mention: 'your input', skill_prompt: 'your input', invoked_skills: 'your input',
-  total_tokens_reminder: 'reminders', output_style: 'reminders', silent_turn_reminder: 'reminders', task_reminder: 'reminders', todo_reminder: 'reminders',
-}
-// A context fold's entries split by bucket, in order of first appearance. name: the bucket as the fold's row lists it
-// (`session start ×6 · capabilities ×4`); head: what its own row reads (`files: x.ts, CLAUDE.md`)
-export const bucketsOf = (xs: Entry[]): { name: string; head: string; xs: Entry[] }[] => {
-  const of = (x: Entry) => { const k = ctxOf(x)[0]; return k === 'date change' ? 'reminders' : BUCKET[x.type ?? ''] ?? 'other' }
-  const by = new Map<string, Entry[]>()
-  for (const x of xs) { const b = of(x); by.set(b, [...by.get(b) ?? [], x]) }
-  const uniq = (ss: string[]) => [...new Set(ss)]
-  return [...by].map(([b, ys]) => {
-    const name = b === 'setup' ? 'session start' : b // a subagent's too: the engine starts its session the same way
-    const head = b === 'files' ? `files: ${uniq(ys.map(y => ctxOf(y)[1]?.slice(2) ?? ctxOf(y)[0])).join(', ')}`
-      : b === 'mode' ? uniq(ys.map(y => ctxOf(y)[0])).join(' → ')
-      : b === 'capabilities' || b === 'your input' || b === 'other' ? uniq(ys.map(y => ctxOf(y).join(''))).join(', ')
-      : name
-    return { name, head, xs: ys }
-  })
-}
 // what happened, action first in sentence case, its verb saying what the tool did; the inspector names the tool
-const action = (x: Entry): string => {
+// bare: a hook's or its text's name alone, for its row on its call's bracket, where the event and tool are plain
+const action = (x: Entry, bare = false): string => {
   const d = x.detail
   if (x.kind === 'tool') switch (x.name) {
     case 'Bash': { // noCd: entries stored before the strip hold the raw command
@@ -407,20 +433,25 @@ const action = (x: Entry): string => {
     case 'Agent': return d || x.name // `type: task`: the type is an identifier, as named
     default: return (x.name.startsWith('mcp__') ? d : cap(d)) || x.name // mcp `tool: arg` stays as named, an identifier
   }
-  if (x.kind === 'hook') // several silent hooks read by name, `config-change-guard, unicode-scan on ConfigChange`. name = origin: a row stored before no-hook events were skipped
-    return x.origin && said(x) ? `${x.name}: ${said(x)}` : `${x.name === x.origin ? 'No hook' : x.name} on ${x.origin ?? 'event'}${d ? ` ${d}` : ''}`
+  // A hook's row and its text's row read by name and event, never by what it said: that text stays in the inspector
+  if (x.kind === 'hook') { // one hook by name, `guard on PreToolUse Bash`; a row of several draws as one row per hook (splitHooks). name = origin: a row stored before no-hook events were skipped
+    const n = x.name.split(', ').length
+    const who = x.name === x.origin ? 'No hook' : n > 1 ? `${n} hooks` : x.name
+    return bare ? who : `${who} on ${x.origin ?? 'event'}${d ? ` ${d}` : ''}`
+  }
   if (x.kind === 'prompt') {
-    if (x.src && x.src !== 'engine') return x.name + (said(x) ? `: ${said(x)}` : '') // a hook or plugin name is an identifier: never recased
+    if (x.src && x.src !== 'engine') return `${x.name} ${label(x.type ?? '')}${!bare && x.origin && !x.name.includes(x.origin) ? ` on ${x.origin}` : ''}` // `context-mode context on PreToolUse`, `PreToolUse hook context`; a hook or plugin name is an identifier: never recased
     const [k, tail = ''] = ctxOf(x)
     return cap(k) + tail
   }
   if (x.kind === 'session') return x.name === 'reload' ? 'Plugin reloaded' : `Session init${d ? ` in ${base(d)}` : ''}` // `init`: `session start` is the engine context it sent
   if (x.kind === 'fork') return `Fork by ${x.name}: ${first(x.peek) || stat(x)}`
-  // a request reads what it said first, else what it thought, else the calls it made, else why it stopped
-  if (x.kind === 'step') return first(x.peek) || (x.thought ? `Thought: ${x.thought}` : '') || (x.asked?.length ? `Calls ${counted(x.asked)}` : '') || STOPPED[x.stop ?? ''] || (stat(x) === 'aborted' ? 'Interrupted' : 'No response')
+  // a request reads by what it did, short and generic: it replied, else it thought, else the calls it made, else why it stopped.
+  // What it said or thought stays in the inspector
+  if (x.kind === 'step') return (first(x.peek) ? 'Reply' : '') || (x.thought ? 'Thought' : '') || (x.asked?.length ? 'Model API call' : '') || STOPPED[x.stop ?? ''] || (stat(x) === 'aborted' ? 'Interrupted' : 'No response')
   if (x.kind === 'event') return x.name === 'model switch' ? `Model: ${x.detail.split(' → ').map(modelName).join(' → ')}${x.outcome ? ` (${x.outcome})` : ''}`
     : `${cap(x.name)}${x.detail ? `: ${x.detail}` : ''}${x.outcome ? ` (${x.outcome})` : ''}`
-  if (x.kind === 'side') return x.src === 'plugin' ? `${x.name}: ${first(x.peek) || stat(x)}` : cap(SIDE[x.name] ?? x.name.replace(/_/g, ' '))
+  if (x.kind === 'side') return x.src === 'plugin' ? (first(x.peek) || stat(x) === 'ok' ? x.name : `${x.name}: ${stat(x)}`) /* its reply in the inspector */ : cap(SIDE[x.name] ?? x.name.replace(/_/g, ' '))
   return 'Turn ended'
 }
 // What kind of effect a row had, not which tool: the action already names the tool (Read x, ExitWorktree, Search y), and the
@@ -459,8 +490,7 @@ const lvl = (x: Entry): number => {
   if (x.kind === 'hook') return stat(x) === 'feedback' || slow(x) ? 2 : 0 // a fast hook that changed nothing, or added context its attachment row already carries
   if (x.kind === 'prompt') return DEBUG_ATTACHMENTS.has(x.type ?? '') ? 0 : !x.again && (envUpdate(x) || x.src === 'hook' || x.src === 'plugin') ? 2 : 1
   if (x.kind === 'session') return x.name === 'reload' ? 0 : 2
-  // a request that wrote no text ranks debug: the calls it made follow as rows of their own (a step between every two lookups would
-  // break each Explore fold), and its time stays in the turn header's split and in its calls' inspector
+  // a request that wrote no text ranks debug: the calls it made follow as rows of their own, and its time stays in the turn header's split and in its calls' inspector
   if (x.kind === 'step') return stat(x) === 'aborted' ? 2 : first(x.peek) ? 1 : 0
   if (x.kind === 'event') return QUIET_EVENTS.has(x.name) || x.name === 'MCP connected' ? 0 : /^(MCP disconnected|file changed|command|task |teammate|setup)/.test(x.name) ? 1 : 2
   if (x.kind === 'side') return x.src === 'plugin' || !CHATTER.has(x.name) ? (x.name === 'compact' ? 2 : 1) : 0
@@ -987,7 +1017,7 @@ export const register: Register = (on, options) => {
       case 'PostModelSwitch': return ev('model switch', `${e.from_model} → ${e.to_model}`, e.source, { peek: `${num(Number(e.context_tokens) || 0)} tokens of context; the prompt cache was ${e.prompt_cache_warm ? 'warm' : `cold, so the next request writes it again (~$${(Number(e.estimated_cache_write_usd) || 0).toFixed(2)})`}` })
       case 'StopFailure': return ev('turn failed', e.error, '', { status: 'failed', peek: peek(e.error_details) })
       case 'PostCompact': { const t = compactAt.get(agent ?? 'main'); compactAt.delete(agent ?? 'main'); return ev('compacted', e.trigger, '', { ms: t != null ? Date.now() - t : undefined, peek: peek(e.compact_summary) }) }
-      case 'ConfigChange': return ev('settings changed', e.file_path ? at(e.file_path) : e.source, e.file_path ? e.source : '')
+      case 'ConfigChange': return ev('settings changed', e.file_path ? at(e.file_path) : e.source) // the path says whose settings: no `(user_settings)` after it
       case 'DirectoryAdded': return ev('directory added', at(e.directory ?? ''), e.source)
       case 'WorktreeCreate': return ev('worktree created', e.name)
       case 'WorktreeRemove': return ev('worktree removed', at(e.worktree_path ?? ''))
@@ -1037,7 +1067,8 @@ export const register: Register = (on, options) => {
     if (event === 'PreToolUse' && e.tool_use_id && ctx.length) preCtx.set(e.tool_use_id, ctx.length) // one attachment per entry
     const outcome = blocked ? 'block' : ctx.length ? `context x${ctx.length} ${kb(ctx.join('').length)}` : r?.preventContinuation ? 'stop' : ''
     // InstructionsLoaded/FileChanged: which file, and why it loaded
-    const detail = String(e.tool_name ?? e.tool ?? e.source ?? e.reason ?? [e.load_reason, e.file_path && at(e.file_path)].filter(Boolean).join(' ')).slice(0, 120) // no e.prompt: that is the person's prompt
+    // ConfigChange's source (`user_settings`) is left out: its event row names the settings file
+    const detail = String(e.tool_name ?? e.tool ?? (event === 'ConfigChange' ? undefined : e.source) ?? e.reason ?? [e.load_reason, e.file_path && at(e.file_path)].filter(Boolean).join(' ')).slice(0, 120) // no e.prompt: that is the person's prompt
     // settings hooks that exited with an error or that the engine cancelled (a timeout), as the collector counted them: a red row,
     // even when the rest of the event changed nothing. Only with OTEL export on
     const run = lastRun && lastRun.event === event && lastRun.t >= t0 ? lastRun : undefined
@@ -1045,11 +1076,28 @@ export const register: Register = (on, options) => {
     const said = (typeof blocked === 'string' ? blocked : ctx.join('\n')) || broke // the block reason, else the context the hooks added, else what broke
     // classic.PreToolUse's e is the tool.call envelope: `tool`, no `tool_name` or `hook_event_name`
     const cfg = await hooksOf($), target = e.tool ?? e.tool_name ?? e.source ?? e.trigger ?? e.reason
-    // each context entry is one hook's, named in its own first line
-    const name = typeof blocked === 'string' || ctx.length < 2 ? hookName(cfg, event, target, said) : [...new Set(ctx.flatMap(c => hookName(cfg, event, target, c).split(', ')))].join(', ')
+    // the wrapped hooks that ran on this event and call, within its span
+    const runs = wraps(cfg, event, target) ? await runsOf($, r => r.event === event && (r.use ?? undefined) === e.tool_use_id && r.t0 >= t0 - SKEW && r.t1 <= Date.now() + SKEW, t0) : []
+    // each context entry is one hook's: by the run that said it, else named in its own first line. Context leaves the silent hooks
+    // in the name: they ran too, and the row counts them. A block keeps only its blocker, whom the call's ⊘ names (byOf)
+    const spoke = runs.length ? runNames(cfg, event, target, runs, typeof blocked === 'string' ? [blocked] : ctx)
+      : typeof blocked === 'string' || ctx.length < 2 ? hookName(cfg, event, target, said) : [...new Set(ctx.flatMap(c => hookName(cfg, event, target, c).split(', ')))].join(', ')
+    const name = runs.length && !blocked && ctx.length ? withSilent(cfg, event, target, runs, spoke) : spoke
     if (!name && !outcome && !broke && ms < SLOW) return r // the event fired, but no hook is set on it: most events, most of the time
     // every classic event but PreToolUse names its loop (agent_id); PreToolUse's comes from the call it runs inside (loopOf)
-    try { push($, { kind: 'hook', name: name || `${event} hook`, origin: event, detail, outcome, status: broke && !outcome ? 'failed' : undefined, src: 'hook', agent: e.agent_id ?? (e.tool_use_id ? loopOf.get(e.tool_use_id) : undefined), ms, peek: peek(said), use: e.tool_use_id }) } catch {}
+    // several hooks: each wrapped one's own time; the engine times only the chain
+    const each = name.includes(', ') && runs.length ? Object.fromEntries(runs.map(r => [r.name, r.ms])) : undefined
+    // several hooks: which of them the outcome is, and which broke in silence, so each hook's line gets its own mark
+    const spokeN = name.includes(', ') ? (typeof blocked === 'string' || ctx.length ? spoke.split(', ').filter(Boolean) : []) : undefined
+    const bad = spokeN && runs.filter(r => r.exit != null && r.exit !== 0 && r.exit !== 2 && !spokeN.includes(r.name)).map(r => r.name)
+    const errs = bad?.length ? bad : undefined
+    // several hooks: each one's own text, credited as spoke was, so a hook's line opens what that hook said, not the merged chain.
+    // A text credited to several at once (hookName could not tell them apart) stays on the row only
+    const own: Record<string, string> = {}
+    if (spokeN?.length) for (const p of typeof blocked === 'string' ? [blocked] : ctx) { const n = speaker(runs, p) ?? hookName(cfg, event, target, p); if (!n.includes(', ')) own[n] = own[n] ? `${own[n]}\n${p}` : p }
+    const says = Object.keys(own).length ? Object.fromEntries(Object.entries(own).map(([n, s]) => [n, peek(s) ?? ''])) : undefined
+    const exits = name.includes(', ') && runs.some(r => r.exit) ? Object.fromEntries(runs.filter(r => r.exit).map(r => [r.name, r.exit!])) : undefined
+    try { push($, { kind: 'hook', name: name || `${event} hook`, origin: event, detail, outcome, status: broke && !outcome ? 'failed' : undefined, src: 'hook', agent: e.agent_id ?? (e.tool_use_id ? loopOf.get(e.tool_use_id) : undefined), ms, peek: peek(said), use: e.tool_use_id, each, spoke: spokeN, errs, says, exits }) } catch {}
     return r
   })
 
@@ -1068,7 +1116,7 @@ export const register: Register = (on, options) => {
   on('prompt.attachment', async ($, e, next) => {
     const r = await next(e)
     // a PostToolUse hook's context takes the first call waiting for one, even when left out of the request: its place in the
-    // queue is spent either way, or the next attachment of that tool would fold under this one's call. Not a copy or a replay
+    // queue is spent either way, or the next attachment of that tool would go with this one's call. Not a copy or a replay
     const isPost = e.origin.kind === 'hook' && e.origin.event === 'PostToolUse'
     const postTool = isPost ? (r.text ?? e.text ?? '').trimStart().match(/^\w+:(\S+) hook\b/)?.[1] : undefined
     if (r.text == null) { if (isPost) takePost(postTool, e.agentId); return r } // left out of the request: never entered the context
@@ -1080,7 +1128,11 @@ export const register: Register = (on, options) => {
     if (e.type === 'instructions' && r.text.length === memBytes) { memBytes = undefined; return r } // same bundle as the claudeMd block: log it once. One skip only, so a later re-injection (e.g. after compaction) still shows
     // the hook's name; its event shows in the inspector. The engine's framing carries the target: `PreToolUse:Bash hook additional context:`
     const target = r.text.trimStart().match(/^\w+:(\S+) hook\b/)?.[1]
-    const name = e.origin.kind === 'hook' ? hookName(await hooksOf($), e.origin.event, target, r.text) || `${e.origin.event} hook`
+    // a hook's text: by the wrapped run that said it, within the last LATE (PreToolUse context waits for the next request), else
+    // named in its own first line
+    const cfg = e.origin.kind === 'hook' ? await hooksOf($) : {}, ev = e.origin.kind === 'hook' ? e.origin.event : ''
+    const by = ev && wraps(cfg, ev, target) ? speaker(await runsOf($, x => x.event === ev && !!x.say, Date.now() - LATE), r.text) : undefined
+    const name = e.origin.kind === 'hook' ? by ?? (hookName(cfg, ev, target, r.text) || `${ev} hook`)
       : origin ? `${origin} ${label(e.type)}` : label(e.type)
     const text = e.type === 'queued_command' ? undefined : peek(r.text) // a queued prompt is the person's own typing
     try { push($, { kind: 'prompt', name, type: e.type, origin, detail: '', outcome: kb(r.text.length), src: e.origin.kind, bytes: r.text.length, agent: e.agentId, peek: text, use: post }, { above: e.origin.kind === 'hook' && e.origin.event === 'PreToolUse' ? target : undefined, after: e.origin.kind === 'hook' && e.origin.event === 'PostToolUse' ? target : undefined }) } catch {}
@@ -1287,7 +1339,7 @@ export const register: Register = (on, options) => {
         x.kind === 'turn' ? `A turn of the ${who} ended${stat(x) === 'aborted' ? ', aborted' : ''}`
         : x.kind === 'fork' ? `The ${x.name} plugin forked the conversation: one tool-less question over main's transcript, answered in a loop of its own${stat(x) === 'aborted' ? ', cut off when the turn was interrupted' : stat(x) === 'failed' ? ', which got no reply' : ''}`
         : x.kind === 'tool' ? `${x.name} call by the ${who}${stat(x) === 'denied' ? ', refused before it ran' : stat(x) === 'failed' ? ', failed' : stat(x) === 'nomatch' ? ', found nothing' : ''}`
-        : x.kind === 'hook' ? `${x.name === x.origin ? 'No hook' : x.name} ran on ${x.origin ?? 'an event'} and ${stat(x) === 'feedback' ? 'sent feedback to the model' : x.outcome.startsWith('block') ? 'blocked it' : x.outcome.startsWith('context') ? 'added context for the model' : x.outcome === 'stop' ? 'stopped the session' : 'changed nothing'}`
+        : x.kind === 'hook' ? `${x.name === x.origin ? 'No hook' : x.name} ran on ${x.origin ?? 'an event'} and ${stat(x) === 'failed' ? `failed${x.exit != null ? ` with exit ${x.exit}` : ''}` : stat(x) === 'feedback' ? 'sent feedback to the model' : x.outcome.startsWith('block') ? 'blocked it' : x.outcome.startsWith('context') ? 'added context for the model' : x.outcome === 'stop' ? 'stopped the session' : 'changed nothing'}`
         : x.kind === 'prompt' && x.src === 'hook' ? `${label(x.type ?? '')} of a ${x.origin ?? ''} hook, injected into the model's context`
         : x.kind === 'prompt' && x.src === 'plugin' ? `Context a plugin attached on ${x.origin ?? 'a chain'}`
         : x.kind === 'prompt' ? `Text the engine injected into the model's context (${x.type ?? x.name})`
@@ -1298,7 +1350,8 @@ export const register: Register = (on, options) => {
         : x.kind === 'side' ? (x.src === 'plugin' ? `A model call the ${x.name} plugin made ($.model.complete), outside the conversation` : `A model request the engine made on its own (${x.name}), outside the conversation's turns`)
         : `Session ${x.name}`
       // the inspector steps through the rows the log shows, in its order; a row the level hides, through its turn's hidden rows
-      const steps = rowsOf.includes(x) ? rowsOf : hidden.get(turnOf(x)) ?? []
+      // in the order the log draws them (order), a call's hook rows around it
+      const steps = order.includes(x) ? order : hidden.get(turnOf(x)) ?? []
       const at = steps.indexOf(x)
       const kv = (k: string, v: string) => <Box key={k} flexDirection="row"><Box flexShrink={0} width={8}><Text dimColor>{k}</Text></Box><Text wrap="wrap">{v}</Text></Box>
       return (
@@ -1314,9 +1367,11 @@ export const register: Register = (on, options) => {
           <Text> </Text>
           {kv('when', `${x.turn != null ? `${x.turn ? `turn ${x.turn}` : 'session start'} · ` : ''}${new Date(x.t).toLocaleTimeString()} (${ago(Date.now() - x.t)} ago)`)}
           {kv('agent', who)}
-          {steps !== rowsOf && at >= 0 && kv('hidden', `${at + 1} of ${steps.length} in this turn, below the ${LEVELS[level]} level`)}
+          {steps !== order && at >= 0 && kv('hidden', `${at + 1} of ${steps.length} in this turn, below the ${LEVELS[level]} level`)}
           {x.src === 'hook' && x.origin && kv('trigger', [x.origin, x.detail].filter(Boolean).join(' · '))}
-          {x.cmd ? kv('command', x.cmd) : x.detail && x.src !== 'hook' && kv(x.name === 'Bash' ? 'command' : 'input', x.detail)}
+          {/* a hook's input: the call it ran on, as its row stores it; its command as your settings or the plugin's hooks.json write it */}
+          {x.kind === 'hook' && x.use && (c => c && kv('input', `${c.name}: ${c.cmd ?? c.detail}`))(entries.find(y => y.kind === 'tool' && y.use === x.use))}
+          {x.kind === 'hook' && (cs => cs.length > 0 && kv('command', cs.join('\n')))([...new Set((hookCfg?.[x.origin ?? ''] ?? []).filter(h => h.name === x.name && fits(h.matcher, x.detail || undefined)).map(h => h.cmd ?? ''))].filter(Boolean))}          {x.cmd ? kv('command', x.cmd) : x.detail && x.src !== 'hook' && kv(x.name === 'Bash' ? 'command' : 'input', x.detail)}
           {x.cmd && kv('what', x.detail)}
           {x.out && kv('where', `${x.out}, outside the session's project root`)}
           {x.exit != null && kv('exit', String(x.exit))}
@@ -1388,69 +1443,75 @@ export const register: Register = (on, options) => {
     for (const a of agents) { const p = a.parentId && listed.has(a.parentId) ? a.parentId : 'main'; kids.set(p, [...(kids.get(p) ?? []), a]) }
     const isRootMate = (a: AgentInfo) => a.type === 'teammate' && (kids.get('main') ?? []).includes(a)
     const now = Date.now()
-    // The header's agents, each under its parent with its depth; drawn as log rows below (agentRow), so nesting reads by indent.
+    // The header's agents, each under its parent on the log's tree guides: `├ ` or the last sibling's `└ `, a parent's line carried
+    // on (`│ `) while its siblings follow; drawn as log rows below (agentRow), so nesting reads as it does in an open fold.
     // Finished agents fold into the toggle row unless showDone. An agent stays listed while it or one below it runs, and while it is the filter
-    const tree: [AgentInfo | typeof TEAM, number][] = []
+    const tree: [AgentInfo | typeof TEAM, string][] = []
     const live = (a: AgentInfo): boolean => a.status === 'running' || only === a.id || (kids.get(a.id) ?? []).some(live)
     const done = agents.filter(a => !live(a)).length
-    const walk = (all: (AgentInfo | typeof TEAM)[], depth: number) => {
-      for (const a of showDone ? all : all.filter(a => a === TEAM ? (kids.get('main') ?? []).filter(isRootMate).some(live) : live(a))) {
-        tree.push([a, depth])
-        walk(a === TEAM ? (kids.get('main') ?? []).filter(isRootMate) : kids.get(a.id) ?? [], depth + 1)
-      }
+    const walk = (all: (AgentInfo | typeof TEAM)[], rest: string) => {
+      const xs = showDone ? all : all.filter(a => a === TEAM ? (kids.get('main') ?? []).filter(isRootMate).some(live) : live(a))
+      xs.forEach((a, j) => {
+        const last = j === xs.length - 1
+        tree.push([a, rest + (last ? '└ ' : '├ ')])
+        walk(a === TEAM ? (kids.get('main') ?? []).filter(isRootMate) : kids.get(a.id) ?? [], rest + (last ? '  ' : '│ '))
+      })
     }
     const mainKids = kids.get('main') ?? []
-    walk([...mainKids.filter(a => !isRootMate(a)), ...(mainKids.some(isRootMate) ? [TEAM] : [])], 0)
+    walk([...mainKids.filter(a => !isRootMate(a)), ...(mainKids.some(isRootMate) ? [TEAM] : [])], '')
     // a spawned agent's rows belong to its Agent row's turn: a background agent can outlive that turn. Sorted by it (stable), so
     // rows that stay flat (a view without the Agent row) keep each turn in one run
     const root = rootOf(entries)
     const turnOf = (x: Entry) => root(x)?.turn ?? x.turn ?? 0
     const runs = (id?: string) => id ? entries.filter(y => y.kind === 'turn' && y.agent === id) : [] // a spawned agent's turn ends: one per run
     const kept = entries.filter(x => (only === undefined || (x.agent ?? 'main') === only) && VIEWS[view](x)).sort((p, q) => turnOf(p) - turnOf(q))
-    const shown = kept.filter(x => lvl(x) >= level)
+    const shown = kept.filter(x => lvl(x) >= level).flatMap(splitHooks) // the level by the merged row, so a slow chain keeps all its hooks
     const rowsOf = shown.filter(x => x.kind !== 'turn')
     // rows the level alone hides, per turn: the header counts them and its `N hidden` opens them in the inspector, which steps
     // through them with prev/next. A turn with none at or above the level draws no header at all
     const hidden = new Map<number, Entry[]>()
-    for (const x of kept) if (x.kind !== 'turn' && lvl(x) < level) { const n = turnOf(x); if (!hidden.has(n)) hidden.set(n, []); hidden.get(n)!.push(x) } // turn ends are never drawn
+    for (const x of kept) if (x.kind !== 'turn' && lvl(x) < level) { const n = turnOf(x); if (!hidden.has(n)) hidden.set(n, []); hidden.get(n)!.push(...splitHooks(x)) } // turn ends are never drawn
     // a spawned agent's rows fold under its Agent row while that row is drawn; without it (a view or level that hides it, a filter
     // on the agent) they stay flat
     const drawn = new Set(shown)
     const under = new Map<Entry, Entry[]>(), folded = new Set<Entry>()
-    // a call's hook rows and the text they injected fold under the call's row while it is drawn, before any agent fold takes them,
-    // so inside an agent's fold they still sit under their call. The call hidden (a level, a view): they stay flat
+    // a call's hook rows and the text they injected, by the call's row while it is drawn: groupsOf draws them around it, linked,
+    // also inside an agent's fold. The call hidden (a level, a view): they stay where they happened, unlinked
     const callRow = new Map<string, Entry>()
     for (const x of shown) if (x.kind === 'tool' && x.use) callRow.set(x.use, x)
     const hooksUnder = new Map<Entry, Entry[]>()
-    for (const x of rowsOf) { const c = x.kind !== 'tool' && x.use ? callRow.get(x.use) : undefined; if (c) { if (!hooksUnder.has(c)) hooksUnder.set(c, []); hooksUnder.get(c)!.push(x); folded.add(x) } }
+    for (const x of rowsOf) { const c = x.kind !== 'tool' && x.use ? callRow.get(x.use) : undefined; if (c) { if (!hooksUnder.has(c)) hooksUnder.set(c, []); hooksUnder.get(c)!.push(x) } }
     // rowsOf: a turn end draws nothing, so it must not open a fold. r === x: a damaged store's spawn cycle; no row folds under itself
     for (const x of rowsOf) { const r = root(x); if (r && r !== x && drawn.has(r) && !folded.has(x)) { if (!under.has(r)) under.set(r, []); under.get(r)!.push(x); folded.add(x) } }
     // autoFocus holds only on a site's first draw, so the ring is moved onto back once the redraw has drawn it
     const show = (x: Entry) => { if (page) pageBack = true; inspect = x; page = undefined; backTo = x; follow = false; $.ui.invalidate('ui.render'); $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}); $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: 'back' }).catch(() => {}) }) }
     // One row: disclosure, action (the only bright text, a button: on a fold's row it opens the fold, on any other the inspector),
-    // then the time cell. No tool column: the action already names its verb (`Read x.ts`, `Run the tests`) and the inspector the
+    // then the time cell, flush right like the turn header's. No tool column: the action already names its verb (`Read x.ts`, `Run the tests`) and the inspector the
     // tool. The cell has a fixed width and the action is cut to what is left, so the description truncates first and times line up
     const cols = e.props.bodyColumns ?? 40
     const END = 9 // fits `● 123.4s`
     const fit = (s: string, n: number) => s.length <= n ? s : s.slice(0, Math.max(0, n - 1)) + '…'
+    // a path cut from the left at a folder boundary, so its last folders stay whole: `…/acme/projects/dv`
+    const lfit = (s: string, n: number) => { if (s.length <= n) return s; const t = s.slice(s.length - n + 1), j = t.indexOf('/'); return '…' + (j >= 0 ? t.slice(j) : t) }
     // mark: drawn in the disclosure's cell when there is none (the header's `›` on the agent the log is filtered to).
     // rail: a fold's tree guides (`│ ├ `), drawn dim in place of the indent. No press: plain text, a line with nothing to open.
-    // away: the place outside the project root the row reached, kept in the tail as ` ↗ dir` (its last folder; the inspector and the
-    // setup page give the full path) so it survives the cut. A fold's ` +N` more places rides along: base() keeps what follows the last `/`
-    type Line = { k: string; act: string; press?: () => void; st?: [string, string?]; who?: string; tail?: string; disc?: [boolean, () => void]; indent?: number; rail?: string; mark?: string; away?: string }
-    const line = ({ k, act, press, st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ', away }: Line) => {
-      if (away) tail += ` ↗ ${fit(base(away), 20)}`
-      const room = cols - 2 - rail.length - who.length - tail.length - END - 1
+    // away: the places outside the project root the row reached (awayOf), drawn after the action as ` ↗ ~/path` (the first, cut from
+    // the left so its last folders stay; a fold's ` +N` more), so it survives the cut. Amber unless every place is routine()
+    // link: the row's place on its call's bracket (bracketed), drawn dim in the mark's cell so a bracketed row keeps the column of
+    // one without. dim: a hook's row, quiet beside the call it is linked to
+    type Line = { k: string; act: string; press?: () => void; st?: [string, string?]; who?: string; tail?: string; disc?: [boolean, () => void]; indent?: number; rail?: string; mark?: string; link?: string; dim?: boolean; away?: string[] }
+    const line = ({ k, act, press, st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ', link, dim, away }: Line) => {
+      const there = away?.length ? ` ↗ ${lfit(away[0]!, 24)}${away.length > 1 ? ` +${away.length - 1}` : ''}` : ''
+      const room = cols - 2 - rail.length - who.length - tail.length - there.length - END - 1
       return (
         <Box key={k} flexDirection="row" overflow="hidden">
-          <Box flexShrink={0} width={2 + rail.length}><Text dimColor>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : <Text>{mark}</Text>}</Box>
-          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{who ? <Text dimColor>{who}</Text> : null}{press ? <Button key={`b${k}`} label={fit(act, room) + tail} plain onPress={press} /> : <Text wrap="truncate-end">{fit(act, room) + tail}</Text>}</Box>
-          <Box flexShrink={0} width={END}><Text color={st[1]} dimColor={!st[1]}>{fit(st[0], END - 1)}</Text></Box>
+          <Box flexShrink={0} width={2 + rail.length}><Text dimColor>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : link ? <Text dimColor>{link}</Text> : <Text>{mark}</Text>}</Box>
+          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{who ? <Text dimColor>{who}</Text> : null}{press ? <Button key={`b${k}`} label={fit(act, room) + tail} plain dimColor={dim} onPress={press} /> : <Text wrap="truncate-end" dimColor={dim}>{fit(act, room) + tail}</Text>}{there ? <Text color={away!.every(routine) ? undefined : 'yellow'} dimColor={away!.every(routine)}>{there}</Text> : null}</Box>
+          {/* flush right, as the turn header's time: times of any width end on the same column */}
+          <Box flexShrink={0} width={END} justifyContent="flex-end"><Text color={st[1]} dimColor={!st[1]}>{fit(st[0], END - 1)}</Text></Box>
         </Box>
       )
     }
-    // a line of a failure's fold, on its rail; pressed, the failure's inspector
-    const note = (k: string, s: string, bright: boolean, rail: string, press: () => void) => <Box key={k} flexDirection="row" overflow="hidden"><Text dimColor>{rail.padEnd(rail.length + 2)}</Text><Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden"><Button key={`b${k}`} label={fit(s, Math.max(1, cols - rail.length - 3))} plain dimColor={!bright} onPress={press} /></Box></Box>
     const total = (xs: Entry[]) => xs.some(x => x.ms != null) ? xs.reduce((n, x) => n + (x.ms ?? 0), 0) : undefined
     // per turn, from every entry whatever the view or level: the loops that acted, and its time (main's turn ends; none yet =
     // still running, shown —). A spawned agent's rows count toward its Agent row's turn (turnOf)
@@ -1509,32 +1570,28 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
-    // Folds, within one turn and one loop: consecutive engine context (`ctx`; a cwd change stands alone), consecutive identical failures or hook runs (`rep`, ×N,
-    // each attempt kept inside; one event often fires its hooks several times back to back), consecutive read-only lookups (`look`), consecutive changes to one file (`edit`). Failures never join a lookup or edit fold, so they stay visible when it is closed.
-    // Turn ends draw nothing: the turn header carries the time. A group is keyed by its first entry's id (idOf), a row inside by its own.
-    // An Agent row that spawned an agent is an `agent` group: its agent's rows (under) fold beneath it, grouped the same way.
-    // A fold's row reads short, its count last: `Explore hooks ×5`, `Edit x.ts ×4`, and for context its buckets (bucketsOf),
-    // `session start ×6 · capabilities ×4`, each a fold of its own inside; one bucket reads its own row, `files: x.ts, CLAUDE.md`.
-    // by: the entry that keys a bucket's fold, its second: its first may be the context fold's own key
-    // A call's hook rows and their text fold under it by event (`event`, `PreToolUse ×5`), in run order around the call's own line
-    type Group = { kind: 'one' | 'ctx' | 'bucket' | 'event' | 'rep' | 'look' | 'edit' | 'agent'; xs: [Entry, ...Entry[]]; by?: Entry }
-    // a call a hook refused or answered with feedback stands alone, so a closed lookup or edit fold never hides that
-    const heard = (x: Entry) => (hooksUnder.get(x) ?? []).some(loud)
-    const look = (x: Entry) => x.kind === 'tool' && /^(Read|Grep|Glob)$/.test(x.name) && stat(x) === 'ok' && !heard(x)
-    const edit = (x: Entry) => x.kind === 'tool' && toolOf(x) === 'Change' && stat(x) === 'ok' && !heard(x)
+    // Flat: every row its own, in time order. Only an Agent row that spawned an agent folds (`agent`): its agent's rows (under)
+    // beneath it, laid out the same way. A call's hook rows and the text they injected (hooksUnder) move next to it, its
+    // PreToolUse ones above and the rest below, all on one bracket with it (bracket): a parallel call's hooks can land between
+    // another call and its own. Turn ends draw nothing: the turn header carries the time. A group is keyed by its entry's id (idOf).
+    // link: its row's place on the bracket; wait, server: a call's own rows' places (partsOf)
+    type Group = { kind: 'one' | 'agent'; xs: [Entry]; link?: string; wait?: string; server?: string[] }
+    // n rows on a call's bracket, the call at `at`: `╭` opens it, `╰` closes it, `├` marks the call between, `│` the rest
+    const bracket = (n: number, at: number) => Array.from({ length: n }, (_, i) => n < 2 ? undefined : i === 0 ? '╭' : i === n - 1 ? '╰' : i === at ? '├' : '│')
     const groupsOf = (xs: Entry[]) => {
+      const there = new Set(xs)
+      const linked = (x: Entry) => x.kind !== 'tool' && !!x.use && there.has(callRow.get(x.use)!)
       const groups: Group[] = []
-      xs.forEach(x => {
-        if (x.kind === 'turn') return
-        if (x.child) { groups.push({ kind: 'agent', xs: [x] }); return }
-        const g = groups.at(-1), y = g?.xs[0]
-        const near = g && y && turnOf(y) === turnOf(x) && y.agent === x.agent
-        if (near && g.kind === 'ctx' && x.src === 'engine' && !envUpdate(x)) g.xs.push(x)
-        else if (near && g.kind === 'rep' && x.kind === y.kind && x.name === y.name && x.origin === y.origin && x.detail === y.detail && x.cmd === y.cmd && stat(x) === stat(y) && first(x.peek) === first(y.peek)) g.xs.push(x)
-        else if (near && g.kind === 'look' && look(x)) g.xs.push(x)
-        else if (near && g.kind === 'edit' && edit(x) && x.detail === y.detail) g.xs.push(x)
-        else groups.push({ kind: x.src === 'engine' && !envUpdate(x) && view !== 'context' ? 'ctx' : (x.kind === 'tool' && BAD.has(stat(x))) || x.kind === 'hook' || (x.kind === 'prompt' && x.src === 'hook') ? 'rep' : look(x) ? 'look' : edit(x) ? 'edit' : 'one', xs: [x] }) // the context view is mostly engine entries: folding would leave one row
-      })
+      for (const x of xs) {
+        if (x.kind === 'turn' || linked(x)) continue
+        const hs = (hooksUnder.get(x) ?? []).filter(y => there.has(y))
+        const pre = hs.filter(y => y.origin === 'PreToolUse'), post = hs.filter(y => y.origin !== 'PreToolUse')
+        const w = !x.child && waits(x) ? 1 : 0, sv = x.child ? 0 : x.server?.length ?? 0, at = pre.length + w
+        const b = bracket(at + 1 + sv + post.length, at)
+        pre.forEach((y, i) => groups.push({ kind: 'one', xs: [y], link: b[i] }))
+        groups.push({ kind: x.child ? 'agent' : 'one', xs: [x], link: b[at], wait: w ? b[at - 1] : undefined, server: b.slice(at + 1, at + 1 + sv) as string[] })
+        post.forEach((y, i) => groups.push({ kind: 'one', xs: [y], link: b[at + 1 + sv + i] }))
+      }
       return groups
     }
     // an Agent row's cell: its agent's state, not the call's, which a background agent returns from once started. Its turns sum to
@@ -1547,33 +1604,29 @@ export const register: Register = (on, options) => {
       return a?.status === 'failed' || ts.some(y => stat(y) === 'failed') ? [`✗ ${secs(ms)}`, 'red'] : a?.status === 'killed' ? [`■ ${secs(ms)}`]
         : ts.some(y => stat(y) === 'aborted') ? [`⚠ ${secs(ms)}`, 'yellow'] : [secs(ms)]
     }
-    const common = (ps: string[]) => { // the deepest folder or file every path shares
-      const parts = ps.filter(Boolean).map(p => p.split('/'))
-      let k = 0
-      while (parts.length && parts.every(p => k < p.length && p[k] === parts[0]![k])) k++
-      return parts.length ? parts[0]!.slice(0, k).filter(Boolean).pop() ?? '' : ''
-    }
-    // a failure opened: the exit code and what broke (insightOf), else its first output line; the stored text sits in the inspector
-    const broke = (x: Entry) => {
-      const said = x.insight ? x.insight.split('\n') : [first(x.peek)].filter(Boolean)
-      const rule = stat(x) === 'denied' && x.rule ? [`rule ${x.rule}`] : []
-      return [...rule, ...said].map((s, j) => j === 0 && x.exit != null ? `exit ${x.exit} · ${s}` : s)
-    }
     const rows: any[] = []
     const where = new Map<Entry, string>() // each shown entry's drawn row, by its key: its own, else its closed fold's. Back centres it
     const rowAt = (k: string) => rows.findIndex(r => r.props?.key === k)
     const spans = new Map<string, number>() // a group's drawn rows, by its key: how far an opened fold runs, for the window to show it
-    const keyOf = (g: Group) => `g${idOf(g.by ?? g.xs[0])}` // a group's own row; its first entry's id keys its fold in expanded
-    const inner = (y: Entry) => { const key = `e${idOf(y)}`; where.set(y, key); return key }
+    const keyOf = (g: Group) => `g${idOf(g.xs[0])}` // a group's own row; its entry's id keys its fold in expanded
     // a model request's row names its model only when it is not main's (a subagent on Haiku, the engine's own on another): the
     // tool column that named it is gone, and the same model on every request is noise
     const actOf = (y: Entry) => { const id = y.kind === 'step' ? y.name : y.kind === 'side' ? y.detail : undefined
       return id && setup.model && modelName(id) !== modelName(setup.model) ? `${modelName(id)} · ${action(y)}` : action(y) }
-    const entryRow = (y: Entry, k: string, rail: string, who = '') => line({ k, act: actOf(y), press: () => show(y), st: cell(y), who, rail, away: y.out })
-    // a fold's places outside the root: the first, and how many more
-    const awayOf = (ys: Entry[]) => { const o = [...new Set(ys.flatMap(y => y.out ? [y.out] : []))]; return o.length ? `${o[0]}${o.length > 1 ? ` +${o.length - 1}` : ''}` : undefined }
-    // a call's wait, drawn from its own fields under it; pressed, the call's inspector
-    const waitLine = (y: Entry, rail: string) => line({ k: `e${idOf(y)}w`, act: `Waiting for ${y.waitFor ?? 'the decision'}`, press: () => show(y), st: [secs(y.wait)], rail })
+    // who refused a call, after its action (`Clean up ⊘ guard`): the hook that blocked it, else the rule, the classifier or you
+    const byOf = (y: Entry) => {
+      if (y.kind !== 'tool' || !REFUSED.has(stat(y))) return ''
+      const hook = [...new Set((hooksUnder.get(y) ?? []).filter(z => REFUSED.has(stat(z))).map(z => z.name))].join(', ')
+      const by = hook || y.rule || (y.via === 'classifier' ? 'classifier' : /^user_/.test(y.via ?? '') ? 'you' : '')
+      return by ? ` ⊘ ${by}` : ''
+    }
+    // a row's or a fold's places outside the root, each once; another project's first, so the one the fold names is the one to look at
+    const awayOf = (ys: Entry[]) => [...new Set(ys.flatMap(y => y.out ? [y.out] : []))].sort((p, q) => +routine(p) - +routine(q))
+    // a call's wait, drawn from its own fields above it; pressed, the call's inspector
+    // only a wait on a decision: one on the model finishing the message that holds the call is the model's time (splitOf counts
+    // it so), and would draw a row for every call. The inspector still says it
+    const waits = (y: Entry) => y.wait != null && y.waitFor !== STREAMING
+    const waitLine = (y: Entry, rail: string, link?: string) => line({ k: `e${idOf(y)}w`, act: `Waiting for ${y.waitFor ?? 'the decision'}`, press: () => show(y), st: [secs(y.wait)], rail, link })
     // A group's parts, from the one switch on its kind:
     // - head: its own row, given the press (its fold's toggle when it has one, else the inspector on target) and that disclosure
     // - members: the entries a closed fold stands for, which back lands on
@@ -1582,83 +1635,46 @@ export const register: Register = (on, options) => {
     // Lazy: counting draws nothing and claims no row in where. Once per group per draw (memo), so an agent's rows are grouped and a
     // failure read once, and the draw and the count see the same nested groups
     type Disc = [boolean, () => void]
-    type Parts = { head: (rail: string, who: string, newest: boolean, press: () => void, disc?: Disc) => any; target: Entry; members: Entry[]; parts: ((rail: string, rest: string) => any[])[]; nested: Group[] }
+    type Parts = { head: (rail: string, who: string, press: () => void, disc?: Disc) => any; target: Entry; members: Entry[]; parts: ((rail: string, rest: string) => any[])[]; nested: Group[] }
     const memo = new Map<Group, Parts>()
     const partsOf = (g: Group): Parts => {
       const had = memo.get(g)
       if (had) return had
-      const x = g.xs[0], k = keyOf(g), n = g.xs.length, last = g.xs[n - 1]!
+      const x = g.xs[0], k = keyOf(g)
       let p: Parts
       if (g.kind === 'agent') {
         const body = under.get(x) ?? [], nested = groupsOf(body), reply = first(runs(x.child).at(-1)?.peek)
         const many = new Set(body.map(y => y.agent)).size > 1 // a grandchild shares the fold: rows name their loop
         p = { target: x, members: [x, ...body], nested, // a closed fold's rows: back lands on the fold; drawn ones claim their own
-          head: (rail, who, _, press, disc) => line({ k, act: action(x), press, st: ran(x), who, disc, rail, away: awayOf(body) }),
+          head: (rail, who, press, disc) => line({ k, act: action(x), press, st: ran(x), who, disc, rail, link: g.link, away: awayOf(body) }),
           // the Agent row's inspector last, where the reply came: the row itself opens the fold
           parts: body.length ? [
-            ...nested.map((h, j) => (rail: string, rest: string) => drawGroup(h, rail, rest, many && h.xs[0].agent ? whoOf(h.xs[0].agent) : '', j === nested.length - 1)),
+            ...nested.map((h, j) => (rail: string, rest: string) => drawGroup(h, rail, rest, many && h.xs[0].agent ? whoOf(h.xs[0].agent) : '')),
             rail => [line({ k: `${k}i`, act: reply ? `reply: ${reply}` : 'input & result', press: () => show(x), rail })],
           ] : [] }
-      } else if (g.kind === 'rep') {
-        const why = x.kind === 'tool' ? broke(last) : [] // a hook row already reads `name: what it said`
-        p = { target: last, members: g.xs, nested: [],
-          head: (rail, who, _, press, disc) => line({ k, act: action(x), tail: n > 1 ? ` ×${n}` : '', press, st: cell(x, total(g.xs)), who, disc, rail, away: awayOf(g.xs) }),
-          parts: [
-            ...why.map((s, j) => (rail: string) => [note(`${k}n${j}`, s, j === 0, rail, () => show(last))]),
-            ...(hooksUnder.get(last) ?? []).map(y => (rail: string) => [entryRow(y, inner(y), rail)]), // the hook that refused it, beside why
-            ...(n > 1 ? g.xs.map((y, j) => (rail: string) => [line({ k: inner(y), act: `${x.kind === 'tool' ? 'attempt' : 'run'} ${j + 1} · ${new Date(y.t).toLocaleTimeString()}${y.exit != null ? ` · exit ${y.exit}` : ''}`, press: () => show(y), st: cell(y), rail })]) : []),
+      } else {
+        // a call's wait above it, where it happened, and a request's calls the API ran itself (the advisor) below it: rows of
+        // their own, on the row's link. What broke stays in its inspector
+        const server = (x.server ?? []).map(([sn, ms], j) => (rail: string) => line({ k: `${k}s${j}`, act: cap(sn.replace(/_/g, ' ')), press: () => show(x), st: [secs(ms ?? undefined)], rail, link: g.server?.[j] }))
+        // a hook's row on its call's bracket names just the hook: the call beside it names the tool, the side names the event.
+        // Dim unless its cell has a colour: a hook that blocked or broke stays as loud as the call
+        const hooked = x.kind !== 'tool' && !!g.link, c = cell(x)
+        p = { target: x, members: [x], nested: [], parts: [],
+          head: (rail, who, press) => [
+            ...(waits(x) ? [waitLine(x, rail, g.wait)] : []),
+            line({ k, act: hooked ? action(x, true) : actOf(x), tail: byOf(x), press, st: c, who, rail, link: g.link, dim: hooked && !c[1], away: awayOf([x]) }),
+            ...server.map(f => f(rail)),
           ] }
-      } else if (g.kind === 'event') {
-        // a hook that refused or answered the call shows in the event's cell, so the closed fold still says so
-        const said = g.xs.find(loud)
-        p = { target: x, members: g.xs, nested: [], parts: g.xs.map(y => (rail: string) => [entryRow(y, inner(y), rail)]),
-          head: (rail, who, _, press, disc) => line({ k, act: `${x.origin ?? 'hook'} ×${n}`, press, st: said ? cell(said) : [secs(total(g.xs))], who, disc, rail }) }
-      } else if (g.kind === 'one' || n === 1) {
-        const kids = hooksUnder.get(x) ?? []
-        // with hooks the row opens its fold: one line per event, a group of one being its row, and between PreToolUse and the rest
-        // the line that opens the call's inspector, as an agent fold's does
-        const by = new Map<string, Entry[]>()
-        for (const y of kids) by.set(y.origin ?? '', [...by.get(y.origin ?? '') ?? [], y])
-        const nested: Group[] = [...by.values()].map((ys): Group => ys.length > 1 ? { kind: 'event', xs: ys as Group['xs'], by: ys[1] } : { kind: 'one', xs: ys as Group['xs'] })
-        const own = (rail: string) => [line({ k: `${k}i`, act: x.kind === 'step' ? 'request & reply' : 'input & result', press: () => show(x), rail })]
-        const ev = (h: Group) => (rail: string, rest: string) => drawGroup(h, rail, rest, '', false)
-        const early = (h: Group) => h.xs[0].origin === 'PreToolUse'
-        const pre = nested.filter(early), post = nested.filter(h => !early(h))
-        // the wait comes after the check, before the tool runs: between the PreToolUse hooks and the call's own line
-        const waited = x.wait != null ? [(rail: string) => [waitLine(x, rail)]] : []
-        // a step's calls the API ran itself (the advisor), each its own timed line: inside the request's time, not beside it
-        const server = (x.server ?? []).map(([n, ms], j) => (rail: string) => [line({ k: `${k}s${j}`, act: cap(n.replace(/_/g, ' ')), press: () => show(x), st: [secs(ms ?? undefined)], rail })])
-        p = { target: x, members: g.xs, nested,
-          parts: kids.length || waited.length || server.length ? [...pre.map(ev), ...waited, ...server, own, ...post.map(ev)] : [],
-          head: (rail, who, _, press, disc) => line({ k, act: actOf(x), press, st: cell(x), who, disc, rail, away: x.out }) }
-      }
-      else if (g.kind === 'ctx' && bucketsOf(g.xs).length > 1) {
-        const bs = bucketsOf(g.xs)
-        const nested: Group[] = bs.map((b): Group => b.xs.length > 1 ? { kind: 'bucket', xs: b.xs as Group['xs'], by: b.xs[1] } : { kind: 'one', xs: b.xs as Group['xs'] })
-        p = { target: x, members: g.xs, nested, parts: nested.map(h => (rail: string, rest: string) => drawGroup(h, rail, rest, '', false)),
-          head: (rail, who, _, press, disc) => line({ k, act: bs.map(b => b.xs.length > 1 ? `${b.name} ×${b.xs.length}` : b.name).join(' · '), press, who, disc, rail }) }
-      }
-      else {
-        // a member's wait goes just above it, where it happened: the member's own hooks stay in its inspector, as before
-        p = { target: x, members: g.xs, nested: [], parts: g.xs.flatMap(y => [...(y.wait != null ? [(rail: string) => [waitLine(y, rail)]] : []), (rail: string) => [entryRow(y, inner(y), rail)]]),
-          head: (rail, who, newest, press, disc) => {
-            const growing = newest && g.kind === 'look' && (x.agent ? agents.find(a => a.id === x.agent)?.status === 'running' : busy && turnOf(x) === turnNo)
-            const one = bucketsOf(g.xs)[0]! // a bucket's fold, or a context fold of one bucket
-            const [act, st] = g.kind === 'ctx' || g.kind === 'bucket' ? [one.head === one.name ? `${one.name} ×${n}` : one.head, '']
-              : g.kind === 'edit' ? [`${action(x)} ×${n}`, secs(total(g.xs))]
-              : [`Explore ${common(g.xs.map(y => y.detail)) || 'files'} ×${n}${growing ? ` · ${action(last)}` : ''}`, secs(total(g.xs))]
-            return line({ k, act, press, st: [st], who, disc, rail, away: awayOf(g.xs) })
-          } }
       }
       memo.set(g, p)
       return p
     }
     // One group's rows: its own on the rail `own`; an open fold's below it, each part on `rest` and a twig, `├ ` or the last's `└ `,
     // a fold inside continuing the line (`│ `) while siblings follow it. Pressed, a row with ▸ opens its fold, any other the
-    // inspector. newest: the last group of its list, where a lookup fold still growing shows its newest call
-    const drawGroup = (g: Group, own: string, rest: string, who: string, newest: boolean): any[] => {
-      const { head, target, members, parts } = partsOf(g), id = idOf(g.by ?? g.xs[0]), k = keyOf(g)
-      for (const y of members) for (const z of [y, ...hooksUnder.get(y) ?? []]) where.set(z, k) // a call's hooks: drawn ones claim their own row (inner)
+    // inspector
+    const drawGroup = (g: Group, own: string, rest: string, who: string): any[] => {
+      const { head, target, members, parts } = partsOf(g), id = idOf(g.xs[0]), k = keyOf(g)
+      for (const y of members) where.set(y, k)
       const open = expanded.has(id)
       const disc: Disc | undefined = parts.length ? [open, () => {
         if (!expanded.delete(id)) expanded.add(id)
@@ -1666,16 +1682,19 @@ export const register: Register = (on, options) => {
         if (at >= 0) anchor = { k, off: at - win }
         $.ui.invalidate('ui.render')
       }] : undefined
-      const out = [head(own, who, newest, disc?.[1] ?? (() => show(target)), disc)]
+      const out = [head(own, who, disc?.[1] ?? (() => show(target)), disc)].flat()
       if (open && disc) parts.forEach((p, j) => out.push(...p(rest + (j < parts.length - 1 ? '├ ' : '└ '), rest + (j < parts.length - 1 ? '│ ' : '  '))))
       spans.set(k, out.length)
       return out
     }
-    const foldsOf = (gs: Group[]): number[] => gs.flatMap(g => { const p = partsOf(g); return p.parts.length ? [idOf(g.by ?? g.xs[0]), ...foldsOf(p.nested)] : [] })
+    const foldsOf = (gs: Group[]): number[] => gs.flatMap(g => { const p = partsOf(g); return p.parts.length ? [idOf(g.xs[0]), ...foldsOf(p.nested)] : [] })
     let cur: number | undefined
     const top = groupsOf(shown.filter(x => !folded.has(x)))
+    // every row in the order the log lays it out, a closed agent fold's too: the inspector steps through it
+    const orderOf = (gs: Group[]): Entry[] => gs.flatMap(g => [g.xs[0], ...(g.kind === 'agent' ? orderOf(partsOf(g).nested) : [])])
+    const order = orderOf(top)
     const tops = new Set<string>() // rows the `o` button may keep in place: turn headers and top groups' own rows, which no closing hides
-    top.forEach((g, j) => {
+    top.forEach(g => {
       const x = g.xs[0], n = turnOf(x)
       if (n !== cur) {
         if (cur !== undefined) rows.push(<Text key={`gap${rows.length}`}> </Text>) // a row of its own, not a margin: the window counts elements as rows
@@ -1684,12 +1703,12 @@ export const register: Register = (on, options) => {
         for (const y of hidden.get(n) ?? []) if (!where.has(y)) where.set(y, hk) // back from a hidden row: its turn's header
       }
       tops.add(keyOf(g))
-      rows.push(...drawGroup(g, '', '', x.agent && turns.get(n)!.agents.size > 1 ? whoOf(x.agent) : '', j === top.length - 1))
+      rows.push(...drawGroup(g, '', '', x.agent && turns.get(n)!.agents.size > 1 ? whoOf(x.agent) : ''))
     })
     // What streams or runs right now, below the rows: each loop's model request and each call in flight, ● counting up (tick
     // redraws while a turn or an agent runs). Not entries yet, so nothing to open: plain lines, under the running turn's header
-    const nowAct = (l: Live) => l.row ? `${l.asking ? 'Waiting for your permission: ' : ''}${action({ t: l.t, ...l.row })}` : l.phase === 'thinking' ? `Thinking${l.said ? `: ${l.said}` : ''}`
-      : l.phase === 'writing' ? l.said || 'Writing' : l.phase === 'calling' ? `Writing a ${l.tool ?? 'tool'} call` : 'Waiting for the first token'
+    const nowAct = (l: Live) => l.row ? `${l.asking ? 'Waiting for your permission: ' : ''}${action({ t: l.t, ...l.row })}` : l.phase === 'thinking' ? 'Thinking'
+      : l.phase === 'writing' ? 'Writing' : l.phase === 'calling' ? `Writing a ${l.tool ?? 'tool'} call` : 'Waiting for the first token'
     // only a line whose row will stay visible at this level: one that ends as a hidden row would flash and vanish (a request
     // that only calls tools ranks debug). A permission prompt always shows: it waits for the person
     const shows = (l: Live) => l.asking || (l.row ? lvl({ t: l.t, ...l.row }) : l.wrote ? 1 : 0) >= level
@@ -1697,7 +1716,7 @@ export const register: Register = (on, options) => {
     if (inFlight.length && busy && cur !== turnNo) { if (cur !== undefined) rows.push(<Text key={`gap${rows.length}`}> </Text>); rows.push(header(turnNo, `turn${turnNo}`)); cur = turnNo }
     for (const [k, l] of inFlight) rows.push(line({ k: `now${k}`, act: nowAct(l), st: [`● ${secs(now - l.t)}`, 'yellow'], who: l.loop ? whoOf(l.loop) : '' }))
     // short items packed into as many rows as the width needs (pack), each row one element, so the header's height stays counted
-    const LEGEND = ['✗ refused or broke', '↩ hook feedback to the model', '⚠ slow or aborted', '∅ no match', '● running now', '≈ estimated', '↗ outside the project root', '▸ press to open',
+    const LEGEND = ['⊘ refused: a hook, a rule, the classifier or you', '✗ broke', '■ a hook stopped the session', '+ a hook added context', '· a hook changed nothing', '↩ hook feedback to the model', '⚠ slow or aborted', '∅ no match', '● running now', '≈ estimated', '↗ outside the project root: amber, another project; dim, ~/.claude or /tmp', '▸ press to open',
       'a g h u views', 'l level', 'o every fold', 's setup', 'j newest', 'ctrl+↑↓ previous/next prompt', 'b back', 'n p next/prev in the inspector', 'k this legend']
     // `no agent entries for scout at notice or above · /agentlog level debug: every row · a: all views · main: clear the filter`; only the filters set
     const empty = () => {
@@ -1744,11 +1763,11 @@ export const register: Register = (on, options) => {
     const spawnOf = new Map(entries.filter(x => x.child).map(x => [x.child!, x]))
     const most = showDone ? Math.max(3, Math.floor(bodyRows / 3)) : 3
     const more = Math.max(0, tree.length - most)
-    const agentRow = ([a, depth]: [AgentInfo | typeof TEAM, number]) => {
-      if (a === TEAM) return <Box key="team" flexDirection="row"><Text dimColor>{' '.repeat(2 + 2 * depth)}team</Text></Box>
+    const agentRow = ([a, rail]: [AgentInfo | typeof TEAM, string]) => {
+      if (a === TEAM) return <Box key="team" flexDirection="row"><Text dimColor>{`${rail}  team`}</Text></Box>
       const x = spawnOf.get(a.id), [glyph, c] = STATUS[a.status] ?? ['?'], t = started.get(a.id)
       const st: [string, string?] = x ? ran(x) : [a.status === 'running' && t != null ? `${glyph} ${secs(now - t)}` : glyph, c]
-      return line({ k: `a${a.id}`, act: `${nameOf(a.id)}${a.name ? ` (${a.name})` : ''}: ${a.description}`, press: () => pick(a.id), st, indent: 2 * depth, mark: only === a.id ? '›' : ' ' })
+      return line({ k: `a${a.id}`, act: `${nameOf(a.id)}${a.name ? ` (${a.name})` : ''}: ${a.description}`, press: () => pick(a.id), st, rail, mark: only === a.id ? '›' : ' ' })
     }
     const toggle = showDone ? `hide finished ▾${more ? ` · ${more} not shown` : ''}` : `${[more && `+${more} more`, done && `${done} done`].filter(Boolean).join(' · ')} ▸`
     // every element of the header and the log is one row, so the window knows the header's height and how many log rows fit under it
@@ -1756,6 +1775,7 @@ export const register: Register = (on, options) => {
     // the setup page. Counted from every entry, whatever the view, level or filter
     if (!setup.asked) refreshSetup($).then(() => $.ui.invalidate('ui.render')).catch(() => {})
     const problems = problemsOf(entries)
+    const elsewhere = entries.filter(x => x.out && !routine(x.out)).length // calls into another project, amber in the setup row (u: the outside view lists them)
     const hookN = new Set(Object.values(hookCfg ?? {}).flat().map(h => h.cmd ?? h.name)).size // distinct scripts, not registrations: context-mode registers one script on 9 PreToolUse matchers
     const servers = new Map<string, number>() // MCP server -> its tools, from the tool list (`mcp__server__tool`) and the connection records
     for (const t of setup.tools ?? []) if (t.mcp) { const sv = t.name.split('__')[1] ?? t.name; servers.set(sv, (servers.get(sv) ?? 0) + 1) }
@@ -1769,8 +1789,6 @@ export const register: Register = (on, options) => {
     // The setup page: the session's setup and how it held up. Hook runs and plugins come from the collector (OTEL export on); without
     // it, the hooks and plugins your settings name. A problem's row opens its inspector
     const setupPage = (at?: [string, string, string | undefined]) => {
-      const kw = (k: string, v: string, id = k) => <Box key={`k${id}`} flexDirection="row"><Box flexShrink={0} width={15}><Text dimColor>{k}</Text></Box><Text wrap="wrap">{v}</Text></Box>
-      const title = (k: string, t: string) => [<Text key={`gap${k}`}> </Text>, <Text key={`t${k}`} weight="semibold">{t}</Text>]
       const xs = (f: (x: Entry) => boolean) => entries.filter(f)
       // requests: how many, their time, tokens and price where the collector gave one
       const use = (ys: Entry[]) => {
@@ -1784,6 +1802,12 @@ export const register: Register = (on, options) => {
       const steps = xs(x => x.kind === 'step')
       const added = [...new Set(xs(x => x.kind === 'event' && x.name === 'directory added').map(x => x.detail))]
       const outs = [...xs(x => !!x.out).reduce((m, x) => m.set(x.out!, (m.get(x.out!) ?? 0) + 1), new Map<string, number>())].sort((p, q) => q[1] - p[1])
+      // the key column fits the longest key (hook events like PermissionRequest, plugin and server names), capped at a third of the
+      // pane; a key past the cap is cut, never wrapped into its value
+      const keys = ['calls outside', ...events, ...(setup.plugins.size ? setup.plugins.keys() : enabled.map(id => id.split('@')[0]!)), ...servers.keys()]
+      const keyW = Math.max(15, Math.min(Math.max(...keys.map(k => k.length)) + 2, Math.floor(cols / 3)))
+      const kw = (k: string, v: string, id = k) => <Box key={`k${id}`} flexDirection="row"><Box flexShrink={0} width={keyW}><Text dimColor wrap="truncate-end">{fit(k, keyW - 2)}</Text></Box><Text wrap="wrap">{v}</Text></Box>
+      const title = (k: string, t: string) => [<Text key={`gap${k}`}> </Text>, <Text key={`t${k}`} weight="semibold">{t}</Text>]
       return (
         <Box key="setup" flexDirection="column" width={e.props.bodyColumns}>
           <Box flexDirection="row" columnGap={2}><Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} /></Box>
@@ -1824,6 +1848,7 @@ export const register: Register = (on, options) => {
       ...controls,
       <Box key="setuprow" flexDirection="row" overflow="hidden">
         {problems.length ? <Box flexShrink={0}><Text color="red">{`✗ ${problems.join(' · ')}  `}</Text></Box> : null}
+        {elsewhere ? <Box flexShrink={0}><Text color="yellow">{`↗ ${elsewhere} outside cwd  `}</Text></Box> : null}
         <Box flexShrink={1} minWidth={0} overflow="hidden"><Button key="fsetup" label={setupText} hotkey="s" plain dimColor onPress={openSetup} /></Box>
       </Box>,
       // the agent tree's root, only once there is a tree or a filter to clear: a session without subagents has nothing to pick

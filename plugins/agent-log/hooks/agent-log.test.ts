@@ -1,6 +1,6 @@
 // Pane tests share the module's state (level, folds, finished agents shown): a test that changes one sets it back before it ends.
 import { test, expect, mock, type TestBody } from 'claude-code/testing'
-import { ASKED, bucketsOf, costOf, ctxOf, harnessOf, hookName, markAgain, modelName, outsideOf, pack, rootOf, splitOf, tagOf } from './agent-log'
+import { ASKED, costOf, ctxOf, harnessOf, hookName, markAgain, modelName, outsideOf, pack, pickRuns, rootOf, routine, runNames, speaker, withSilent, splitOf, tagOf } from './agent-log'
 
 // the shape hooksOf builds: settings hooks by script name, plugin hooks by plugin. Texts are real rows from the store
 const cfg = {
@@ -199,7 +199,7 @@ test('a kind without a label keeps its stored name, and a hook\'s row the hook\'
   expect(ctxOf(ctx('output_style', 'Concise output style is active.', { src: undefined }))).toEqual(['style reminder']) // a row from before src was stored
 })
 
-test('a cwd change stands alone and shows at notice; the context beside it folds', async ($, on) => {
+test('a cwd change shows at notice; the context beside it, each entry its own row, does not', async ($, on) => {
   on('session.id', () => ({ value: 'U' }))
   on('agent.list', () => ({ value: [] }))
   on('config.list', () => ({ value: [] }))
@@ -211,24 +211,14 @@ test('a cwd change stands alone and shows at notice; the context beside it folds
   mock.store(on, { 'r:U': { entries, seen: {}, turn: 1, names: {} } })
   const m = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { title: 'Agent log', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 } } as any })
   expect(await m.find({ text: /^CWD → claude$/ })).toBeDefined()
-  expect(await m.find({ text: /^files: claude\/CLAUDE\.md, x\.ts$/ })).toBeDefined() // the tool column says Engine
+  expect(await m.find({ text: /^Changed: x\.ts$/ })).toBeDefined()
   await m.press({ key: 'lvl' }) // info -> notice
   expect(await m.find({ text: /^CWD → claude$/ })).toBeDefined()
-  expect(await m.find({ text: /^files: claude\/CLAUDE\.md, x\.ts$/ })).toBe(undefined)
+  expect(await m.find({ text: /^Changed: x\.ts$/ })).toBe(undefined)
   for (let i = 0; i < 3; i++) await m.press({ key: 'lvl' }) // error, debug, info: the level is module state
 })
 
-test('engine context splits by what sent it, each kind always into the same bucket', () => {
-  const b = (xs: any[]) => bucketsOf(xs).map(({ name, head, xs }) => [name, head, xs.length])
-  const start = [ctx('model', 'You are powered by'), ctx('deferred_tools_delta', 'The following deferred tools are now available'), ctx('auto_mode', 'Auto mode'), ctx('total_tokens_reminder', 'x'), ctx('skill_listing', 'skills')]
-  expect(b(start)).toEqual([['session start', 'session start', 1], ['capabilities', 'tool list, skill list', 2], ['mode', 'auto mode', 1], ['reminders', 'reminders', 1]])
-  expect(b(start.map(x => ({ ...x, agent: 'a1' })))[0]![0]).toBe('session start')
-  expect(b([ctx('deferred_tools_delta', 'The following deferred tools are no longer available'), ctx('plan_mode', 'p'), ctx('plan_mode_exit', 'q'), ctx('date', 'The date has changed.')]))
-    .toEqual([['capabilities', 'tools removed', 1], ['mode', 'plan mode → plan mode exit', 2], ['reminders', 'reminders', 1]])
-  expect(b([ctx('mystery_kind', 'x', { name: 'mystery' })])).toEqual([['other', 'mystery', 1]])
-})
-
-test('a context fold of several buckets lists them, each a fold inside', async ($, on) => {
+test('engine context draws one row per entry, nothing folded', async ($, on) => {
   on('session.id', () => ({ value: 'BK' }))
   on('agent.list', () => ({ value: [] }))
   on('config.list', () => ({ value: [] }))
@@ -238,16 +228,9 @@ test('a context fold of several buckets lists them, each a fold inside', async (
   ]
   mock.store(on, { 'r:BK': { entries, seen: {}, turn: 1, names: {} } })
   const m = await pane($, 40, 100)
-  const fold = await m.find({ type: 'Button', text: /^files ×2 · capabilities · reminders$/ })
-  expect(fold).toBeDefined()
-  await m.press({ key: fold!.key! })
-  const files = await m.find({ type: 'Button', text: /^files: x\.ts, a\/CLAUDE\.md$/ })
-  expect(files).toBeDefined()
-  expect(await m.find({ type: 'Button', text: /^Tools removed$/ })).toBeDefined() // a bucket of one is its entry's row
-  expect(await m.find({ type: 'Button', text: /^Changed: x\.ts$/ })).toBe(undefined) // closed inside
-  await m.press({ key: files!.key! })
   expect(await m.find({ type: 'Button', text: /^Changed: x\.ts$/ })).toBeDefined()
-  await m.press({ key: files!.key! }); await m.press({ key: fold!.key! }) // module state: folds closed again
+  expect(await m.find({ type: 'Button', text: /^Tools removed$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: '▸' })).toBe(undefined)
 })
 
 test('engine context that only composes the request is logged but not shown, its view hidden', async ($, on) => {
@@ -476,16 +459,18 @@ test('ctrl+↑↓ (the #↑↓ buttons) put the previous or next prompt\'s turn 
 
 // lookups in hooks/, three by default: `Explore hooks ×3`
 const reads = (t0: number, extra: object = {}, files = ['a', 'b', 'c']) => files.map((f, i) => ({ t: t0 + i, turn: 1, kind: 'tool', name: 'Read', detail: `/home/u/hooks/${f}.ts`, outcome: 'ok', status: 'ok', ms: 10, ...extra }))
+// an Agent row that spawned agent A, then A's reads: the one fold the log keeps
+const spawn = (t0: number, files = ['a', 'b', 'c']) => [{ t: t0, turn: 1, kind: 'tool', name: 'Agent', detail: 'scout: look around', outcome: 'ok', status: 'ok', ms: 10, child: 'A' }, ...reads(t0 + 1, { agent: 'A' }, files)]
 // the line a row sits on in the pane's body, the header's rows counted (3 at 100 columns with no subagents: controls, setup, rule): the same line
 // before and after means it did not move
 const lineOf = async (m: any, k: string) => (await m.find({ type: 'Box' }))!.children.findIndex((c: any) => c.props?.key === k)
 
 test('a fold opens where it was pressed, its rows on tree guides, each opening its inspector', async ($, on) => {
-  // #1, Step 1-25, the fold, Step 26-30: following, 9 rows show (Step 23-25, the fold, Step 26-30)
-  const s = steps(), entries = [...s.slice(0, 25), ...reads(s[24]!.t), ...s.slice(25).map(x => ({ ...x, t: x.t + 3 }))]
-  session(on, 'F', entries)
+  // #1, Step 1-25, the Agent row's fold, Step 26-30: following, 9 rows show (Step 23-25, the fold, Step 26-30)
+  const s = steps(), entries = [...s.slice(0, 25), ...spawn(s[24]!.t), ...s.slice(25).map(x => ({ ...x, t: x.t + 4 }))]
+  session(on, 'F', entries, { names: { A: 'scout' } })
   const m = await pane($, 13, 100)
-  const fold = await m.find({ type: 'Button', text: /^Explore hooks ×3$/ })
+  const fold = await m.find({ type: 'Button', text: '▸' })
   expect(fold).toBeDefined()
   const row = fold!.key!.slice(1), at = await lineOf(m, row)
   expect(await m.find({ text: /^Step 23$/ })).toBeDefined()
@@ -494,23 +479,33 @@ test('a fold opens where it was pressed, its rows on tree guides, each opening i
   expect(await lineOf(m, row)).toBe(at)
   expect(await m.find({ text: /^Step 23$/ })).toBeDefined()
   expect(await m.find({ text: /^Read c\.ts$/ })).toBeDefined()
-  expect((await m.findAll({ type: 'Text', text: /^├ $/ })).length).toBe(2)
+  expect((await m.findAll({ type: 'Text', text: /^├ $/ })).length).toBe(3) // the agent's reads; the Agent row's own line last, on └
   expect((await m.findAll({ type: 'Text', text: /^└ $/ })).length).toBe(1)
   expect(await m.find({ text: /^Step 30$/ })).toBe(undefined)
   expect(await m.find({ key: 'jump' })).toBeDefined()
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read a\.ts$/ }))!.key! }) // a row without ▸: its inspector
-  expect(await m.find({ text: /Read call by the main loop/ })).toBeDefined()
+  expect(await m.find({ text: /^Read call by the / })).toBeDefined()
   await m.press({ key: 'folds' }) // o in the inspector closes the fold, but must not move the window back centres
   await m.press({ key: 'back' })
   expect(await m.find({ text: /^Read a\.ts$/ })).toBe(undefined)
   expect(await lineOf(m, row)).toBe(3 + 5) // the closed fold that holds Read a.ts, centred: 5 of the 10 log rows above it
 })
 
+test('the header hangs each agent under its parent on the log\'s tree guides', async ($, on) => {
+  const run = (id: string, description: string, parentId?: string) => ({ id, type: 'general-purpose', description, status: 'running', parentId })
+  session(on, 'H', [], { agents: [run('A', 'implement'), run('A1', 'scout', 'A'), run('A2', 'review', 'A'), run('B', 'docs')] })
+  const m = await pane($)
+  await m.press({ key: 'fdone' }) // three agent rows until the list opens
+  // main, then A (more follow: ├), its children on A's line carried on (│), B last (└)
+  const rails = (await m.findAll({ type: 'Text', text: /^[│├└ ]+$/ })).map(t => String(t.text)).filter(t => /[│├└]/.test(t))
+  expect(rails).toEqual(['├ ', '│ ├ ', '│ └ ', '└ '])
+})
+
 test('opening the newest fold while following shows it, its row staying on screen', async ($, on) => {
-  const s = steps().slice(0, 25), entries = [...s, ...reads(s[24]!.t + 1)] // the fold is the last row, on the last line
-  session(on, 'N', entries)
+  const s = steps().slice(0, 25), entries = [...s, ...spawn(s[24]!.t + 1)] // the fold is the last row, on the last line
+  session(on, 'N', entries, { names: { A: 'scout' } })
   const m = await pane($, 12, 100)
-  const fold = await m.find({ type: 'Button', text: /^Explore hooks ×3$/ })
+  const fold = await m.find({ type: 'Button', text: '▸' })
   await m.press({ key: fold!.key! })
   expect(await lineOf(m, fold!.key!.slice(1))).toBeGreaterThanOrEqual(3) // still drawn, not under the jump row
   expect(await m.find({ text: /^Read c\.ts$/ })).toBeDefined() // the window moved down just far enough to show the fold
@@ -532,24 +527,24 @@ test('o keeps the turn header at the window\'s top in place, though folds above 
 
 test('o from inside an open fold keeps the fold\'s row at the window\'s top', async ($, on) => {
   // #1, Step 1, the fold of ten, Step 2-16
-  const s = steps().slice(0, 16), entries = [s[0]!, ...reads(s[0]!.t, {}, [...'abcdefghij']), ...s.slice(1).map(x => ({ ...x, t: x.t + 10 }))]
-  session(on, 'I', entries)
+  const s = steps().slice(0, 16), entries = [s[0]!, ...spawn(s[0]!.t, [...'abcdefghij']), ...s.slice(1).map(x => ({ ...x, t: x.t + 11 }))]
+  session(on, 'I', entries, { names: { A: 'scout' } })
   const m = await pane($, 12, 100)
+  await m.press({ key: 'tprev' })
+  const row = (await m.find({ type: 'Button', text: '▸' }))!.key!.slice(1)
   await m.press({ key: 'folds' })
   await m.press({ key: 'tprev' }) // #1 on top: #1, Step 1, the fold, Read a-e
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read e\.ts$/ }))!.key! })
   await m.press({ key: 'back' }) // Read e.ts centred: Read a.ts tops the window, inside the fold
   expect(await m.find({ text: /^Step 1$/ })).toBe(undefined)
-  const fold = await m.find({ type: 'Button', text: /^Explore hooks ×10$/ })
-  expect(fold).toBe(undefined) // its row is above the window
+  expect(await lineOf(m, row)).toBe(-1) // its row is above the window
   await m.press({ key: 'folds' })
-  expect(await lineOf(m, (await m.find({ type: 'Button', text: /^Explore hooks ×10$/ }))!.key!.slice(1))).toBe(3)
+  expect(await lineOf(m, row)).toBe(3)
 })
 
-test('a lookup fold still growing shows its newest call; o opens and closes every fold', async ($, on) => {
-  session(on, 'G', reads(Date.now() - 1000, { agent: 'A' }), { names: { A: 'scout' }, agents: [{ id: 'A', type: 'scout', description: 'look around', status: 'running' }] })
+test('o opens and closes every fold', async ($, on) => {
+  session(on, 'G', spawn(Date.now() - 1000), { names: { A: 'scout' } })
   const m = await pane($, 40, 100)
-  expect(await m.find({ type: 'Button', text: /^Explore hooks ×3 · Read c\.ts$/ })).toBeDefined()
   expect(await m.find({ type: 'Button', text: /^unfold$/ })).toBeDefined()
   await m.press({ key: 'folds' })
   expect(await m.find({ text: /^Read a\.ts$/ })).toBeDefined()
@@ -558,32 +553,31 @@ test('a lookup fold still growing shows its newest call; o opens and closes ever
   expect(await m.find({ text: /^Read a\.ts$/ })).toBe(undefined)
 })
 
-test('a PreToolUse hook\'s context, sent with the request after the call, folds under the call it ran before', async ($, on) => {
+test('a PreToolUse hook\'s context, sent with the request after the call, sits above the call it ran before, linked', async ($, on) => {
   on('tool.call', () => ({ result: 'ok', text: 'ok' }))
   on('classic.PreToolUse', (_$, e: any) => (e.tool === 'Read' ? { additionalContext: [`tip for ${e.file_path}`] } : {}) as any)
   on('prompt.attachment', (_$, e: any) => ({ text: e.text }))
   session(on, 'P')
-  // a and the Bash call run in parallel, b after: the Bash call keeps the two Reads from merging into one lookup fold
   await Promise.all([$.tool.call({ tool: 'Read', tool_use_id: 'ua', file_path: '/home/u/a.ts' } as any), $.tool.call({ tool: 'Bash', tool_use_id: 'uc', command: 'ls', description: 'List files' } as any)])
   await $.prompt.attachment({ type: 'hook_additional_context', text: 'PreToolUse:Read hook additional context: tip for a', origin: { kind: 'hook', event: 'PreToolUse' } } as any)
   await $.tool.call({ tool: 'Read', tool_use_id: 'ub', file_path: '/home/u/b.ts' } as any)
   await $.prompt.attachment({ type: 'hook_additional_context', text: 'PreToolUse:Read hook additional context: tip for b', origin: { kind: 'hook', event: 'PreToolUse' } } as any)
   const m = await pane($, 40, 100)
-  expect(await m.find({ text: /tip for/ })).toBe(undefined) // folded under their calls
-  expect((await m.findAll({ type: 'Button', text: '▸' })).length).toBe(2)
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Read b\.ts$/ }))!.key! }) // a row with ▸ opens its fold
+  expect(await m.find({ type: 'Button', text: '▸' })).toBe(undefined) // nothing folds
   const labels = (await m.findAll({ type: 'Button' })).map(b => String(b.text))
   const at = (re: RegExp) => labels.findIndex(l => re.test(l))
-  expect(at(/tip for a/)).toBe(-1)
+  const tips = labels.flatMap((l, i) => / context$/.test(l) ? [i] : [])
+  expect(tips.length).toBe(2)
+  expect(tips[0]!).toBeLessThan(at(/^Read a\.ts$/))
   expect(at(/^Read a\.ts$/)).toBeLessThan(at(/^List files$/))
-  expect(at(/^List files$/)).toBeLessThan(at(/^Read b\.ts$/))
-  expect(at(/^Read b\.ts$/)).toBeLessThan(at(/tip for b/))
-  expect(at(/tip for b/)).toBeLessThan(at(/^input & result$/)) // PreToolUse before the call's own line
-  expect(at(/PreToolUse:Read hook/)).toBe(-1) // the engine's framing is gone from the label
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Read b\.ts$/ }))!.key! }) // module state: fold closed again
+  expect(at(/^List files$/)).toBeLessThan(tips[1]!)
+  expect(tips[1]!).toBeLessThan(at(/^Read b\.ts$/))
+  expect((await m.findAll({ type: 'Text', text: '╭' })).length).toBe(2) // each on a bracket with the call below it
+  expect((await m.findAll({ type: 'Text', text: '╰' })).length).toBe(2)
+  expect(at(/tip for|PreToolUse:Read hook/)).toBe(-1) // what it said stays in the inspector
 })
 
-test('a call\'s hooks fold by event around its own line, a group of one its own row', async ($, on) => {
+test('a call\'s hook rows sit around it, linked: PreToolUse above, the rest below', async ($, on) => {
   const pre = (name: string, extra: object = {}) => hookRow({ name, use: 'ue', ...extra })
   const m = await mountWith($, on, 'EV', [
     { t: T0, turn: 1, kind: 'tool', name: 'Edit', detail: 'x.ts', outcome: '', use: 'ue', ms: 10 },
@@ -591,16 +585,25 @@ test('a call\'s hooks fold by event around its own line, a group of one its own 
     hookRow({ name: 'lint-feedback', origin: 'PostToolUse', use: 'ue', outcome: 'block', status: 'feedback' }),
   ])
   await toLevel(m, 'debug') // a fast hook that changed nothing ranks debug
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Edit x\.ts$/ }))!.key! })
   const labels = (await m.findAll({ type: 'Button' })).map(b => String(b.text))
   const at = (re: RegExp) => labels.findIndex(l => re.test(l))
-  expect(at(/^PreToolUse ×3$/)).toBeGreaterThan(-1)
-  expect(at(/^guard/)).toBe(-1) // closed inside
-  expect(at(/^PreToolUse ×3$/)).toBeLessThan(at(/^input & result$/))
-  expect(at(/^input & result$/)).toBeLessThan(at(/^lint-feedback/)) // a group of one is its row
-  await m.press({ key: (await m.find({ type: 'Button', text: /^PreToolUse ×3$/ }))!.key! })
-  expect(await m.find({ type: 'Button', text: /^guard/ })).toBeDefined()
-  await m.press({ key: (await m.find({ type: 'Button', text: /^PreToolUse ×3$/ }))!.key! }); await m.press({ key: (await m.find({ type: 'Button', text: /^Edit x\.ts$/ }))!.key! }) // module state: folds closed again
+  for (const n of ['guard', 'test-gate', 'contract-guard']) { expect(at(new RegExp(`^${n}$`))).toBeGreaterThan(-1); expect(at(new RegExp(`^${n}$`))).toBeLessThan(at(/^Edit x\.ts$/)) } // by name alone: the side says the event, the call the tool
+  expect(at(/^Edit x\.ts$/)).toBeLessThan(at(/^lint-feedback$/))
+  // one bracket: opened by the first hook, the call marked between, closed by the last
+  for (const [g, n] of [['╭', 1], ['│', 2], ['├', 1], ['╰', 1]] as const) expect((await m.findAll({ type: 'Text', text: g })).length).toBe(n)
+  expect(await m.find({ type: 'Button', text: '▸' })).toBe(undefined)
+  await toLevel(m, 'info')
+})
+
+test('a call\'s row keeps its own time; each of its hooks times its own row', async ($, on) => {
+  const m = await mountWith($, on, 'SUM', [
+    { t: T0, turn: 1, kind: 'tool', name: 'Edit', detail: 'x.ts', outcome: '', use: 'us', ms: 5500 }, // spans its PreToolUse hook
+    hookRow({ name: 'guard', use: 'us', ms: 100 }),
+    hookRow({ name: 'file-change-log', origin: 'PostToolUse', use: 'us', ms: 100 }),
+  ])
+  await toLevel(m, 'debug')
+  expect(await m.find({ text: /^5\.5s$/ })).toBeDefined()
+  expect((await m.findAll({ type: 'Text', text: /^· 0\.1s$/ })).length).toBe(2)
   await toLevel(m, 'info')
 })
 
@@ -629,16 +632,16 @@ const call = (extra: object) => ({ t: T0, turn: 1, kind: 'tool', name: 'Bash', d
 const mountWith = ($: Engine, on: any, id: string, entries: object[], turn = 1, bodyRows = 60) => (session(on, id, entries, { turn }), pane($, bodyRows))
 const GUARD = 'PreToolUse:Bash hook error: [$HOME/.claude/hooks/security/guard.sh]: guard.sh blocked this command: rm -rf'
 
-test('a hook\'s block folds into the call it refused: one red row', async ($, on) => {
+test('a hook\'s block marks the call it refused, naming the hook; the hook\'s own row sits above it, linked', async ($, on) => {
   const m = await mountWith($, on, 'B1', [
     hookRow({ name: 'guard', outcome: 'block', peek: GUARD, use: 'u1' }),
     call({ detail: 'Clean up', cmd: 'rm -rf x', outcome: 'error', status: 'denied', peek: GUARD, use: 'u1' }),
   ])
-  expect((await m.findAll({ type: 'Text', text: /^✗/ })).length).toBe(1)
-  expect(await m.find({ type: 'Button', text: /^guard/ })).toBe(undefined)
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Clean up$/ }))!.key! })
-  expect(await m.find({ type: 'Button', text: /^guard: guard\.sh blocked this command: rm -rf$/ })).toBeDefined() // framing and path gone
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Clean up$/ }))!.key! })
+  expect((await m.findAll({ type: 'Text', text: /^⊘/ })).length).toBe(2) // the hook's row and the call's: refused, not broke: ⊘, not ✗
+  expect(await m.find({ type: 'Text', text: /^✗/ })).toBe(undefined)
+  expect(await m.find({ type: 'Button', text: /^Clean up ⊘ guard$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /^guard$/ })).toBeDefined() // by name, its reason in the inspector
+  expect((await m.findAll({ type: 'Text', text: '╭' })).length).toBe(1)
 })
 
 test('a PreToolUse block marks its call denied', async ($, on) => {
@@ -647,12 +650,10 @@ test('a PreToolUse block marks its call denied', async ($, on) => {
   session(on, 'B2')
   await $.tool.call({ tool: 'Bash', tool_use_id: 'u9', command: 'rm -rf x', description: 'Clean up' } as any)
   const m = await pane($)
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Clean up$/ }))!.key! }) // opens its fold: the guard row is in it
   expect(await m.find({ type: 'Button', text: /^rm$/ })).toBe(undefined) // a refused call never ran: no output to boil down
-  await m.press({ key: (await m.find({ type: 'Button', text: /^guard\.sh blocked this command$/ }))!.key! }) // why, which opens the inspector
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Clean up ⊘ / }))!.key! })
   expect(await m.find({ text: /refused before it ran/ })).toBeDefined()
   await m.press({ key: 'back' })
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Clean up$/ }))!.key! })
 })
 
 test('a block after the fact is feedback: ↩, not ✗', async ($, on) => {
@@ -668,13 +669,13 @@ test('a slow SessionStart hook is not flagged; a slow ConfigChange hook is', asy
     hookRow({ name: 'config-change-guard', origin: 'ConfigChange', detail: 'user_settings', ms: 2100 }),
   ])
   await toLevel(m, 'debug')
-  expect(await m.find({ type: 'Text', text: '2.0s' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '· 2.0s' })).toBeDefined() // changed nothing: dim ·, no ⚠
   expect(await m.find({ type: 'Text', text: '⚠ 2.0s' })).toBe(undefined)
   expect(await m.find({ type: 'Text', text: '⚠ 2.1s' })).toBeDefined()
   await toLevel(m, 'info')
 })
 
-test('identical hook text in a row folds; text the session already logged ranks info', async ($, on) => {
+test('hook text draws a row each time; text the session already logged ranks info', async ($, on) => {
   on('tool.call', () => ({ result: 'ok', text: 'ok' }))
   on('prompt.attachment', (_$, e: any) => ({ text: e.text }))
   session(on, 'D1')
@@ -684,9 +685,9 @@ test('identical hook text in a row folds; text the session already logged ranks 
   await $.prompt.attachment(tip)
   await $.prompt.attachment(tip)
   const m = await pane($)
-  expect((await m.findAll({ type: 'Button', text: /Rule for this message( ×2)?$/ })).map(b => String(b.text).endsWith('×2'))).toEqual([false, true])
+  expect((await m.findAll({ type: 'Button', text: /^UserPromptSubmit hook context$/ })).length).toBe(3)
   await toLevel(m, 'notice') // only the first
-  expect((await m.findAll({ type: 'Button', text: /Rule for this message/ })).length).toBe(1)
+  expect((await m.findAll({ type: 'Button', text: /^UserPromptSubmit hook context/ })).length).toBe(1)
   await toLevel(m, 'info')
 })
 
@@ -730,28 +731,33 @@ test('a command with no description keeps its case; a description is capitalised
   expect(await m.find({ type: 'Button', text: /^Count lines$/ })).toBeDefined()
 })
 
-test('a call\'s hook text shows flat when the level hides the call', async ($, on) => {
+test('a call\'s hook text is linked to it while the call is drawn, unlinked when the level hides the call', async ($, on) => {
   const m = await mountWith($, on, 'A2', [
     call({ name: 'Read', detail: '/home/u/a.ts', use: 'r1' }),
     { t: T0, turn: 1, kind: 'prompt', name: 'context-mode', type: 'hook_additional_context', origin: 'PreToolUse', detail: '', outcome: '', src: 'hook', bytes: 60, peek: 'PreToolUse:Read hook additional context: tip for reads', use: 'r1' },
   ])
-  expect(await m.find({ type: 'Button', text: /tip for reads/ })).toBe(undefined) // info: folded under Read a.ts
+  expect(await m.find({ type: 'Button', text: /^context-mode context$/ })).toBeDefined()
+  expect((await m.findAll({ type: 'Text', text: '╭' })).length).toBe(1)
   await toLevel(m, 'notice') // the Read is hidden, its hook text is not
   expect(await m.find({ type: 'Button', text: /^Read a\.ts$/ })).toBe(undefined)
-  expect(await m.find({ type: 'Button', text: /^context-mode: tip for reads$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /^context-mode context on PreToolUse$/ })).toBeDefined() // unlinked, it names its event again
+  expect((await m.findAll({ type: 'Text', text: '╭' })).length).toBe(0)
   await toLevel(m, 'info')
 })
 
-test('a hook\'s text reads past the engine\'s framing, its own name and bare tags', async ($, on) => {
+test('a hook\'s row reads by its name and event, never by what it said', async ($, on) => {
   const m = await mountWith($, on, 'H2', [
     hookRow({ name: 'question-mode', origin: 'UserPromptSubmit', detail: '', outcome: 'context x1 ~10 tok', ms: 2000, peek: 'UserPromptSubmit hook success: question-mode: Rule for THIS message' }),
     hookRow({ name: 'context-mode', origin: 'ConfigChange', detail: '', outcome: 'context x1 ~10 tok', ms: 2000, peek: 'SessionStart hook additional context: \n<context_window_protection>\n  <priority_instructions>\n    Every byte a tool returns' }),
   ])
-  expect(await m.find({ type: 'Button', text: /^question-mode: Rule for THIS message$/ })).toBeDefined()
-  expect(await m.find({ type: 'Button', text: /^context-mode: Every byte a tool returns$/ })).toBeDefined()
+  await toLevel(m, 'debug')
+  expect(await m.find({ type: 'Button', text: /^question-mode on UserPromptSubmit$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /^context-mode on ConfigChange$/ })).toBeDefined()
+  expect(await m.find({ text: /Rule for THIS|Every byte/ })).toBe(undefined) // their text stays in the inspector
+  await toLevel(m, 'info')
 })
 
-test('PostToolUse context folds under the call whose hook added it, not the newest of that tool', async ($, on) => {
+test('PostToolUse context goes with the call whose hook added it, not the newest of that tool', async ($, on) => {
   on('tool.call', () => ({ result: 'ok', text: 'ok' }))
   on('classic.PostToolUse', (_$, e: any) => (e.tool_use_id === 'qa' ? { additionalContext: ['tip for a'] } : {}) as any)
   on('prompt.attachment', (_$, e: any) => ({ text: e.text }))
@@ -761,15 +767,13 @@ test('PostToolUse context folds under the call whose hook added it, not the newe
   await $.tool.call({ tool: 'Bash', tool_use_id: 'qc', command: 'ls', description: 'List' } as any)
   await $.prompt.attachment({ type: 'hook_additional_context', text: 'PostToolUse:Read hook additional context: tip for a', origin: { kind: 'hook', event: 'PostToolUse' } } as any)
   const m = await pane($)
-  // the two Reads merge into a lookup fold; each member's inspector lists its call's hooks
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Explore u ×2$/ }))!.key! })
+  // each call's inspector lists its call's hooks
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read a\.ts$/ }))!.key! })
   expect(await m.find({ text: /PostToolUse hook/ })).toBeDefined()
   await m.press({ key: 'back' })
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read b\.ts$/ }))!.key! })
   expect(await m.find({ text: /PostToolUse hook/ })).toBe(undefined)
   await m.press({ key: 'back' })
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Explore u ×2$/ }))!.key! })
 })
 
 test('the first copy of a hook text in the log\'s order is the one that is not `again`', () => {
@@ -787,20 +791,18 @@ test('the first copy of a hook text in the log\'s order is the one that is not `
   expect(later.again).toBe(undefined)
 })
 
-test('back from a hook row inside a closed lookup fold lands on that fold', async ($, on) => {
+test('a hook row steps with its call in the inspector, and back lands on it', async ($, on) => {
   const read = (f: string, use: string) => call({ name: 'Read', detail: `/home/u/${f}.ts`, use })
   const tipOf = (use: string) => hookRow({ name: 'context-mode', detail: 'Read', outcome: 'context x1 ~10 tok', peek: `tip ${use}`, use })
   const m = await mountWith($, on, 'K1', [read('a', 'k1'), tipOf('k1'), read('b', 'k2'), tipOf('k2'), ...steps()], 1, 14)
-  await toLevel(m, 'debug') // the hook rows are in the log, folded under their calls
-  await m.press({ key: 'tprev' }) // the turn's header on top: the fold is in view, the newest rows are not
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Explore u ×2$/ }))!.key! }) // open, then a member's inspector
+  await toLevel(m, 'debug') // the hook rows are in the log, above their calls
+  await m.press({ key: 'tprev' }) // the turn's header on top: the reads are in view, the newest rows are not
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read a\.ts$/ }))!.key! })
-  await m.press({ key: 'next' }) // its hook row, never drawn: its call sits in the fold
+  await m.press({ key: 'prev' }) // its PreToolUse hook, drawn above it
   expect(await m.find({ text: /tip k1/ })).toBeDefined()
   await m.press({ key: 'back' })
-  expect(await m.find({ type: 'Button', text: /^Explore u ×2$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /^context-mode$/ })).toBeDefined()
   expect(await m.find({ text: /^Step 30$/ })).toBe(undefined)
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Explore u ×2$/ }))!.key! })
   await toLevel(m, 'info')
 })
 
@@ -822,17 +824,15 @@ test('a PostToolUse attachment left out of the request still spends its call\'s 
   await $.prompt.attachment({ type: 'hook_additional_context', text: 'PostToolUse:Read hook additional context: dropped', origin: { kind: 'hook', event: 'PostToolUse' } } as any)
   await $.prompt.attachment({ type: 'hook_additional_context', text: 'PostToolUse:Read hook additional context: tip for b', origin: { kind: 'hook', event: 'PostToolUse' } } as any)
   const m = await pane($)
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Explore u ×2$/ }))!.key! })
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read a\.ts$/ }))!.key! })
   expect(await m.find({ text: /added text/ })).toBe(undefined) // a's tip was dropped: its hook ran, no text went to the model
   await m.press({ key: 'back' })
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read b\.ts$/ }))!.key! })
   expect(await m.find({ text: /PostToolUse hook · added text/ })).toBeDefined()
   await m.press({ key: 'back' })
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Explore u ×2$/ }))!.key! })
 })
 
-test('the gap between a call\'s check and its decision is a wait line under the call, not the call\'s time', async ($, on) => {
+test('the gap between a call\'s check and its decision is the call\'s inspector\'s, not its time; a wait on the model\'s message draws no line', async ($, on) => {
   on('tool.check', () => ({ decision: 'ask' }))
   on('telemetry.log', () => ({ value: undefined }))
   on('tool.call', async (_$, e: any) => {
@@ -850,18 +850,17 @@ test('the gap between a call\'s check and its decision is a wait line under the 
   await $.tool.call({ tool: 'Edit', tool_use_id: 'wa', file_path: '/home/u/a.ts' } as any)
   await $.tool.call({ tool: 'Edit', tool_use_id: 'wb', file_path: '/home/u/a.ts' } as any)
   const m = await pane($)
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Edit a\.ts ×2$/ }))!.key! })
-  expect(await m.find({ type: 'Button', text: /^Edit a\.ts$/ })).toBeDefined()
-  await m.press({ key: (await m.findAll({ type: 'Button', text: /^Edit a\.ts$/ }))[0]!.key! })
+  const edits = await m.findAll({ type: 'Button', text: /^Edit a\.ts$/ })
+  expect(edits.length).toBe(2) // a row each: nothing folds
+  await m.press({ key: edits[0]!.key! })
   expect(await m.find({ text: /before it ran, not in took/ })).toBeDefined()
   expect(await m.find({ text: 'ask, then your settings decided' })).toBeDefined() // the collector's decision source
   await m.press({ key: 'back' })
   const rows = (await m.findAll({ type: 'Button' })).map(b => String(b.text))
-  expect(rows.filter(l => /^Waiting for/.test(l))).toEqual(['Waiting for the model to finish its message']) // the second call was decided at once
+  expect(rows.filter(l => /^Waiting for/.test(l))).toEqual([]) // the first waited on the model's message: the model's time, no line
   await m.press({ key: (await m.find({ type: 'Button', text: /^Edit a\.ts$/ }))!.key! })
   expect(await m.find({ text: /before it ran, not in took/ })).toBeDefined()
   await m.press({ key: 'back' })
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Edit a\.ts ×2$/ }))!.key! })
 })
 
 test('auto mode\'s classifier refusing a call is a denial that names it, not a failure', async ($, on) => {
@@ -956,7 +955,7 @@ test('a stream its reader closes early is an interrupted step', async ($, on) =>
   expect(s.tok).toBe(undefined)
 })
 
-test('a request that wrote text is a row; one that only called tools hides at info, so lookups around it still fold', async ($, on) => {
+test('a request that wrote text is a row; one that only called tools hides at info', async ($, on) => {
   const T = Date.now() - 60000
   const step = (t: number, ms: number, step: string, extra: object = {}) => ({ t: T + t, turn: 1, kind: 'step', name: 'claude-opus-5-5', detail: '', outcome: '', status: 'ok', ms, step, stop: 'tool_use', ...extra })
   const m = await mountWith($, on, 'SP', [
@@ -967,7 +966,7 @@ test('a request that wrote text is a row; one that only called tools hides at in
     step(10000, 4200, 'k2', { peek: 'The hooks read the store.\nMore', stop: 'end_turn', server: [['advisor', 2500]], cost: 0.0123, effort: 'high' }),
     { t: T + 15500, turn: 1, kind: 'turn', name: 'turn', detail: '', outcome: '', status: 'ok', ms: 15500 },
   ])
-  expect(await m.find({ type: 'Button', text: /^Explore hooks ×3$/ })).toBeDefined() // the silent requests between the reads hide
+  for (const f of ['a', 'b', 'c']) expect(await m.find({ type: 'Button', text: `Read ${f}.ts` })).toBeDefined() // the silent requests between the reads hide
   expect(await m.find({ text: /Thought: Checking the hooks/ })).toBe(undefined)
   expect(await m.find({ text: /model 10\.4s · other 5\.1s/ })).toBeDefined() // the header's split: the reads take under 0.1s
   expect(await m.find({ type: 'Button', text: /^2 hidden$/ })).toBeDefined()
@@ -975,24 +974,20 @@ test('a request that wrote text is a row; one that only called tools hides at in
   expect(await m.find({ text: 'A turn of the main loop ended' })).toBeDefined()
   expect(await m.find({ text: /^model 10\.4s · other 5\.1s/ })).toBeDefined()
   await m.press({ key: 'back' })
-  await m.press({ key: (await m.find({ type: 'Button', text: /^The hooks read the store\.$/ }))!.key! }) // the advisor's line is in its fold
-  expect(await m.find({ type: 'Button', text: /^Advisor$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /^Advisor$/ })).toBeDefined() // the advisor's call: a row of its own below the request
   expect(await m.find({ text: '2.5s' })).toBeDefined()
-  await m.press({ key: (await m.find({ type: 'Button', text: /^request & reply$/ }))!.key! })
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Reply$/ }))!.key! })
   expect(await m.find({ text: /A request to Opus 5\.5 by the main loop, which ended the turn/ })).toBeDefined()
   expect(await m.find({ text: 'claude-opus-5-5 · effort high' })).toBeDefined()
   expect(await m.find({ text: '$0.0123' })).toBeDefined()
   expect(await m.find({ text: 'The hooks read the store.\nMore' })).toBeDefined()
   await m.press({ key: 'back' })
-  await m.press({ key: (await m.find({ type: 'Button', text: /^The hooks read the store\.$/ }))!.key! }) // closed again
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Explore hooks ×3$/ }))!.key! })
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read a\.ts$/ }))!.key! }) // a call's inspector names the request before it
   expect(await m.find({ text: 'by Opus 5.5 in a 4.2s request: Checking the hooks' })).toBeDefined()
   await m.press({ key: 'back' })
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Explore hooks ×3$/ }))!.key! })
   await toLevel(m, 'debug') // every request a row: what it thought, else the calls it made
-  expect(await m.find({ type: 'Button', text: /^Thought: Checking the hooks$/ })).toBeDefined()
-  expect(await m.find({ type: 'Button', text: /^Calls Read$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /^Thought$/ })).toBeDefined() // what it thought only in the inspector
+  expect(await m.find({ type: 'Button', text: /^Model API call$/ })).toBeDefined()
   await toLevel(m, 'info')
 })
 
@@ -1020,7 +1015,7 @@ test('what streams or runs right now is a ● line below the rows, gone once it 
   thought()
   await it.next() // it writes: its row will show, so its line does
   await m.redraw()
-  expect(await m.find({ text: /^Running the tests$/ })).toBeDefined()
+  expect(await m.find({ text: /^Writing$/ })).toBeDefined() // generic: what it writes is the row's inspector, once it ends
   expect((await m.findAll({ type: 'Text', text: /^● \d+\.\ds$/ })).length).toBe(2)
   wrote(); ran()
   while (!(await it.next()).done) {}
@@ -1105,7 +1100,7 @@ test('an event row reads what happened, a failure red; the engine\'s frequent re
   expect(await m.find({ type: 'Text', text: '37.6s' })).toBeDefined()
   expect(await m.find({ type: 'Button', text: /^Notification/ })).toBe(undefined) // debug
   expect(await m.find({ type: 'Button', text: /^Prompt suggestion$/ })).toBe(undefined) // debug: one after most turns
-  await m.press({ key: (await m.find({ type: 'Button', text: /^auto-title: Fix the agent log$/ }))!.key! })
+  await m.press({ key: (await m.find({ type: 'Button', text: /^auto-title$/ }))!.key! })
   expect(await m.find({ text: /A model call the auto-title plugin made/ })).toBeDefined()
   expect(await m.find({ text: '10 in (0 cached, 0 written) · 5 out' })).toBeDefined()
   await m.press({ key: 'back' })
@@ -1191,6 +1186,8 @@ test('a call reaches outside the project root where its file, its search path, i
   expect(outsideOf('Bash', { cmd: 'python3 /tmp/probe/x.py 2>/dev/null' }, R, R, H)).toBe(undefined) // scratch and system paths
   expect(outsideOf('Bash', { cmd: 'cat src/a.ts /home/u/repo/b.ts' }, R, R, H)).toBe(undefined)
   expect(outsideOf('Bash', { cmd: 'curl https://example.com/home/u/x' }, R, R, H)).toBe(undefined) // a URL's path is no file
+  for (const p of ['~/.claude', '~/.claude/plans', '/tmp', '/tmp/x', '/var/tmp/x', '/private/tmp/x']) expect(routine(p)).toBe(true)
+  for (const p of ['~/.claude-old', '~/dotagents', '/home/u/tmp', '/tmpfoo']) expect(routine(p)).toBe(false)
   expect(outsideOf('WebFetch', {}, R, '/home/u/other', H)).toBe(undefined) // no place
 })
 
@@ -1212,8 +1209,16 @@ test('a row outside the root reads ↗ where; the outside view keeps it and the 
     call({ name: 'Read', detail: '/home/u/dotagents/RULES.md', out: '~/dotagents' }),
     call({ t: T0 + 1, detail: 'Run tests' }),
     { t: T0 + 2, turn: 1, kind: 'event', name: 'directory added', detail: '~/other', outcome: 'slash_command' },
+    call({ t: T0 + 3, detail: 'Run the probe', out: '/tmp/probe' }),
+    call({ t: T0 + 4, name: 'Read', detail: '/home/u/work/clients/acme/projects/dv/a.ts', out: '~/work/clients/acme/projects/dv' }),
+    call({ t: T0 + 5, name: 'Read', detail: '/tmp/probe/x.log', out: '/tmp/probe' }),
   ])
-  expect(await m.find({ type: 'Button', text: 'Read RULES.md ↗ dotagents' })).toBeDefined() // its last folder; the inspector says where in full
+  expect(await m.find({ type: 'Button', text: 'Read RULES.md' })).toBeDefined()
+  // the place after the action, its ~ path: amber for another project, dim for scratch; a long one cut from the left
+  expect((await m.find({ type: 'Text', text: ' ↗ ~/dotagents' }))?.props).toMatchObject({ color: 'yellow' })
+  expect((await m.find({ type: 'Text', text: ' ↗ /tmp/probe' }))?.props).toMatchObject({ dimColor: true })
+  expect((await m.find({ type: 'Text', text: ' ↗ …/acme/projects/dv' }))?.props).toMatchObject({ color: 'yellow' })
+  expect(await m.find({ type: 'Text', text: '↗ 2 outside cwd  ' })).toBeDefined() // the setup row counts the two calls into other projects, not /tmp
   await m.press({ key: 'voutside' })
   expect(await m.find({ type: 'Button', text: /^Run tests/ })).toBe(undefined)
   expect(await m.find({ type: 'Button', text: /^Directory added: ~\/other/ })).toBeDefined()
@@ -1258,4 +1263,105 @@ test('a refusal whose decision is recorded after its call ended still reads deni
   expect(row).toMatchObject({ status: 'denied', outcome: 'deny', via: 'config', peek: 'Permission to use Bash has been denied.' })
   expect(row.insight).toBe(undefined)
   expect(rows.find(x => x.use === 'ld2')).toMatchObject({ status: 'denied', peek: 'ls in \'/home/u/x\' was blocked. For security, Claude Code may only list files in the allowed working directories for this session' })
+})
+
+test('a row of several hooks draws one row per hook, by name', async ($, on) => {
+  const m = await mountWith($, on, 'HK', [
+    { t: T0, turn: 1, kind: 'hook', name: 'guard, test-gate, context-mode', origin: 'PreToolUse', detail: 'Bash', outcome: 'ok', status: 'ok', ms: 100 },
+  ])
+  await toLevel(m, 'debug') // a fast hook that changed nothing ranks debug
+  for (const n of ['guard', 'test-gate', 'context-mode']) expect(await m.find({ type: 'Button', text: `${n} on PreToolUse Bash` })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /hooks on/ })).toBe(undefined)
+  await toLevel(m, 'info')
+})
+
+test('each hook of a row of several marks what it did on its own row: + the one that added context, · the silent ones, ✗ one that broke', async ($, on) => {
+  const m = await mountWith($, on, 'HM', [
+    { t: T0, turn: 1, kind: 'hook', name: 'context-mode, guard, test-gate, install-cooldown', origin: 'PreToolUse', detail: 'Bash', outcome: 'context x1 0.4 KB', ms: 100, peek: 'When you intend to PROCESS the output',
+      each: { guard: 20, 'test-gate': 100, 'install-cooldown': 30 }, spoke: ['context-mode'], errs: ['install-cooldown'] },
+  ])
+  await toLevel(m, 'debug')
+  expect(await m.find({ text: /^\+ —$/ })).toBeDefined() // context-mode: a plugin hook, untimed
+  expect(await m.find({ text: /^· 0\.0s$/ })).toBeDefined() // guard
+  expect(await m.find({ text: /^· 0\.1s$/ })).toBeDefined() // test-gate
+  expect(await m.find({ text: /^✗ 0\.0s$/ })).toBeDefined() // install-cooldown
+  await toLevel(m, 'info')
+})
+
+test('a hook hook-timer wraps shows its own time on its row; one it does not wrap shows none', async ($, on) => {
+  const m = await mountWith($, on, 'HT', [
+    { t: T0, turn: 1, kind: 'hook', name: 'guard, test-gate, context-mode', origin: 'PreToolUse', detail: 'Bash', outcome: 'ok', status: 'ok', ms: 900, each: { guard: 300, 'test-gate': 800 } },
+  ])
+  await toLevel(m, 'debug')
+  expect(await m.find({ text: /^· 0\.3s$/ })).toBeDefined()
+  expect(await m.find({ text: /^· 0\.8s$/ })).toBeDefined()
+  expect(await m.find({ text: /^· —$/ })).toBeDefined() // context-mode: a plugin hook, untimed
+  await toLevel(m, 'info')
+})
+
+test('a hook of a row of several opens alone: its own text, time and exit; prev and next step through its neighbours', async ($, on) => {
+  const m = await mountWith($, on, 'HI', [
+    { t: T0, turn: 1, kind: 'hook', name: 'context-mode, test-gate, guard', origin: 'PreToolUse', detail: 'Bash', outcome: 'context x2 0.1 KB', ms: 100, peek: 'use ctx_execute\nrun the tests first',
+      each: { 'test-gate': 80, guard: 20 }, spoke: ['context-mode', 'test-gate'], says: { 'context-mode': 'use ctx_execute', 'test-gate': 'run the tests first' }, exits: { guard: 3 }, errs: ['guard'] },
+  ])
+  await toLevel(m, 'debug')
+  await m.press({ key: (await m.find({ type: 'Button', text: 'test-gate on PreToolUse Bash' }))!.key! })
+  expect(await m.find({ text: 'test-gate ran on PreToolUse and added context for the model' })).toBeDefined()
+  expect(await m.find({ text: 'run the tests first' })).toBeDefined()
+  expect(await m.find({ text: /use ctx_execute/ })).toBe(undefined) // context-mode's, not this hook's
+  expect(await m.find({ text: '0.1s' })).toBeDefined() // its own 80 ms, not the chain's
+  await m.press({ key: 'prev' })
+  expect(await m.find({ text: /^context-mode ran on PreToolUse/ })).toBeDefined()
+  expect(await m.find({ key: 'prev' })).toBe(undefined) // the first row
+  await m.press({ key: 'next' }); await m.press({ key: 'next' })
+  expect(await m.find({ text: 'guard ran on PreToolUse and failed with exit 3' })).toBeDefined()
+  expect(await m.find({ text: /run the tests first/ })).toBe(undefined)
+  expect(await m.find({ key: 'next' })).toBe(undefined) // the last row
+  await m.press({ key: 'back' })
+  expect(await m.find({ type: 'Button', text: 'guard on PreToolUse Bash' })).toBeDefined()
+  await toLevel(m, 'info')
+})
+
+test('hook-timer lines count for the event, call and span they ran in', () => {
+  const l = (o: object) => JSON.stringify({ event: 'PreToolUse', use: 'u1', t0: 1000, t1: 1050, say: null, ...o })
+  const text = [
+    l({ name: 'old', t0: 100, t1: 200 }), // ended before the chain began: reading stops there
+    l({ name: 'guard' }), l({ name: 'other-call', use: 'u2' }), l({ name: 'post', event: 'PostToolUse' }),
+    'not json', l({ name: 'test-gate', t0: 1010, t1: 1210, say: 'test-gate: run the tests first' }), '',
+  ].join('\n')
+  const keep = (r: any) => r.event === 'PreToolUse' && r.use === 'u1'
+  expect(pickRuns(text, keep, 1000)).toEqual([{ name: 'guard', ms: 50, say: undefined }, { name: 'test-gate', ms: 200, say: 'test-gate: run the tests first' }])
+  expect(pickRuns(text, r => r.event === 'Stop', 1000)).toEqual([])
+})
+
+test('a wrapped hook is named by its run: text by the run that said it, silence by the runs; unwrapped hooks still by the settings', () => {
+  const T = '$HOME/.claude/hooks/hook-timer '
+  const cfg = { PreToolUse: [
+    { matcher: 'Bash', name: 'guard', cmd: `${T}$HOME/.claude/hooks/security/guard.sh` },
+    { matcher: 'Bash', name: 'test-gate', cmd: `${T}$HOME/.claude/hooks/quality/test-gate.sh` },
+    { matcher: 'Edit', name: 'contract-guard', cmd: `${T}$HOME/.claude/hooks/quality/contract-guard.sh` },
+    { matcher: '', name: 'context-mode', plugin: true, cmd: 'node pretooluse.mjs' },
+  ] }
+  const runs = [{ name: 'guard', ms: 30 }, { name: 'test-gate', ms: 26, say: 'run the tests first' }]
+  expect(runNames(cfg, 'PreToolUse', 'Bash', runs, [])).toBe('guard, test-gate, context-mode') // the runs, then the unwrapped that fit
+  expect(runNames(cfg, 'PreToolUse', 'Bash', runs, ['run the tests first, then commit'])).toBe('test-gate') // no name in its text needed
+  expect(runNames(cfg, 'PreToolUse', 'Bash', runs, ['context-mode: use ctx_execute'])).toBe('context-mode') // no run said it: by its text
+  expect(withSilent(cfg, 'PreToolUse', 'Bash', runs, 'context-mode')).toBe('context-mode, guard, test-gate') // context keeps the hooks that said nothing
+  expect(speaker(runs, 'nothing like it')).toBe(undefined)
+})
+
+test('each hook outcome has its mark: + context, · nothing, ■ a stop (amber, not ✗), ⊘ a block', async ($, on) => {
+  const m = await mountWith($, on, 'HO', [
+    hookRow({ name: 'ctx', origin: 'UserPromptSubmit', detail: '', outcome: 'context x1 ~5 tok', ms: 100 }),
+    hookRow({ name: 'quiet', origin: 'Notification', detail: '', ms: 200 }),
+    hookRow({ name: 'halt', origin: 'Stop', detail: '', outcome: 'stop', ms: 300 }),
+    hookRow({ name: 'guard', outcome: 'block', ms: 400 }),
+  ])
+  await toLevel(m, 'debug')
+  expect(await m.find({ type: 'Text', text: '+ 0.1s' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '· 0.2s' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '■ 0.3s' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '⊘ 0.4s' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: /^✗/ })).toBe(undefined)
+  await toLevel(m, 'info')
 })
