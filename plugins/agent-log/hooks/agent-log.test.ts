@@ -121,13 +121,10 @@ test('a spawned agent\'s rows fold under its Agent row, which shows the agent\'s
   expect(folds.length).toBe(2) // A and B; C's turn end opens no fold
   await m.press({ key: folds[0]!.key! })
   expect(await m.find({ text: /List files A/ })).toBeDefined()
-  expect(await m.find({ type: 'Button', text: /^input & result$/ })).toBeDefined() // A has not answered yet
-  const b = await m.find({ type: 'Button', text: /^general-purpose: probe B$/ })
-  await m.press({ key: b!.key! }) // a row with ▸ opens its fold, pressed anywhere
+  expect(await m.find({ type: 'Button', text: /^input & result$|^reply: / })).toBe(undefined) // no closing row: the Agent row's inspector holds both
+  await m.press({ key: folds[1]!.key! }) // only ▸ opens a fold
   expect(await m.find({ text: /List files B/ })).toBeDefined()
-  const labels = (await m.findAll({ type: 'Button' })).map(l => String(l.text))
-  expect(labels.findIndex(l => /^reply: B done$/.test(l))).toBeGreaterThan(labels.findIndex(l => /^List files B$/.test(l))) // the reply came last
-  await m.press({ key: (await m.find({ type: 'Button', text: /^reply: B done$/ }))!.key! }) // its inspector: the agent's run, cost and answer
+  await m.press({ key: (await m.find({ type: 'Button', text: /^general-purpose: probe B$/ }))!.key! }) // the row: its inspector, the agent's run, cost and answer
   expect(await m.find({ text: '80.0s' })).toBeDefined()
   expect(await m.find({ text: '1.0k tok in · 10 tok out' })).toBeDefined()
   expect(await m.find({ text: 'B done' })).toBeDefined()
@@ -479,7 +476,7 @@ test('a fold opens where it was pressed, its rows on tree guides, each opening i
   expect(await lineOf(m, row)).toBe(at)
   expect(await m.find({ text: /^Step 23$/ })).toBeDefined()
   expect(await m.find({ text: /^Read c\.ts$/ })).toBeDefined()
-  expect((await m.findAll({ type: 'Text', text: /^├ $/ })).length).toBe(3) // the agent's reads; the Agent row's own line last, on └
+  expect((await m.findAll({ type: 'Text', text: /^├ $/ })).length).toBe(2) // the agent's reads, the last on └
   expect((await m.findAll({ type: 'Text', text: /^└ $/ })).length).toBe(1)
   expect(await m.find({ text: /^Step 30$/ })).toBe(undefined)
   expect(await m.find({ key: 'jump' })).toBeDefined()
@@ -1218,7 +1215,7 @@ test('a row outside the root reads ↗ where; the outside view keeps it and the 
   expect((await m.find({ type: 'Text', text: ' ↗ ~/dotagents' }))?.props).toMatchObject({ color: 'yellow' })
   expect((await m.find({ type: 'Text', text: ' ↗ /tmp/probe' }))?.props).toMatchObject({ dimColor: true })
   expect((await m.find({ type: 'Text', text: ' ↗ …/acme/projects/dv' }))?.props).toMatchObject({ color: 'yellow' })
-  expect(await m.find({ type: 'Text', text: '↗ 2 outside cwd  ' })).toBeDefined() // the setup row counts the two calls into other projects, not /tmp
+  expect(await m.find({ type: 'Text', text: '↗ 2 outside root  ' })).toBeDefined() // the setup row counts the two calls into other projects, not /tmp
   await m.press({ key: 'voutside' })
   expect(await m.find({ type: 'Button', text: /^Run tests/ })).toBe(undefined)
   expect(await m.find({ type: 'Button', text: /^Directory added: ~\/other/ })).toBeDefined()

@@ -1371,7 +1371,8 @@ export const register: Register = (on, options) => {
           {x.src === 'hook' && x.origin && kv('trigger', [x.origin, x.detail].filter(Boolean).join(' · '))}
           {/* a hook's input: the call it ran on, as its row stores it; its command as your settings or the plugin's hooks.json write it */}
           {x.kind === 'hook' && x.use && (c => c && kv('input', `${c.name}: ${c.cmd ?? c.detail}`))(entries.find(y => y.kind === 'tool' && y.use === x.use))}
-          {x.kind === 'hook' && (cs => cs.length > 0 && kv('command', cs.join('\n')))([...new Set((hookCfg?.[x.origin ?? ''] ?? []).filter(h => h.name === x.name && fits(h.matcher, x.detail || undefined)).map(h => h.cmd ?? ''))].filter(Boolean))}          {x.cmd ? kv('command', x.cmd) : x.detail && x.src !== 'hook' && kv(x.name === 'Bash' ? 'command' : 'input', x.detail)}
+          {x.kind === 'hook' && (cs => cs.length > 0 && kv('command', cs.join('\n')))([...new Set((hookCfg?.[x.origin ?? ''] ?? []).filter(h => h.name === x.name && fits(h.matcher, x.detail || undefined)).map(h => h.cmd ?? ''))].filter(Boolean))}
+          {x.cmd ? kv('command', x.cmd) : x.detail && x.src !== 'hook' && kv(x.name === 'Bash' ? 'command' : 'input', x.detail)}
           {x.cmd && kv('what', x.detail)}
           {x.out && kv('where', `${x.out}, outside the session's project root`)}
           {x.exit != null && kv('exit', String(x.exit))}
@@ -1609,10 +1610,12 @@ export const register: Register = (on, options) => {
     const rowAt = (k: string) => rows.findIndex(r => r.props?.key === k)
     const spans = new Map<string, number>() // a group's drawn rows, by its key: how far an opened fold runs, for the window to show it
     const keyOf = (g: Group) => `g${idOf(g.xs[0])}` // a group's own row; its entry's id keys its fold in expanded
-    // a model request's row names its model only when it is not main's (a subagent on Haiku, the engine's own on another): the
-    // tool column that named it is gone, and the same model on every request is noise
-    const actOf = (y: Entry) => { const id = y.kind === 'step' ? y.name : y.kind === 'side' ? y.detail : undefined
-      return id && setup.model && modelName(id) !== modelName(setup.model) ? `${modelName(id)} · ${action(y)}` : action(y) }
+    // a model request's row names its model only when it is not main's at the time (a subagent on Haiku, the engine's own on
+    // another): the tool column that named it is gone, and the same model on every request is noise. Main's own requests never:
+    // the `Model: … → …` row marks a switch. Main's model then: its last request at or before this one, else the setup's
+    const actOf = (y: Entry) => { const id = (y.kind === 'step' && y.agent) ? y.name : y.kind === 'side' ? y.detail : undefined
+      const main = id ? entries.findLast(z => z.kind === 'step' && !z.agent && z.t <= y.t)?.name ?? setup.model : undefined
+      return id && main && modelName(id) !== modelName(main) ? `${modelName(id)} · ${action(y)}` : action(y) }
     // who refused a call, after its action (`Clean up ⊘ guard`): the hook that blocked it, else the rule, the classifier or you
     const byOf = (y: Entry) => {
       if (y.kind !== 'tool' || !REFUSED.has(stat(y))) return ''
@@ -1643,22 +1646,20 @@ export const register: Register = (on, options) => {
       const x = g.xs[0], k = keyOf(g)
       let p: Parts
       if (g.kind === 'agent') {
-        const body = under.get(x) ?? [], nested = groupsOf(body), reply = first(runs(x.child).at(-1)?.peek)
+        const body = under.get(x) ?? [], nested = groupsOf(body)
         const many = new Set(body.map(y => y.agent)).size > 1 // a grandchild shares the fold: rows name their loop
         p = { target: x, members: [x, ...body], nested, // a closed fold's rows: back lands on the fold; drawn ones claim their own
           head: (rail, who, press, disc) => line({ k, act: action(x), press, st: ran(x), who, disc, rail, link: g.link, away: awayOf(body) }),
-          // the Agent row's inspector last, where the reply came: the row itself opens the fold
-          parts: body.length ? [
-            ...nested.map((h, j) => (rail: string, rest: string) => drawGroup(h, rail, rest, many && h.xs[0].agent ? whoOf(h.xs[0].agent) : '')),
-            rail => [line({ k: `${k}i`, act: reply ? `reply: ${reply}` : 'input & result', press: () => show(x), rail })],
-          ] : [] }
+          // the agent's input and reply are the Agent row's inspector, which the row itself opens; its ▸ opens the fold
+          parts: nested.map(h => (rail: string, rest: string) => drawGroup(h, rail, rest, many && h.xs[0].agent ? whoOf(h.xs[0].agent) : '')) }
       } else {
         // a call's wait above it, where it happened, and a request's calls the API ran itself (the advisor) below it: rows of
         // their own, on the row's link. What broke stays in its inspector
         const server = (x.server ?? []).map(([sn, ms], j) => (rail: string) => line({ k: `${k}s${j}`, act: cap(sn.replace(/_/g, ' ')), press: () => show(x), st: [secs(ms ?? undefined)], rail, link: g.server?.[j] }))
         // a hook's row on its call's bracket names just the hook: the call beside it names the tool, the side names the event.
-        // Dim unless its cell has a colour: a hook that blocked or broke stays as loud as the call
-        const hooked = x.kind !== 'tool' && !!g.link, c = cell(x)
+        // Dim unless its cell has a colour: a hook that blocked or broke stays as loud as the call. A row with no use is no
+        // call's hook: a model request sits on a bracket only for its server rows (the advisor), and keeps its own name
+        const hooked = x.kind !== 'tool' && !!x.use && !!g.link, c = cell(x)
         p = { target: x, members: [x], nested: [], parts: [],
           head: (rail, who, press) => [
             ...(waits(x) ? [waitLine(x, rail, g.wait)] : []),
@@ -1670,8 +1671,8 @@ export const register: Register = (on, options) => {
       return p
     }
     // One group's rows: its own on the rail `own`; an open fold's below it, each part on `rest` and a twig, `├ ` or the last's `└ `,
-    // a fold inside continuing the line (`│ `) while siblings follow it. Pressed, a row with ▸ opens its fold, any other the
-    // inspector
+    // a fold inside continuing the line (`│ `) while siblings follow it. Pressed, a row opens its inspector; only its ▸ opens
+    // its fold
     const drawGroup = (g: Group, own: string, rest: string, who: string): any[] => {
       const { head, target, members, parts } = partsOf(g), id = idOf(g.xs[0]), k = keyOf(g)
       for (const y of members) where.set(y, k)
@@ -1682,7 +1683,7 @@ export const register: Register = (on, options) => {
         if (at >= 0) anchor = { k, off: at - win }
         $.ui.invalidate('ui.render')
       }] : undefined
-      const out = [head(own, who, disc?.[1] ?? (() => show(target)), disc)].flat()
+      const out = [head(own, who, () => show(target), disc)].flat()
       if (open && disc) parts.forEach((p, j) => out.push(...p(rest + (j < parts.length - 1 ? '├ ' : '└ '), rest + (j < parts.length - 1 ? '│ ' : '  '))))
       spans.set(k, out.length)
       return out
@@ -1794,7 +1795,9 @@ export const register: Register = (on, options) => {
       const use = (ys: Entry[]) => {
         const sum = (f: (x: Entry) => number) => ys.reduce((a, x) => a + f(x), 0)
         const cost = ys.some(x => x.cost != null) ? ` · $${sum(x => x.cost ?? 0).toFixed(2)}` : ''
-        return `${ys.length} request${ys.length === 1 ? '' : 's'} · ${secs(sum(x => x.ms ?? 0))} · ${num(sum(x => x.tok ? x.tok[0]! + x.tok[1]! + x.tok[2]! : 0))} in · ${num(sum(x => x.tok?.[3] ?? 0))} out${cost}`
+        // no row with tokens (requests from before they were stored, a plugin's fork): unknown, not 0
+        const io = ys.some(x => x.tok) ? `${num(sum(x => x.tok ? x.tok[0]! + x.tok[1]! + x.tok[2]! : 0))} in · ${num(sum(x => x.tok?.[3] ?? 0))} out` : '— tokens'
+        return `${ys.length} request${ys.length === 1 ? '' : 's'} · ${secs(sum(x => x.ms ?? 0))} · ${io}${cost}`
       }
       const by = (ys: Entry[]) => { const m = new Map<string, Entry[]>(); for (const y of ys) m.set(y.name, [...m.get(y.name) ?? [], y]); return [...m] }
       const bad = xs(x => (x.kind === 'hook' && stat(x) === 'failed') || (x.kind === 'event' && BAD.has(stat(x))))
@@ -1848,7 +1851,7 @@ export const register: Register = (on, options) => {
       ...controls,
       <Box key="setuprow" flexDirection="row" overflow="hidden">
         {problems.length ? <Box flexShrink={0}><Text color="red">{`✗ ${problems.join(' · ')}  `}</Text></Box> : null}
-        {elsewhere ? <Box flexShrink={0}><Text color="yellow">{`↗ ${elsewhere} outside cwd  `}</Text></Box> : null}
+        {elsewhere ? <Box flexShrink={0}><Text color="yellow">{`↗ ${elsewhere} outside root  `}</Text></Box> : null}
         <Box flexShrink={1} minWidth={0} overflow="hidden"><Button key="fsetup" label={setupText} hotkey="s" plain dimColor onPress={openSetup} /></Box>
       </Box>,
       // the agent tree's root, only once there is a tree or a filter to clear: a session without subagents has nothing to pick

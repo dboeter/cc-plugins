@@ -111,6 +111,9 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   const m = await mountAt($, on, 'RV1', 100, 60)
   const all = await frame(m, 100, 'default: all view, info level')
   expect(all.some(l => /Run the tests/.test(l))).toBe(true)
+  expect(all.some(l => /\*Reply/.test(l))).toBe(true) // main's request on its advisor's bracket is no hook: bright
+  expect(all.some(l => /Sonnet 5\.5 · /.test(l))).toBe(false) // main's requests name no model: the switch row says it
+  expect(all.some(l => /↗ 1 outside root/.test(l))).toBe(true)
   await agentlog($, 'level debug'); await m.redraw()
   const debug = await frame(m, 100, 'debug level')
   expect(debug.some(l => /install-check/.test(l))).toBe(true) // a fast hook that changed nothing ranks debug
@@ -118,7 +121,11 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   await frame(m, 100, 'notice level')
   await agentlog($, 'level info'); await m.redraw()
   const fold = (await m.findAll({ type: 'Button', text: /^▸$/ }))[0]
-  if (fold) { await m.press({ key: fold.key! }); await frame(m, 100, 'Agent fold open'); await m.press({ key: fold.key! }) }
+  await m.press({ key: fold!.key! })
+  const open = await frame(m, 100, 'Agent fold open')
+  expect(open.some(l => /Haiku 5\.5 · /.test(l))).toBe(true) // a subagent on another model than main's at the time
+  expect(open.some(l => /input & result|reply: /.test(l))).toBe(false) // the Agent row's inspector holds them
+  await m.press({ key: fold!.key! })
   await m.press({ key: 'vharness' }); await frame(m, 100, 'harness view'); await m.press({ key: 'vharness' })
   await m.press({ key: (await m.find({ type: 'Button', text: /^Run the tests/ }))!.key! }); await frame(m, 100, 'inspector: failed Bash'); await m.press({ key: 'back' })
   await m.press({ key: 'th1' }); await frame(m, 100, 'inspector: turn #1'); await m.press({ key: 'back' })
