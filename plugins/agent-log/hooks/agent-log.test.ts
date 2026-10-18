@@ -628,7 +628,7 @@ test('a call\'s row keeps its own time; each of its hooks times its own row', as
   ])
   await toLevel($, m, 'debug')
   expect(await m.find({ text: /^5\.5s$/ })).toBeDefined()
-  expect((await m.findAll({ type: 'Text', text: /^· 100ms$/ })).length).toBe(2)
+  expect((await m.findAll({ type: 'Text', text: /^· 0\.1s$/ })).length).toBe(2)
   await toLevel($, m, 'info')
 })
 
@@ -663,7 +663,7 @@ test('a hook\'s block marks the call it refused with one ⊘; the hook\'s own ro
     call({ detail: 'Clean up', cmd: 'rm -rf x', outcome: 'error', status: 'denied', peek: GUARD, use: 'u1' }),
   ])
   expect((await m.findAll({ type: 'Text', text: /^⊘/ })).length).toBe(1) // the call's: refused, not broke: ⊘, not ✗
-  expect((await m.find({ type: 'Text', text: '50ms' }))?.props).toMatchObject({ color: 'cyan' }) // the hook's time, in the refusal's colour
+  expect((await m.find({ type: 'Text', text: '<0.1s' }))?.props).toMatchObject({ color: 'cyan' }) // the hook's time, in the refusal's colour
   expect(await m.find({ type: 'Text', text: /^✗/ })).toBe(undefined)
   expect(await m.find({ type: 'Button', text: /^Clean up$/ })).toBeDefined() // the hook on its bracket names the refuser
   expect((await m.find({ type: 'Button', text: /^guard$/ }))?.props.dimColor).toBeFalsy() // by name, bright; its reason in the inspector
@@ -684,7 +684,7 @@ test('a PreToolUse block marks its call denied', async ($, on) => {
 
 test('a block after the fact is feedback: ↩, not ✗', async ($, on) => {
   const m = await mountWith($, on, 'E1', [hookRow({ name: 'lint-feedback', origin: 'PostToolUse', detail: 'Edit', outcome: 'block', ms: 300, peek: 'x.py:3:1: F821 undefined name' })])
-  expect(await m.find({ type: 'Text', text: '↩ 300ms' })).toBeDefined() // ranked notice: shown at info
+  expect(await m.find({ type: 'Text', text: '↩ 0.3s' })).toBeDefined() // ranked notice: shown at info
   expect(await m.find({ type: 'Text', text: /^✗/ })).toBe(undefined)
 })
 
@@ -1074,12 +1074,12 @@ test('what streams or runs right now is a ● line below the rows, gone once it 
   // no text yet: the request may end as a debug row, hidden at info, so its line would flash and vanish
   expect(await m.find({ text: /^Thinking/ })).toBe(undefined)
   expect(await m.find({ text: /^Run tests$/ })).toBeDefined()
-  expect((await m.findAll({ type: 'Text', text: /^● \d+ms$/ })).length).toBe(1)
+  expect((await m.findAll({ type: 'Text', text: /^● (<0\.1|\d+\.\d)s$/ })).length).toBe(1)
   thought()
   await it.next() // it writes: its row will show, so its line does
   await m.redraw()
   expect(await m.find({ text: /^Writing$/ })).toBeDefined() // generic: what it writes is the row's inspector, once it ends
-  expect((await m.findAll({ type: 'Text', text: /^● \d+ms$/ })).length).toBe(2)
+  expect((await m.findAll({ type: 'Text', text: /^● (<0\.1|\d+\.\d)s$/ })).length).toBe(2)
   wrote(); ran()
   while (!(await it.next()).done) {}
   await call
@@ -1345,9 +1345,9 @@ test('each hook of a row of several marks what it did on its own row: + the one 
   ])
   await toLevel($, m, 'debug')
   expect(await m.find({ text: /^\+ —$/ })).toBeDefined() // context-mode: a plugin hook, untimed
-  expect(await m.find({ text: /^· 20ms$/ })).toBeDefined() // guard
-  expect(await m.find({ text: /^· 100ms$/ })).toBeDefined() // test-gate
-  expect(await m.find({ text: /^✗ 30ms$/ })).toBeDefined() // install-cooldown
+  expect(await m.find({ text: /^· <0\.1s$/ })).toBeDefined() // guard
+  expect(await m.find({ text: /^· 0\.1s$/ })).toBeDefined() // test-gate
+  expect(await m.find({ text: /^✗ <0\.1s$/ })).toBeDefined() // install-cooldown
   await toLevel($, m, 'info')
 })
 
@@ -1356,8 +1356,8 @@ test('a hook hook-timer wraps shows its own time on its row; one it does not wra
     { t: T0, turn: 1, kind: 'hook', name: 'guard, test-gate, context-mode', origin: 'PreToolUse', detail: 'Bash', outcome: 'ok', status: 'ok', ms: 900, each: { guard: 300, 'test-gate': 800 } },
   ])
   await toLevel($, m, 'debug')
-  expect(await m.find({ text: /^· 300ms$/ })).toBeDefined()
-  expect(await m.find({ text: /^· 800ms$/ })).toBeDefined()
+  expect(await m.find({ text: /^· 0\.3s$/ })).toBeDefined()
+  expect(await m.find({ text: /^· 0\.8s$/ })).toBeDefined()
   expect(await m.find({ text: /^· —$/ })).toBeDefined() // context-mode: a plugin hook, untimed
   await toLevel($, m, 'info')
 })
@@ -1421,10 +1421,10 @@ test('each hook outcome has its mark: + context, · nothing, ■ a stop (yellow,
     hookRow({ name: 'guard', outcome: 'block', ms: 400 }),
   ])
   await toLevel($, m, 'debug')
-  expect(await m.find({ type: 'Text', text: '+ 100ms' })).toBeDefined()
-  expect(await m.find({ type: 'Text', text: '· 200ms' })).toBeDefined()
-  expect(await m.find({ type: 'Text', text: '■ 300ms' })).toBeDefined()
-  expect(await m.find({ type: 'Text', text: '⊘ 400ms' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '+ 0.1s' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '· 0.2s' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '■ 0.3s' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '⊘ 0.4s' })).toBeDefined()
   expect(await m.find({ type: 'Text', text: /^✗/ })).toBe(undefined)
   await toLevel($, m, 'info')
 })

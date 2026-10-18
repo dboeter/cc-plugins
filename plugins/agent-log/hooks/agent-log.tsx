@@ -312,10 +312,12 @@ const cell = (x: Entry, ms = x.ms): [string, string?] => {
     : x.kind === 'hook' ? (x.outcome.startsWith('context') ? [`+ ${time ?? '—'}`] : [`· ${time ?? '—'}`])
     : [time ?? (x.kind === 'tool' ? '—' : '')]
 }
-// a time in the unit that reads it best: `40ms` under a second, `18.4s` under a minute, then `ago`'s `2m05s`, `1h05m`. At most 6
-// characters, so a flag and the time fit the row's cell (END). Unknown is —, never a guess. The cut-offs round first: 999.6 ms
-// reads `1.0s`, not `1000ms`
-const secs = (ms?: number) => ms == null ? '—' : ms < 999.5 ? `${Math.round(ms)}ms` : ms < 59_950 ? `${(ms / 1000).toFixed(1)}s` : ago(Math.max(ms, 60_000))
+// a row's time, in seconds so a column reads in one unit: `<0.1s` under 100 ms (never `0.0s`), `18.4s` under a minute, then
+// `ago`'s `2m05s`, `1h05m`. At most 6 characters, so a flag and the time fit the row's cell (END). Unknown is —, never a guess.
+// The minute cut-off rounds first: 59.96 s reads `1m00s`, not `60.0s`
+const secs = (ms?: number) => ms == null ? '—' : ms < 100 ? '<0.1s' : ms < 59_950 ? `${(ms / 1000).toFixed(1)}s` : ago(Math.max(ms, 60_000))
+// the inspector's and the setup page's time, where one value is read on its own: milliseconds under a second (`40ms`), else secs
+const exact = (ms?: number) => ms != null && ms < 999.5 ? `${Math.round(ms)}ms` : secs(ms)
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 // `claude-opus-5-5[1m]` -> `Opus 5.5`, `claude-opus-4-20250514` -> `Opus 4`, `claude-3-5-sonnet-20241022` -> `Sonnet 3.5`;
 // an id of no known shape (a gateway's alias) as named. (?!\d): a date suffix is no minor version
@@ -360,7 +362,7 @@ export const harnessOf = (event: string, a: Record<string, any>): Omit<Entry, 't
   if (event === 'permission_mode_changed') return { kind: 'event', name: 'mode', detail: `${a.from_mode} → ${a.to_mode}`, outcome: String(a.trigger ?? '') }
   if (event === 'mcp_server_connection') {
     // `disconnected`: a server closing, at the session's end or mid-session; its duration is how long it was connected, not a wait
-    if (a.status === 'disconnected') return { kind: 'event', name: 'MCP disconnected', detail: String(a.server_name ?? ''), outcome: String(a.transport_type ?? ''), status: 'ok', peek: Number(a.duration_ms) ? `connected for ${secs(Number(a.duration_ms))}` : undefined }
+    if (a.status === 'disconnected') return { kind: 'event', name: 'MCP disconnected', detail: String(a.server_name ?? ''), outcome: String(a.transport_type ?? ''), status: 'ok', peek: Number(a.duration_ms) ? `connected for ${exact(Number(a.duration_ms))}` : undefined }
     const ok = a.status === 'connected'
     return { kind: 'event', name: ok ? 'MCP connected' : 'MCP failed', detail: String(a.server_name ?? ''), outcome: String(a.transport_type ?? ''), status: ok ? 'ok' : 'failed', ms: Number(a.duration_ms) || undefined, peek: ok ? undefined : peek(String(a.error ?? a.status ?? '')) }
   }
@@ -1436,22 +1438,22 @@ export const register: Register = (on, options) => {
           {x.check && kv('decided', x.check === 'ask'
             ? `asked${x.via?.startsWith('user_') ? ' you' : ''}${x.rule ? ` (rule ${x.rule})` : ''}; ${VIA[x.via ?? ''] ?? (x.via ? `${x.via} decided` : 'the mode or you decided')}`
             : `${x.check === 'allow' ? 'allowed' : 'denied'} by ${x.rule ? `rule ${x.rule}` : 'the mode, a hook or the tool itself'}`)}
-          {x.ms != null && kv(x.child ? 'call' : 'took', secs(x.ms))}
+          {x.ms != null && kv(x.child ? 'call' : 'took', exact(x.ms))}
           {x.kind === 'turn' && !x.agent && (m => [splitText(turnOf(x), m) && kv('split', splitText(turnOf(x), m)), m.agents.size > 1 && kv('loops', loops(m.agents))])(turnIn(turnOf(x)))}
           {/* the wait came before the call ran, so took leaves it out */}
-          {x.wait != null && kv('waited', `${secs(x.wait)} for ${x.waitFor ?? 'the decision'}, before it ran`)}
+          {x.wait != null && kv('waited', `${exact(x.wait)} for ${x.waitFor ?? 'the decision'}, before it ran`)}
           {x.kind === 'step' && kv('model', `${x.name}${x.effort != null ? ` · effort ${x.effort}` : ''}`)}
           {x.kind === 'side' && x.detail && kv('model', x.detail)}
-          {x.ttft != null && kv('first', `${secs(x.ttft)} to the first token`)}
-          {x.think != null && kv('think', secs(x.think))}
+          {x.ttft != null && kv('first', `${exact(x.ttft)} to the first token`)}
+          {x.think != null && kv('think', exact(x.think))}
           {x.tok && kv('tokens', tokLine(x.tok))}
           {x.cost != null && kv('cost', `$${x.cost.toFixed(4)}`)}
           {x.asked && kv('calls', counted(x.asked))}
-          {x.server && kv('server', x.server.map(([n, ms]) => `${n} ${secs(ms ?? undefined)}`).join(', '))}
+          {x.server && kv('server', x.server.map(([n, ms]) => `${n} ${exact(ms ?? undefined)}`).join(', '))}
           {x.stop && kv('stop', x.stop)}
           {x.req && kv('request', x.req)}
           {/* a call's request: the model's time before it, which the call's own row leaves out */}
-          {x.kind === 'tool' && x.step && (s => s && kv('asked', `by ${modelName(s.name)} in a ${secs(s.ms)} request${s.thought ? `: ${s.thought}` : ''}`))(entries.find(y => y.kind === 'step' && y.step === x.step))}
+          {x.kind === 'tool' && x.step && (s => s && kv('asked', `by ${modelName(s.name)} in a ${exact(s.ms)} request${s.thought ? `: ${s.thought}` : ''}`))(entries.find(y => y.kind === 'step' && y.step === x.step))}
           {x.child && kv('ran', ran(x)[0])}
           {/* each hook once, what it did in brackets: what it said back (blocked, feedback), whether its text went to the model */}
           {x.kind === 'tool' && x.use && (hs => hs.length > 0 && kv('hooks', [...new Set(hs.map(y => y.name))].map(n => {
@@ -1901,7 +1903,7 @@ export const register: Register = (on, options) => {
         const cost = ys.some(x => x.cost != null) ? ` · $${sum(x => x.cost ?? 0).toFixed(2)}` : ''
         // no row with tokens (requests from before they were stored, a plugin's fork): unknown, not 0
         const io = ys.some(x => x.tok) ? `${num(sum(x => x.tok ? x.tok[0]! + x.tok[1]! + x.tok[2]! : 0))} in · ${num(sum(x => x.tok?.[3] ?? 0))} out` : '— tokens'
-        return `${ys.length} request${ys.length === 1 ? '' : 's'} · ${secs(sum(x => x.ms ?? 0))} · ${io}${cost}`
+        return `${ys.length} request${ys.length === 1 ? '' : 's'} · ${exact(sum(x => x.ms ?? 0))} · ${io}${cost}`
       }
       const by = (ys: Entry[]) => { const m = new Map<string, Entry[]>(); for (const y of ys) m.set(y.name, [...m.get(y.name) ?? [], y]); return [...m] }
       const bad = xs(x => (x.kind === 'hook' && stat(x) === 'failed') || (x.kind === 'event' && BAD.has(stat(x))))
@@ -1933,13 +1935,13 @@ export const register: Register = (on, options) => {
           {bad.slice(-20).map(x => <Box key={`p${idOf(x)}`} flexDirection="row"><Button key={`pb${idOf(x)}`} label={fit(`✗ ${action(x)}`, cols - 4)} plain onPress={() => show(x)} /></Box>)}
           {title('hk', `Hooks: ${hookN} distinct settings and plugin hook commands${setup.runs.size ? '; runs as the collector counted them' : ''}`)}
           {events.map(ev => { const r = setup.runs.get(ev), names = [...new Set((hookCfg?.[ev] ?? []).map(h => h.name))]
-            return kw(ev, [names.join(', ') || 'no hook in your settings', r && `${r.n} run${r.n === 1 ? '' : 's'} · ${secs(r.ms)}${r.errors ? ` · ${r.errors} failed` : ''}${r.cancelled ? ` · ${r.cancelled} cancelled` : ''}`].filter(Boolean).join(' — '), `hk${ev}`) })}
+            return kw(ev, [names.join(', ') || 'no hook in your settings', r && `${r.n} run${r.n === 1 ? '' : 's'} · ${exact(r.ms)}${r.errors ? ` · ${r.errors} failed` : ''}${r.cancelled ? ` · ${r.cancelled} cancelled` : ''}`].filter(Boolean).join(' — '), `hk${ev}`) })}
           {title('pl', `Plugins: ${plugins}`)}
           {setup.plugins.size ? [...setup.plugins].map(([n, pl]) => kw(n, [pl.version, pl.scope, pl.hooks && 'hooks', pl.mcp && 'MCP'].filter(Boolean).join(' · '), `pl${n}`))
             : enabled.map(id => kw(id.split('@')[0]!, `enabled in your settings (${id.split('@')[1] ?? ''})`, `pl${id}`))}
           {title('mc', `MCP servers: ${servers.size}`)}
           {[...servers].map(([sv, k]) => { const c = setup.mcp.get(sv)
-            return kw(sv, [c ? (c.status === 'connected' ? `connected${c.transport ? ` over ${c.transport}` : ''}${c.ms != null ? ` in ${secs(c.ms)}` : ''}` : `${c.status || 'failed'}${c.error ? `: ${c.error}` : ''}`) : '', k && `${k} tool${k === 1 ? '' : 's'}`].filter(Boolean).join(' · '), `mc${sv}`) })}
+            return kw(sv, [c ? (c.status === 'connected' ? `connected${c.transport ? ` over ${c.transport}` : ''}${c.ms != null ? ` in ${exact(c.ms)}` : ''}` : `${c.status || 'failed'}${c.error ? `: ${c.error}` : ''}`) : '', k && `${k} tool${k === 1 ? '' : 's'}`].filter(Boolean).join(' · '), `mc${sv}`) })}
           {title('us', 'Model use this session')}
           {kw('main', use(steps.filter(x => !x.agent)))}
           {steps.some(x => x.agent) && kw('subagents', use(steps.filter(x => x.agent)))}

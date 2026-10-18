@@ -114,16 +114,17 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   expect(all.some(l => /\*Reply/.test(l))).toBe(true) // main's request on its advisor's bracket is no hook: bright
   expect(all.some(l => /Sonnet 5\.5 · /.test(l))).toBe(false) // main's requests name no model: the switch row says it
   expect(all.some(l => /↗ 1 outside root/.test(l))).toBe(true)
-  // rows say what happened: the pattern searched, the reply's first line; a time in its own unit, never `0.0s`
+  // rows say what happened: the pattern searched, the reply's first line; times all in seconds, never `0.0s`
   expect(all.some(l => /Search "secs\\\(" in hooks/.test(l))).toBe(true)
   expect(all.some(l => /Reply: The test fails because the header grew a row\./.test(l))).toBe(true)
   expect(all.some(l => /\b0\.0s/.test(l))).toBe(false)
-  expect(all.some(l => /\b40ms\b/.test(l))).toBe(true)
+  expect(all.some(l => /<0\.1s/.test(l))).toBe(true)
+  expect(all.some(l => /\d+ms\b/.test(l))).toBe(false) // milliseconds only in the inspector
   expect(plainOf(all.find(l => /^start/.test(plainOf(l)))!).trimEnd()).toBe('start · 2 hidden ▸') // no turn: no split, no time
   // weight and colour: one ⊘ per refusal, its hook named once on the bracket; lookups dim, calls that change things bright
   expect(all.join('\n').match(/⊘/g)?.length).toBe(1)
   expect(all.some(l => /Clean the build output\*? *‹cyan:⊘ denied›/.test(l))).toBe(true)
-  expect(all.some(l => /\*guard\* +‹cyan:25ms›/.test(l))).toBe(true)
+  expect(all.some(l => /\*guard\* +‹cyan:<0\.1s›/.test(l))).toBe(true)
   expect(all.some(l => /^  Read index\.ts‹magenta: ↗ ~\/other-project\/src›/.test(l))).toBe(true)
   expect(all.some(l => /\*Edit agent-log\.tsx\*/.test(l))).toBe(true)
   expect(all.some(l => /‹blue:↩ 1\.3s›/.test(l))).toBe(true)
@@ -144,7 +145,7 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   await agentlog($, 'level debug'); await m.redraw()
   const debug = await frame(m, 100, 'debug level')
   expect(debug.some(l => /install-check/.test(l))).toBe(true) // a fast hook that changed nothing ranks debug
-  expect(debug.some(l => /preflight-context on SessionStart startup +\+ 400ms/.test(l))).toBe(true) // added context: routine, no colour
+  expect(debug.some(l => /preflight-context on SessionStart startup +\+ 0\.4s/.test(l))).toBe(true) // added context: routine, no colour
   await agentlog($, 'level notice'); await m.redraw()
   await frame(m, 100, 'notice level')
   await agentlog($, 'level info'); await m.redraw()
