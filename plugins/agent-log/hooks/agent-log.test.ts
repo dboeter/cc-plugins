@@ -869,8 +869,30 @@ test('a PostToolUse attachment left out of the request still spends its call\'s 
   expect(await m.find({ text: /added text/ })).toBe(undefined) // a's tip was dropped: its hook ran, no text went to the model
   await m.press({ key: 'back' })
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read b\.ts$/ }))!.key! })
-  expect(await m.find({ text: /PostToolUse hook · added text/ })).toBeDefined()
+  expect(await m.find({ text: /PostToolUse hook \(added text\)/ })).toBeDefined()
   await m.press({ key: 'back' })
+})
+
+test('a call\'s inspector says who decided it: a rule, you after an ask, or the mode, a hook or the tool', async ($, on) => {
+  const verdict: Record<string, object> = { d0: { decision: 'allow' }, da: { decision: 'allow', rule: 'Bash(git push:*)' }, db: { decision: 'ask' }, dc: { decision: 'allow' } }
+  on('tool.check', (_$, e: any) => ({ ...verdict[e.tool_use_id] }) as any)
+  on('telemetry.log', () => ({ value: undefined }))
+  on('tool.call', async (_$, e: any) => {
+    await ($ as any).tool.check({ tool: e.tool, input: {}, tool_use_id: e.tool_use_id })
+    if (e.tool_use_id === 'db') await ($ as any).telemetry.log({ to: 'collector', event: 'tool_decision', attributes: { tool_use_id: 'db', source: 'user_temporary' } })
+    return { result: 'ok', text: 'ok' }
+  })
+  session(on, 'DC')
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'd0', command: 'true', description: 'Warm up' } as any) // the first call on $ loads the plugins
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'da', command: 'git push', description: 'Push' } as any)
+  await $.tool.call({ tool: 'Edit', tool_use_id: 'db', file_path: '/home/u/a.ts' } as any)
+  await $.tool.call({ tool: 'Read', tool_use_id: 'dc', file_path: '/home/u/a.ts' } as any)
+  const m = await pane($)
+  for (const [row, said] of [[/^Push$/, 'allowed by rule Bash(git push:*)'], [/^Edit a\.ts$/, 'asked you; you allowed it once'], [/^Read a\.ts$/, 'allowed by the mode, a hook or the tool itself']] as const) {
+    await m.press({ key: (await m.find({ type: 'Button', text: row }))!.key! })
+    expect(await m.find({ text: said })).toBeDefined()
+    await m.press({ key: 'back' })
+  }
 })
 
 test('the gap between a call\'s check and its decision is the call\'s inspector\'s, not its time; a wait on the model\'s message draws no line', async ($, on) => {
@@ -894,13 +916,13 @@ test('the gap between a call\'s check and its decision is the call\'s inspector\
   const edits = await m.findAll({ type: 'Button', text: /^Edit a\.ts$/ })
   expect(edits.length).toBe(2) // a row each: nothing folds
   await m.press({ key: edits[0]!.key! })
-  expect(await m.find({ text: /before it ran, not in took/ })).toBeDefined()
-  expect(await m.find({ text: 'ask, then your settings decided' })).toBeDefined() // the collector's decision source
+  expect(await m.find({ text: /, before it ran$/ })).toBeDefined()
+  expect(await m.find({ text: 'asked; your settings decided' })).toBeDefined() // the collector's decision source: not you
   await m.press({ key: 'back' })
   const rows = (await m.findAll({ type: 'Button' })).map(b => String(b.text))
   expect(rows.filter(l => /^Waiting for/.test(l))).toEqual([]) // the first waited on the model's message: the model's time, no line
   await m.press({ key: (await m.find({ type: 'Button', text: /^Edit a\.ts$/ }))!.key! })
-  expect(await m.find({ text: /before it ran, not in took/ })).toBeDefined()
+  expect(await m.find({ text: /, before it ran$/ })).toBeDefined()
   await m.press({ key: 'back' })
 })
 

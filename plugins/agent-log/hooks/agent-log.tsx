@@ -1432,10 +1432,14 @@ export const register: Register = (on, options) => {
           {x.pat && kv('pattern', x.pat)}
           {x.out && kv('where', `${x.out}, outside the session's project root`)}
           {x.exit != null && kv('exit', String(x.exit))}
-          {x.check && kv('decided', `${x.check}${x.rule ? ` by rule ${x.rule}` : x.check === 'ask' ? `, then ${VIA[x.via ?? ''] ?? (x.via ? `by ${x.via}` : 'the mode or you')}` : ' by a mode, hook or the tool\'s own check'}`)}
+          {/* the check's verdict, then who settled an ask: `asked you; you allowed it once`, `allowed by rule Bash(git push:*)` */}
+          {x.check && kv('decided', x.check === 'ask'
+            ? `asked${x.via?.startsWith('user_') ? ' you' : ''}${x.rule ? ` (rule ${x.rule})` : ''}; ${VIA[x.via ?? ''] ?? (x.via ? `${x.via} decided` : 'the mode or you decided')}`
+            : `${x.check === 'allow' ? 'allowed' : 'denied'} by ${x.rule ? `rule ${x.rule}` : 'the mode, a hook or the tool itself'}`)}
           {x.ms != null && kv(x.child ? 'call' : 'took', secs(x.ms))}
           {x.kind === 'turn' && !x.agent && (m => [splitText(turnOf(x), m) && kv('split', splitText(turnOf(x), m)), m.agents.size > 1 && kv('loops', loops(m.agents))])(turnIn(turnOf(x)))}
-          {x.wait != null && kv('waited', `${secs(x.wait)} for ${x.waitFor ?? 'the decision'} before it ran, not in took`)}
+          {/* the wait came before the call ran, so took leaves it out */}
+          {x.wait != null && kv('waited', `${secs(x.wait)} for ${x.waitFor ?? 'the decision'}, before it ran`)}
           {x.kind === 'step' && kv('model', `${x.name}${x.effort != null ? ` · effort ${x.effort}` : ''}`)}
           {x.kind === 'side' && x.detail && kv('model', x.detail)}
           {x.ttft != null && kv('first', `${secs(x.ttft)} to the first token`)}
@@ -1449,10 +1453,11 @@ export const register: Register = (on, options) => {
           {/* a call's request: the model's time before it, which the call's own row leaves out */}
           {x.kind === 'tool' && x.step && (s => s && kv('asked', `by ${modelName(s.name)} in a ${secs(s.ms)} request${s.thought ? `: ${s.thought}` : ''}`))(entries.find(y => y.kind === 'step' && y.step === x.step))}
           {x.child && kv('ran', ran(x)[0])}
-          {/* each hook once: what it said back (blocked, feedback) and whether its text went to the model */}
+          {/* each hook once, what it did in brackets: what it said back (blocked, feedback), whether its text went to the model */}
           {x.kind === 'tool' && x.use && (hs => hs.length > 0 && kv('hooks', [...new Set(hs.map(y => y.name))].map(n => {
             const ys = hs.filter(y => y.name === n), said = ys.find(loud)
-            return `${n}${said ? ` (${stat(said)})` : ''}${ys.some(y => y.kind === 'prompt') ? ' · added text' : ''}`
+            const did = [said && stat(said), ys.some(y => y.kind === 'prompt') && 'added text'].filter(Boolean)
+            return `${n}${did.length ? ` (${did.join(', ')})` : ''}`
           }).join(', ')))(entries.filter(y => y.use === x.use && y.kind !== 'tool'))}
           {x.kind === 'fork' && x.outcome && kv('tokens', x.outcome)}
           {end?.outcome && kv('tokens', end.outcome)}
