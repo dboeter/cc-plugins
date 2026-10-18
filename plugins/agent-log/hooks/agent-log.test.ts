@@ -458,7 +458,7 @@ test('k and j move a row cursor the window keeps in view; e goes back to the new
   expect(await m.find({ text: /^Step 24$/ })).toBeDefined() // the page's way back follows the newest again
 })
 
-test('ctrl+↑↓ (the #↑↓ buttons) put the previous or next prompt\'s turn header at the top', async ($, on) => {
+test('ctrl+↑↓ (the turn ↑↓ buttons) put the previous or next prompt\'s turn header at the top', async ($, on) => {
   on('session.id', () => ({ value: 'T' }))
   on('agent.list', () => ({ value: [] }))
   on('config.list', () => ({ value: [] }))
@@ -1197,7 +1197,7 @@ test('a call whose permission prompt is up says so on its ● line until the dec
 // a collector record, as a session exporting OTEL logs it
 const collect = ($: any, event: string, attributes: object) => $.telemetry.log({ to: 'collector', event, attributes })
 
-test('the setup row reads what the session runs on, what broke first and red; s opens the setup page, a problem its inspector', async ($, on) => {
+test('the setup button reads what the session runs on, and the controls what broke first, in red; s opens the setup page, a problem its inspector', async ($, on) => {
   session(on, 'SU')
   on('telemetry.log', () => ({ value: undefined }))
   on('session.measure', (_$, e) => ({ changed: e.changed }))
@@ -1413,7 +1413,7 @@ test('a wrapped hook is named by its run: text by the run that said it, silence 
   expect(speaker(runs, 'nothing like it')).toBe(undefined)
 })
 
-test('each hook outcome has its mark: + context, · nothing, ■ a stop (amber, not ✗), ⊘ a block', async ($, on) => {
+test('each hook outcome has its mark: + context, · nothing, ■ a stop (yellow, not ✗), ⊘ a block', async ($, on) => {
   const m = await mountWith($, on, 'HO', [
     hookRow({ name: 'ctx', origin: 'UserPromptSubmit', detail: '', outcome: 'context x1 ~5 tok', ms: 100 }),
     hookRow({ name: 'quiet', origin: 'Notification', detail: '', ms: 200 }),
