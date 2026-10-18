@@ -9,7 +9,8 @@ type Src = 'engine' | 'hook' | 'plugin' // who authored injected text: the engin
 // agent: the loop's agentId, absent on main. bytes: injected size (kept, not shown for now). ms: tool run time, minus its wait.
 // wait/waitFor: on a tool row, the time between tool.check's verdict and the engine's decision, and what it waited on
 // type: the engine's attachment kind or context-block name, kept beside the readable `name`. origin: the settings hook event that produced the text or, on a hook row, ran the hook (its trigger; `name` is then the hook's own name).
-// cmd: a Bash call's full scrubbed command, shown in the inspector while the row shows its description.
+// cmd: a Bash call's full scrubbed command, shown in the inspector while the row shows its description. pat: a Grep's or Glob's
+// pattern, scrubbed and cut to 80, which its row reads (`Search "secs\(" in hooks`)
 // check/rule: tool.check's verdict on a tool call and the settings rule that decided it, as written (`Bash(git push:*)`); no rule = a mode, hook or the tool's own check
 // via: who settled the call, as the collector's tool_decision names it (`config`, `hook`, `user_temporary`, `user_reject`); only with OTEL export on
 // peek: the first PEEK chars of the injected text, error, or deny/block reason, secret-scrubbed; never the person's typed prompt
@@ -37,7 +38,7 @@ type Status = 'ok' | 'failed' | 'denied' | 'blocked' | 'feedback' | 'stopped' | 
 // its particulars. side: a model request outside the turns: the engine's own (src engine, name its query source: a title, a
 // prompt suggestion, compaction) or a plugin's $.model.complete (src plugin, name the plugin); detail is the model
 type Entry = { t: number; turn?: number; kind: 'tool' | 'hook' | 'session' | 'prompt' | 'turn' | 'fork' | 'step' | 'event' | 'side'; name: string; detail: string; outcome: string; status?: Status; src?: Src; bytes?: number; agent?: string; ms?: number; type?: string; origin?: string; peek?: string; cmd?: string; check?: 'allow' | 'ask' | 'deny'; rule?: string; exit?: number; insight?: string; child?: string; use?: string; wait?: number; waitFor?: string; again?: boolean
-  via?: string; step?: string; effort?: string | number; ttft?: number; think?: number; stop?: string; tok?: number[]; asked?: string[]; server?: [string, number | null][]; thought?: string; cost?: number; req?: string; split?: number[]; out?: string; each?: Record<string, number>; spoke?: string[]; errs?: string[]; says?: Record<string, string>; exits?: Record<string, number> }
+  pat?: string; via?: string; step?: string; effort?: string | number; ttft?: number; think?: number; stop?: string; tok?: number[]; asked?: string[]; server?: [string, number | null][]; thought?: string; cost?: number; req?: string; split?: number[]; out?: string; each?: Record<string, number>; spoke?: string[]; errs?: string[]; says?: Record<string, string>; exits?: Record<string, number> }
 
 const PANE = 'agent-log'
 // a block after the fact refuses nothing: PostToolUse's tool already ran and Stop's turn already ended, so the hook's text is
@@ -231,6 +232,20 @@ let keep = 300
 let entries: Entry[] = []
 let turnNo = 0 // your prompts so far (0: the session's start, before your first): only your own submissions count, not notifications, peers, schedules or plugins
 let pending = 0 // prompts typed while a turn ran: counted when that turn ends, so its last rows keep their number
+// turn -> its prompt's first few words (wordsOf) for the turn header, in memory only: saved() never stores them, and a session
+// switch (load) drops them. queued: the words of the `pending` prompts, in order, numbered once they are counted
+const words = new Map<number, string>()
+let queued: string[] = []
+// a prompt's first line, scrubbed, cut to its first 4 words within 24 characters (`Implement the following…`); a slash
+// command its name alone (`/review`): its arguments are your own typing
+const wordsOf = (e: { text: string; command?: { name: string } }): string => {
+  if (e.command) return `/${e.command.name}`
+  const ws = scrub(first(e.text)).split(/\s+/).filter(Boolean)
+  let s = ''
+  for (const w of ws.slice(0, 4)) { const t = s ? `${s} ${w}` : w; if (t.length > 24) break; s = t }
+  if (!s && ws[0]) s = ws[0].slice(0, 23)
+  return s.length < ws.join(' ').length ? `${s}…` : s
+}
 const OWN = new Set(['composer', 'bridge', 'sdk']) // PromptOrigin kinds that are the person's own prompt
 let key = '' // this session's store key; one per session so concurrent sessions never clobber each other
 let inspect: Entry | undefined // the entry shown in full; set, the pane draws it in place of the log (a second pane cannot take the keys from this one)
@@ -288,7 +303,10 @@ const cell = (x: Entry, ms = x.ms): [string, string?] => {
     : x.kind === 'hook' ? (x.outcome.startsWith('context') ? [`+ ${time ?? '—'}`, 'green'] : [`· ${time ?? '—'}`])
     : [time ?? (x.kind === 'tool' ? '—' : '')]
 }
-const secs = (ms?: number) => ms == null ? '—' : `${(ms / 1000).toFixed(1)}s` // one unit everywhere; unknown is —, never a guess
+// a time in the unit that reads it best: `40ms` under a second, `18.4s` under a minute, then `ago`'s `2m05s`, `1h05m`. At most 6
+// characters, so a flag and the time fit the row's cell (END). Unknown is —, never a guess. The cut-offs round first: 999.6 ms
+// reads `1.0s`, not `1000ms`
+const secs = (ms?: number) => ms == null ? '—' : ms < 999.5 ? `${Math.round(ms)}ms` : ms < 59_950 ? `${(ms / 1000).toFixed(1)}s` : ago(Math.max(ms, 60_000))
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 // `claude-opus-5-5[1m]` -> `Opus 5.5`, `claude-opus-4-20250514` -> `Opus 4`, `claude-3-5-sonnet-20241022` -> `Sonnet 3.5`;
 // an id of no known shape (a gateway's alias) as named. (?!\d): a date suffix is no minor version
@@ -423,8 +441,9 @@ const action = (x: Entry, bare = false): string => {
       return (x.cmd && noCd(x.cmd).replace(/\s+/g, ' ').startsWith(s) ? s : cap(s)) || 'Run a command'
     }
     case 'Read': case 'Edit': case 'Write': case 'NotebookEdit': return `${x.name} ${base(d)}`
-    case 'Grep': return `Search ${base(d) || 'files'}`
-    case 'Glob': return `Find files in ${base(d) || '.'}`
+    // by the pattern where the row holds it; rows stored before it read their folder alone
+    case 'Grep': return x.pat ? `Search "${x.pat}"${d ? ` in ${base(d)}` : ''}` : `Search ${base(d) || 'files'}`
+    case 'Glob': return x.pat ? `Find ${x.pat}${d ? ` in ${base(d)}` : ''}` : `Find files in ${base(d) || '.'}`
     case 'Skill': return `Run skill ${d}`
     case 'WebFetch': return `Fetch ${d.replace(/^https?:\/\//, '')}`
     case 'WebSearch': return `Search the web for ${d}`
@@ -446,9 +465,12 @@ const action = (x: Entry, bare = false): string => {
   }
   if (x.kind === 'session') return x.name === 'reload' ? 'Plugin reloaded' : `Session init${d ? ` in ${base(d)}` : ''}` // `init`: `session start` is the engine context it sent
   if (x.kind === 'fork') return `Fork by ${x.name}: ${first(x.peek) || stat(x)}`
-  // a request reads by what it did, short and generic: it replied, else it thought, else the calls it made, else why it stopped.
-  // What it said or thought stays in the inspector
-  if (x.kind === 'step') return (first(x.peek) ? 'Reply' : '') || (x.thought ? 'Thought' : '') || (x.asked?.length ? 'Model API call' : '') || STOPPED[x.stop ?? ''] || (stat(x) === 'aborted' ? 'Interrupted' : 'No response')
+  // a request reads by what it did: the first line of its reply, else of its thinking, else the calls it made, else why it
+  // stopped. The rest of what it said or thought is the inspector's. A request that threw keeps its error in peek: no reply
+  if (x.kind === 'step') {
+    const said = stat(x) === 'failed' && !x.stop ? '' : first(x.peek)
+    return (said ? `Reply: ${said}` : '') || (x.thought ? `Thought: ${x.thought}` : '') || (x.asked?.length ? `Called ${counted(x.asked)}` : '') || STOPPED[x.stop ?? ''] || (stat(x) === 'aborted' ? 'Interrupted' : 'No response')
+  }
   if (x.kind === 'event') return x.name === 'model switch' ? `Model: ${x.detail.split(' → ').map(modelName).join(' → ')}${x.outcome ? ` (${x.outcome})` : ''}`
     : `${cap(x.name)}${x.detail ? `: ${x.detail}` : ''}${x.outcome ? ` (${x.outcome})` : ''}`
   if (x.kind === 'side') return x.src === 'plugin' ? (first(x.peek) || stat(x) === 'ok' ? x.name : `${x.name}: ${stat(x)}`) /* its reply in the inspector */ : cap(SIDE[x.name] ?? x.name.replace(/_/g, ' '))
@@ -692,6 +714,7 @@ async function load($: any): Promise<void> {
   if (key) { stepOf.clear(); bills = []; unbilled = [] } // the old session's requests; not on the first load, which a step's push can trigger after its pairing was queued
   if (setup.runsOf !== id) { setup.runs.clear(); setup.runsOf = id } // the old session's hook runs; ones the new session's records counted before this load stay
   key = k
+  words.clear() // the old session's prompts; never stored, so a resumed session's turns have none
   entries = Array.isArray(v) ? v : Array.isArray(v?.entries) ? v.entries : []
   turnNo = typeof v?.turn === 'number' ? v.turn : Math.max(0, ...entries.map(x => x.turn ?? 0)) // stores from before turns hold none: start at 0
   seen = v?.seen && !Array.isArray(v) ? v.seen : seed(entries)
@@ -916,11 +939,14 @@ export const register: Register = (on, options) => {
     close(e.agentId ?? 'main')
     const detail = String(detailOf(e)).replace(/\s+/g, ' ').slice(0, 400)
     const cmd = e.tool === 'Bash' && e.command ? scrub(e.command).slice(0, 400) : undefined // newlines kept so heredocs stay readable in the inspector; 400 = the old detail cap, keeping the store budget
+    // Grep's and Glob's pattern: not in the plugin types (BuiltinToolInputs is undeclared), but in Claude Code's tool schemas.
+    // Absent, the row reads its folder alone
+    const p0 = (e as any).pattern, pat = /^(Grep|Glob)$/.test(e.tool) && typeof p0 === 'string' && p0 ? scrub(p0).replace(/\s+/g, ' ').slice(0, 80) : undefined
     const t0 = Date.now()
     const step = e.tool_use_id ? stepOf.get(e.tool_use_id) : undefined
     if (e.tool_use_id) { loopOf.set(e.tool_use_id, e.agentId); stepOf.delete(e.tool_use_id) }
     const now = `t${e.tool_use_id ?? t0}`
-    liveNow.set(now, { t: began, loop: e.agentId, row: { kind: 'tool', name: e.tool, detail, outcome: '', cmd, agent: e.agentId } })
+    liveNow.set(now, { t: began, loop: e.agentId, row: { kind: 'tool', name: e.tool, detail, outcome: '', cmd, pat, agent: e.agentId } })
     $.ui.invalidate('ui.render')
     // where the call runs: asked before it runs (a Bash `cd` moves the cwd) and in this hook (a subagent's own cwd), not awaited
     // ahead of it. Unanswered, the row is not tagged
@@ -951,7 +977,7 @@ export const register: Register = (on, options) => {
     const status: Status = r.deny || refused || hookBlocked ? 'denied' : ins?.quiet ? 'nomatch' : r.isError ? 'failed' : 'ok'
     const pl = await place, a = e as any
     const out = pl ? outsideOf(e.tool, { path: a.file_path ?? a.notebook_path ?? a.path, cmd }, ...pl) : undefined
-    try { push($, { kind: 'tool', name: e.tool, detail, outcome, status, agent: e.agentId, ms: r.deny ? undefined : Date.now() - t0 - (wait ?? 0), wait, waitFor, peek: why, cmd, check: v?.check, rule: v?.rule, exit: ins?.exit, insight: ins?.text || undefined, child: sp?.id, use: e.tool_use_id, step, via: classified ? 'classifier' : d?.source, out }, { ahead: pre, start: began }) } catch {} // logger never breaks the call
+    try { push($, { kind: 'tool', name: e.tool, detail, outcome, status, agent: e.agentId, ms: r.deny ? undefined : Date.now() - t0 - (wait ?? 0), wait, waitFor, peek: why, cmd, pat, check: v?.check, rule: v?.rule, exit: ins?.exit, insight: ins?.text || undefined, child: sp?.id, use: e.tool_use_id, step, via: classified ? 'classifier' : d?.source, out }, { ahead: pre, start: began }) } catch {} // logger never breaks the call
     return r
   })
 
@@ -1163,11 +1189,11 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     if (!OWN.has(e.origin.kind)) return next(e)
-    if (e.turnId) { const r = await next(e); if (!('drop' in r && r.drop)) pending++; return r }
+    if (e.turnId) { const r = await next(e); if (!('drop' in r && r.drop)) { pending++; queued.push(wordsOf(e)) } return r }
     const t = Date.now() // the turn's start: its UserPromptSubmit hooks run inside next
-    await mutate(async () => { await load($); turnNo++; touch($) }).catch(() => {}) // before next: the UserPromptSubmit hooks it runs belong to the new number
+    await mutate(async () => { await load($); turnNo++; words.set(turnNo, wordsOf(e)); touch($) }).catch(() => {}) // before next: the UserPromptSubmit hooks it runs belong to the new number
     const r = await next(e)
-    if ('drop' in r && r.drop) mutate(async () => { turnNo--; touch($) }).catch(() => {}) // a dropped prompt never entered
+    if ('drop' in r && r.drop) mutate(async () => { words.delete(turnNo); turnNo--; touch($) }).catch(() => {}) // a dropped prompt never entered
     else { busy = true; turnAt = t }
     return r
   })
@@ -1301,7 +1327,7 @@ export const register: Register = (on, options) => {
       if (y?.ms != null) { y.split = splitOf(entries.filter(z => z.turn === y.turn), y.t - y.ms, y.t); touch($) }
     }).catch(() => {})
     if (!e.agentId) { busy = false; turnAt = undefined }
-    if (!e.agentId && pending) mutate(async () => { await load($); turnNo += pending; pending = 0; touch($) }).catch(() => {}) // queued after the push, so the turn row keeps its number
+    if (!e.agentId && pending) mutate(async () => { await load($); queued.forEach((w, i) => words.set(turnNo + 1 + i, w)); turnNo += pending; pending = 0; queued = []; touch($) }).catch(() => {}) // queued after the push, so the turn row keeps its number
     return r
   })
 
@@ -1374,6 +1400,7 @@ export const register: Register = (on, options) => {
           {x.kind === 'hook' && (cs => cs.length > 0 && kv('command', cs.join('\n')))([...new Set((hookCfg?.[x.origin ?? ''] ?? []).filter(h => h.name === x.name && fits(h.matcher, x.detail || undefined)).map(h => h.cmd ?? ''))].filter(Boolean))}
           {x.cmd ? kv('command', x.cmd) : x.detail && x.src !== 'hook' && kv(x.name === 'Bash' ? 'command' : 'input', x.detail)}
           {x.cmd && kv('what', x.detail)}
+          {x.pat && kv('pattern', x.pat)}
           {x.out && kv('where', `${x.out}, outside the session's project root`)}
           {x.exit != null && kv('exit', String(x.exit))}
           {x.check && kv('decided', `${x.check}${x.rule ? ` by rule ${x.rule}` : x.check === 'ask' ? `, then ${VIA[x.via ?? ''] ?? (x.via ? `by ${x.via}` : 'the mode or you')}` : ' by a mode, hook or the tool\'s own check'}`)}
@@ -1490,7 +1517,7 @@ export const register: Register = (on, options) => {
     // then the time cell, flush right like the turn header's. No tool column: the action already names its verb (`Read x.ts`, `Run the tests`) and the inspector the
     // tool. The cell has a fixed width and the action is cut to what is left, so the description truncates first and times line up
     const cols = e.props.bodyColumns ?? 40
-    const END = 9 // fits `● 123.4s`
+    const END = 9 // fits `● 59m59s`: secs is at most 6 wide
     const fit = (s: string, n: number) => s.length <= n ? s : s.slice(0, Math.max(0, n - 1)) + '…'
     // a path cut from the left at a folder boundary, so its last folders stay whole: `…/acme/projects/dv`
     const lfit = (s: string, n: number) => { if (s.length <= n) return s; const t = s.slice(s.length - n + 1), j = t.indexOf('/'); return '…' + (j >= 0 ? t.slice(j) : t) }
@@ -1553,16 +1580,19 @@ export const register: Register = (on, options) => {
     // a turn whose end was never logged (the plugin reloaded mid-turn: a new instance gets no turn.complete for it) shows the span of
     // main's rows, marked ≈ as an estimate; the current turn counts up while it runs (tick redraws), — when its rows are not in yet
     const took = (n: number, m: Turn) => { const from = turnAt ?? m.first; return n === turnNo && busy && from != null ? `running ${secs(now - from)}` : m.ms != null ? secs(m.ms) : n !== turnNo && m.first != null && m.last! > m.first ? `≈ ${secs(m.last! - m.first)}` : '—' }
-    // `#2 · model 60.1s · tools 12.0s · 3 hidden    73.4s`: the split's two largest parts, the count when any row is hidden. `#2`
-    // opens the turn's inspector, which holds the whole split and the loops that acted. The time sits flush right, over the rows'
-    // time cell, pushed there by a growing spacer; that cell never shrinks, and on a narrow pane the split truncates first
+    // `#2 Fix the header… · model 60.1s · tools 12.0s · 3 hidden    73.4s`: the prompt's first words (in memory only, so a
+    // reloaded log's turns have none), the split's two largest parts, the count when any row is hidden. `#2` opens the turn's
+    // inspector, which holds the whole split and the loops that acted. The time sits flush right, over the rows' time cell,
+    // pushed there by a growing spacer; that cell never shrinks, and on a narrow pane the split truncates first. `start` (n 0)
+    // is no turn: no words, no split, no time, only its hidden rows
     const header = (n: number, k: string) => {
       const m = turnIn(n), hid = hidden.get(n)?.length // not `h`: that name is the JSX factory, and shadowing it breaks every tag below
-      const time = `${m.aborted ? '⚠ ' : ''}${took(n, m)}`
+      const time = n ? `${m.aborted ? '⚠ ' : ''}${took(n, m)}` : ''
+      const said = words.get(n), split = n ? splitText(n, m, 2) : ''
       return (
         <Box key={k} flexDirection="row" overflow="hidden">
           <Box flexShrink={0}>{m.ends.length ? <Button key={`th${n}`} label={n ? `#${n}` : 'start'} plain onPress={() => show(m.ends.at(-1)!)} /> : <Text weight="semibold">{n ? `#${n}` : 'start'}</Text>}</Box>
-          <Box flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end" dimColor>{(s => s && ` · ${s}`)(splitText(n, m, 2))}</Text></Box>
+          <Box flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end" dimColor>{`${said ? ` ${said}` : ''}${split ? ` · ${split}` : ''}`}</Text></Box>
           {hid ? <Box flexShrink={0}><Text dimColor> · </Text><Button key={`hid${n}`} label={`${hid} hidden`} plain dimColor onPress={() => show(hidden.get(n)![0]!)} /></Box> : null}
           <Box flexGrow={1} flexShrink={0} minWidth={2} />
           <Box flexShrink={0}>

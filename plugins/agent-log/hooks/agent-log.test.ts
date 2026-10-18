@@ -109,11 +109,11 @@ test('a spawned agent\'s rows fold under its Agent row, which shows the agent\'s
   expect(await m.find({ text: /^general-purpose: probe A$/ })).toBeDefined() // the type is an identifier: never recased
   expect(await m.find({ text: /List files A/ })).toBe(undefined) // folded
   expect(await m.find({ text: /List files B/ })).toBe(undefined) // folded, though logged in turn 2
-  expect(await m.find({ text: /^● \d+\.\ds$/ })).toBeDefined() // A still runs: its time counts up
-  expect(await m.find({ text: /80\.0s/ })).toBeDefined() // B's run, not its 0.1s launch
+  expect(await m.find({ text: /^● 1m00s$/ })).toBeDefined() // A still runs: its time counts up, a minute in
+  expect(await m.find({ text: /1m20s/ })).toBeDefined() // B's run, not its 100ms launch
   // the header lists A as a log row: its name and task, its run counting up as on its Agent row
   expect(await m.find({ type: 'Button', text: /^general-purpose: probe A$/ })).toBeDefined()
-  expect((await m.findAll({ type: 'Text', text: /^● \d+\.\ds$/ })).length).toBe(2)
+  expect((await m.findAll({ type: 'Text', text: /^● 1m00s$/ })).length).toBe(2)
   expect(await m.find({ type: 'Button', text: /^general-purpose #2: probe B$/ })).toBe(undefined) // finished: folded into the toggle row
   await m.press({ key: 'fdone' }) // B has finished: the header lists it once finished ones are shown
   expect(await m.find({ type: 'Button', text: /^general-purpose #2: probe B$/ })).toBeDefined() // and tells it from A
@@ -125,7 +125,7 @@ test('a spawned agent\'s rows fold under its Agent row, which shows the agent\'s
   await m.press({ key: folds[1]!.key! }) // only ▸ opens a fold
   expect(await m.find({ text: /List files B/ })).toBeDefined()
   await m.press({ key: (await m.find({ type: 'Button', text: /^general-purpose: probe B$/ }))!.key! }) // the row: its inspector, the agent's run, cost and answer
-  expect(await m.find({ text: '80.0s' })).toBeDefined()
+  expect(await m.find({ text: '1m20s' })).toBeDefined()
   expect(await m.find({ text: '1.0k tok in · 10 tok out' })).toBeDefined()
   expect(await m.find({ text: 'B done' })).toBeDefined()
   // pressing an agent's header row filters the log to its rows, now flat; the filter's chip clears it
@@ -600,7 +600,7 @@ test('a call\'s row keeps its own time; each of its hooks times its own row', as
   ])
   await toLevel(m, 'debug')
   expect(await m.find({ text: /^5\.5s$/ })).toBeDefined()
-  expect((await m.findAll({ type: 'Text', text: /^· 0\.1s$/ })).length).toBe(2)
+  expect((await m.findAll({ type: 'Text', text: /^· 100ms$/ })).length).toBe(2)
   await toLevel(m, 'info')
 })
 
@@ -655,7 +655,7 @@ test('a PreToolUse block marks its call denied', async ($, on) => {
 
 test('a block after the fact is feedback: ↩, not ✗', async ($, on) => {
   const m = await mountWith($, on, 'E1', [hookRow({ name: 'lint-feedback', origin: 'PostToolUse', detail: 'Edit', outcome: 'block', ms: 300, peek: 'x.py:3:1: F821 undefined name' })])
-  expect(await m.find({ type: 'Text', text: '↩ 0.3s' })).toBeDefined() // ranked notice: shown at info
+  expect(await m.find({ type: 'Text', text: '↩ 300ms' })).toBeDefined() // ranked notice: shown at info
   expect(await m.find({ type: 'Text', text: /^✗/ })).toBe(undefined)
 })
 
@@ -720,6 +720,21 @@ test('turns count from your first prompt; rows before it head `start`', async ($
   const m = await mountWith($, on, 'C1', [call({ turn: 0, detail: 'before' }), call({ detail: 'after' })])
   expect(await m.find({ text: /^start$/ })).toBeDefined()
   expect(await m.find({ text: /^#1$/ })).toBeDefined()
+})
+
+test('a turn header shows its prompt\'s first words, a slash command its name; never stored', async ($, on) => {
+  const db = capture(on, 'TW')
+  on('prompt.submit', (_$: any, e: any) => ({ text: e.text }))
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  await $.prompt.submit({ text: 'Implement the following plan:\nmore', origin: { kind: 'composer' }, wait: false } as any)
+  await $.tool.call(ls('tw1'))
+  await $.prompt.submit({ text: '/review the diff', command: { name: 'review', args: 'the diff' }, origin: { kind: 'composer' }, wait: false } as any)
+  await $.tool.call(ls('tw2'))
+  const m = await pane($, 40, 100)
+  expect(await m.find({ text: /^ Implement the following…/ })).toBeDefined() // four words within 24 characters
+  expect(await m.find({ text: /^ \/review/ })).toBeDefined()
+  expect(await m.find({ text: /the diff/ })).toBe(undefined) // a command's arguments are your own typing
+  expect(JSON.stringify(await flushed($, 'TW', db))).not.toContain('Implement')
 })
 
 test('a command with no description keeps its case; a description is capitalised', async ($, on) => {
@@ -973,7 +988,7 @@ test('a request that wrote text is a row; one that only called tools hides at in
   await m.press({ key: 'back' })
   expect(await m.find({ type: 'Button', text: /^Advisor$/ })).toBeDefined() // the advisor's call: a row of its own below the request
   expect(await m.find({ text: '2.5s' })).toBeDefined()
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Reply$/ }))!.key! })
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Reply: The hooks read the store\.$/ }))!.key! }) // its reply's first line
   expect(await m.find({ text: /A request to Opus 5\.5 by the main loop, which ended the turn/ })).toBeDefined()
   expect(await m.find({ text: 'claude-opus-5-5 · effort high' })).toBeDefined()
   expect(await m.find({ text: '$0.0123' })).toBeDefined()
@@ -983,8 +998,8 @@ test('a request that wrote text is a row; one that only called tools hides at in
   expect(await m.find({ text: 'by Opus 5.5 in a 4.2s request: Checking the hooks' })).toBeDefined()
   await m.press({ key: 'back' })
   await toLevel(m, 'debug') // every request a row: what it thought, else the calls it made
-  expect(await m.find({ type: 'Button', text: /^Thought$/ })).toBeDefined() // what it thought only in the inspector
-  expect(await m.find({ type: 'Button', text: /^Model API call$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /^Thought: Checking the hooks$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /^Called Read$/ })).toBeDefined()
   await toLevel(m, 'info')
 })
 
@@ -1008,12 +1023,12 @@ test('what streams or runs right now is a ● line below the rows, gone once it 
   // no text yet: the request may end as a debug row, hidden at info, so its line would flash and vanish
   expect(await m.find({ text: /^Thinking/ })).toBe(undefined)
   expect(await m.find({ text: /^Run tests$/ })).toBeDefined()
-  expect((await m.findAll({ type: 'Text', text: /^● \d+\.\ds$/ })).length).toBe(1)
+  expect((await m.findAll({ type: 'Text', text: /^● \d+ms$/ })).length).toBe(1)
   thought()
   await it.next() // it writes: its row will show, so its line does
   await m.redraw()
   expect(await m.find({ text: /^Writing$/ })).toBeDefined() // generic: what it writes is the row's inspector, once it ends
-  expect((await m.findAll({ type: 'Text', text: /^● \d+\.\ds$/ })).length).toBe(2)
+  expect((await m.findAll({ type: 'Text', text: /^● \d+ms$/ })).length).toBe(2)
   wrote(); ran()
   while (!(await it.next()).done) {}
   await call
@@ -1050,7 +1065,7 @@ test('collector records no hook sees become rows; a main or subagent request is 
   expect(harnessOf('mcp_server_connection', { status: 'failed', server_name: 'x', error: 'ECONNREFUSED' })).toMatchObject({ name: 'MCP failed', status: 'failed', peek: 'ECONNREFUSED' })
   // a server closing, as every one does when a headless session ends: no failure, and its duration is its life, not a wait
   const closed = harnessOf('mcp_server_connection', { status: 'disconnected', server_name: 'roadmap', transport_type: 'http', duration_ms: '61045' })
-  expect(closed).toMatchObject({ name: 'MCP disconnected', status: 'ok', peek: 'connected for 61.0s' })
+  expect(closed).toMatchObject({ name: 'MCP disconnected', status: 'ok', peek: 'connected for 1m01s' })
   expect(closed!.ms).toBe(undefined)
   expect(harnessOf('api_error', { status_code: '529', error: 'Overloaded', attempt: 2, duration_ms: 1200 })).toMatchObject({ name: 'API error', detail: '529 Overloaded', outcome: 'attempt 2', status: 'failed', ms: 1200 })
   expect(harnessOf('api_request', { query_source: 'prompt_suggestion', model: 'claude-haiku-5-5', duration_ms: 900, input_tokens: 5, output_tokens: 3, cost_usd: 0.001 }))
@@ -1153,9 +1168,9 @@ test('the setup row reads what the session runs on, what broke first and red; s 
   expect(await m.find({ text: '41.0k of 200.0k tokens (21%)' })).toBeDefined()
   expect(await m.find({ text: /^five hour 42%/ })).toBeDefined()
   expect(await m.find({ text: 'Problems: 1 hook run failed, 1 API error, 1 MCP server down' })).toBeDefined()
-  expect(await m.find({ text: /1 run · 0\.4s · 1 failed$/ })).toBeDefined() // PostToolUse's, as the collector counted them
+  expect(await m.find({ text: /1 run · 420ms · 1 failed$/ })).toBeDefined() // PostToolUse's, as the collector counted them
   expect(await m.find({ text: '0.2.0 · user · hooks' })).toBeDefined()
-  expect(await m.find({ text: 'connected over http in 1.0s' })).toBeDefined()
+  expect(await m.find({ text: 'connected over http in 997ms' })).toBeDefined()
   expect(await m.find({ text: 'failed: ECONNREFUSED' })).toBeDefined()
   expect(await m.find({ text: /^1 request · / })).toBeDefined() // main's
   await m.press({ key: (await m.find({ type: 'Button', text: /^✗ API error/ }))!.key! })
@@ -1279,9 +1294,9 @@ test('each hook of a row of several marks what it did on its own row: + the one 
   ])
   await toLevel(m, 'debug')
   expect(await m.find({ text: /^\+ —$/ })).toBeDefined() // context-mode: a plugin hook, untimed
-  expect(await m.find({ text: /^· 0\.0s$/ })).toBeDefined() // guard
-  expect(await m.find({ text: /^· 0\.1s$/ })).toBeDefined() // test-gate
-  expect(await m.find({ text: /^✗ 0\.0s$/ })).toBeDefined() // install-cooldown
+  expect(await m.find({ text: /^· 20ms$/ })).toBeDefined() // guard
+  expect(await m.find({ text: /^· 100ms$/ })).toBeDefined() // test-gate
+  expect(await m.find({ text: /^✗ 30ms$/ })).toBeDefined() // install-cooldown
   await toLevel(m, 'info')
 })
 
@@ -1290,8 +1305,8 @@ test('a hook hook-timer wraps shows its own time on its row; one it does not wra
     { t: T0, turn: 1, kind: 'hook', name: 'guard, test-gate, context-mode', origin: 'PreToolUse', detail: 'Bash', outcome: 'ok', status: 'ok', ms: 900, each: { guard: 300, 'test-gate': 800 } },
   ])
   await toLevel(m, 'debug')
-  expect(await m.find({ text: /^· 0\.3s$/ })).toBeDefined()
-  expect(await m.find({ text: /^· 0\.8s$/ })).toBeDefined()
+  expect(await m.find({ text: /^· 300ms$/ })).toBeDefined()
+  expect(await m.find({ text: /^· 800ms$/ })).toBeDefined()
   expect(await m.find({ text: /^· —$/ })).toBeDefined() // context-mode: a plugin hook, untimed
   await toLevel(m, 'info')
 })
@@ -1306,7 +1321,7 @@ test('a hook of a row of several opens alone: its own text, time and exit; prev 
   expect(await m.find({ text: 'test-gate ran on PreToolUse and added context for the model' })).toBeDefined()
   expect(await m.find({ text: 'run the tests first' })).toBeDefined()
   expect(await m.find({ text: /use ctx_execute/ })).toBe(undefined) // context-mode's, not this hook's
-  expect(await m.find({ text: '0.1s' })).toBeDefined() // its own 80 ms, not the chain's
+  expect(await m.find({ text: '80ms' })).toBeDefined() // its own, not the chain's 100
   await m.press({ key: 'prev' })
   expect(await m.find({ text: /^context-mode ran on PreToolUse/ })).toBeDefined()
   expect(await m.find({ key: 'prev' })).toBe(undefined) // the first row
@@ -1355,10 +1370,10 @@ test('each hook outcome has its mark: + context, · nothing, ■ a stop (amber, 
     hookRow({ name: 'guard', outcome: 'block', ms: 400 }),
   ])
   await toLevel(m, 'debug')
-  expect(await m.find({ type: 'Text', text: '+ 0.1s' })).toBeDefined()
-  expect(await m.find({ type: 'Text', text: '· 0.2s' })).toBeDefined()
-  expect(await m.find({ type: 'Text', text: '■ 0.3s' })).toBeDefined()
-  expect(await m.find({ type: 'Text', text: '⊘ 0.4s' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '+ 100ms' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '· 200ms' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '■ 300ms' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '⊘ 400ms' })).toBeDefined()
   expect(await m.find({ type: 'Text', text: /^✗/ })).toBe(undefined)
   await toLevel(m, 'info')
 })

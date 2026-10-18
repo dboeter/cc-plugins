@@ -114,6 +114,12 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   expect(all.some(l => /\*Reply/.test(l))).toBe(true) // main's request on its advisor's bracket is no hook: bright
   expect(all.some(l => /Sonnet 5\.5 · /.test(l))).toBe(false) // main's requests name no model: the switch row says it
   expect(all.some(l => /↗ 1 outside root/.test(l))).toBe(true)
+  // rows say what happened: the pattern searched, the reply's first line; a time in its own unit, never `0.0s`
+  expect(all.some(l => /Search "secs\\\(" in hooks/.test(l))).toBe(true)
+  expect(all.some(l => /Reply: The test fails because the header grew a row\./.test(l))).toBe(true)
+  expect(all.some(l => /\b0\.0s/.test(l))).toBe(false)
+  expect(all.some(l => /\b40ms\b/.test(l))).toBe(true)
+  expect(plainOf(all.find(l => /^start/.test(plainOf(l)))!).trimEnd()).toBe('start · 2 hidden') // no turn: no split, no time
   await agentlog($, 'level debug'); await m.redraw()
   const debug = await frame(m, 100, 'debug level')
   expect(debug.some(l => /install-check/.test(l))).toBe(true) // a fast hook that changed nothing ranks debug
