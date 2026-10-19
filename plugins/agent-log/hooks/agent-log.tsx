@@ -1,4 +1,5 @@
-import type { AgentInfo, ModelUsage, Register, Timer, ToolInfo, TurnStepResult } from 'claude-code'
+import type { AgentInfo, ModelUsage, Register, Timer, TurnStepResult } from 'claude-code'
+import { scrub } from './scrub'
 
 // Deliberately single-file: every hook and the pane read and mutate the module-level state (entries, seen, owed, chain, the
 // view and expansion state), so a split would pass that state across modules. Sections, in order (search `// ===`):
@@ -56,8 +57,9 @@ const toks = (t: number) => `${num(t)} tok`
 export const costOf = (u?: ModelUsage) => u ? `${toks(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in · ${toks(u.output_tokens)} out` : ''
 const tok = (n: number) => toks(Math.round(n / 4)) // ponytail: chars/4, no tokenizer in the plugin API; ±20% on prose
 const kb = (n: number) => `~${tok(n)}`
-const scrub = (s: string) => s.replace(/(bearer\s+|\b\w*(token|secret|password|passwd|api[_-]?key)\w*[=:]\s*|--?(password|token|api-key)[= ]|:\/\/[^:\/\s]+:)[^\s@'"]+/gi, '$1***') // ponytail: best-effort secret scrub, not a guarantee
-const SESSIONS = 10 // was 20 before step rows: a step row runs to ~800 bytes (reply peek, thought, tokens), so 10 x 300 rows stays under the store's 4 MiB cap
+// scrub: secret-shaped text as ***, from hooks/scrub.ts (a copy of plugins/shared/scrub.ts, as event-log's is); re-exported for the tests
+export { scrub }
+const SESSIONS = 10 // was 20 before step rows. Each session's key is held to BUDGET bytes, so 10 of them fit the store's 4 MiB cap
 const PEEK = 300 // chars of text kept per entry
 const peek = (s: unknown): string | undefined => typeof s === 'string' && s.trim() ? scrub(s.trim()).slice(0, PEEK) : undefined
 const noCd = (s: string) => s.replace(/^\s*cd\s+\S+\s*(&&|;)\s*/, '') // a Bash command minus its leading `cd <dir> &&` / `;`
@@ -109,24 +111,27 @@ function insightOf(cmd: string | undefined, raw: string): { exit?: number; quiet
 // one's. Else the event's, as a guess
 type HookCfg = Record<string, { matcher: string; name: string; plugin?: boolean; cmd?: string }[]> // cmd: the command as written, so one script on several events or matchers counts once
 let hookCfg: HookCfg | undefined
+let hookFresh = false // hookCfg came from a settings read that worked and no ConfigChange has fired since: else read again
 let enabled: string[] = [] // the plugins settings enable (`name@marketplace`): the setup's plugin list where no plugin_loaded record came
 const scriptName = (h: any): string => {
   const cmd = String(h?.command ?? '')
   return cmd.match(/([\w.-]+)\.(sh|py|js|mjs|ts|rb|pl)\b/)?.[1] ?? cmd.split(/\s+/)[0]?.split('/').pop() ?? String(h?.type ?? 'hook')
 }
 async function hooksOf($: any): Promise<HookCfg> {
-  if (hookCfg) return hookCfg
+  if (hookCfg && hookFresh) return hookCfg
   const cfg: HookCfg = {}
   const add = (hooks: any, plugin?: string) => {
     for (const [ev, groups] of Object.entries<any>(hooks ?? {})) for (const g of Array.isArray(groups) ? groups : []) for (const h of g?.hooks ?? []) (cfg[ev] ??= []).push({ matcher: String(g?.matcher ?? ''), name: plugin ?? scriptName(h), plugin: !!plugin, cmd: String(h?.command ?? h?.prompt ?? h?.type ?? '') })
   }
   let s: any
-  try { s = await $.settings.read(); add(s?.hooks); enabled = Object.entries(s?.enabledPlugins ?? {}).filter(([, on]) => on).map(([id]) => id) } catch {}
+  let ok = false
+  try { s = await $.settings.read(); ok = true; add(s?.hooks); enabled = Object.entries(s?.enabledPlugins ?? {}).filter(([, on]) => on).map(([id]) => id) } catch {}
   // a plugin's command hooks run in the same classic chain; named by the plugin (`context-mode`), not their scripts (`pretooluse`)
   try {
     const installed = JSON.parse(await $.fs.read(`${await $.env.get('HOME')}/.claude/plugins/installed_plugins.json`))?.plugins ?? {}
     for (const [id, on] of Object.entries(s?.enabledPlugins ?? {})) if (on) for (const i of installed[id] ?? []) try { add(JSON.parse(await $.fs.read(`${i.installPath}/hooks/hooks.json`))?.hooks, id.split('@')[0]) } catch {}
   } catch {}
+  hookFresh = ok
   return hookCfg = cfg
 }
 const fits = (matcher: string, target?: string) => {
@@ -251,23 +256,21 @@ let key = '' // this session's store key; one per session so concurrent sessions
 let inspect: Entry | undefined // the entry shown in full; set, the pane draws it in place of the log (a second pane cannot take the keys from this one)
 let page: 'setup' | 'keys' | undefined // the setup page or the keys page (what each mark and key means), drawn in place of the log as the inspector is
 let pageBack = false // the inspector opened from the setup page: back returns to the page, not the log
-// The session's setup as the hooks saw it, for the setup button and page, in memory only: the engine's version and tools (asked at
-// session.start), the main loop's last model and effort (its steps), the permission mode (every classic event carries it), usage
-// (session.measure), and from the collector, with OTEL export on: the plugins the engine loaded and the MCP servers it connected
+// The session's setup as the hooks saw it, for the setup button and page, in memory only: the main loop's last model and effort
+// (asked at session.start, then its steps), the permission mode (every classic event carries it), rate limits (session.measure),
+// and from the collector, with OTEL export on: the plugins the engine loaded and the MCP servers it connected
 // (records at startup), and per hook event the settings hooks' runs, the silent ones included (hook_execution_complete). bg: the
 // background tasks and crons still in flight when main's last turn ended (Stop): TaskCreated/Completed rows log their lives
-type Setup = { version?: string; model?: string; effort?: string | number; mode?: string; cost?: number; limits: { kind: string; percentUsed: number; resetsAt?: string }[]
+type Setup = { model?: string; effort?: string | number; mode?: string; limits: { kind: string; percentUsed: number; resetsAt?: string }[]
   bg?: { tasks: { type: string; status: string; description: string; command?: string }[]; crons: { schedule: string; recurring: boolean; prompt: string }[] }
-  context?: { tokens?: number; window: number; percent?: number }; tools?: ToolInfo[]; asked?: boolean
-  plugins: Map<string, { version?: string; scope?: string; hooks?: boolean; mcp?: boolean }>; mcp: Map<string, { status: string; ms?: number; transport?: string; error?: string }>
+  asked?: boolean
+  plugins: Map<string, { version?: string; scope?: string; hooks?: boolean; mcp?: boolean }>; mcp: Map<string, { status: string }>
   runs: Map<string, { n: number; ms: number; errors: number; cancelled: number }>; runsOf?: string } // runsOf: the session id the runs count for
 const setup: Setup = { limits: [], plugins: new Map(), mcp: new Map(), runs: new Map() }
 // what the API alone answers: asked once at session.start (a reload's included), and by the first draw where none ran
 async function refreshSetup($: any): Promise<void> {
   setup.asked = true
-  try { setup.version = (await $.session.version())?.version } catch {}
   try { setup.model ??= await $.session.model() } catch {}
-  try { setup.tools = await $.tool.list() } catch {}
   try { await hooksOf($) } catch {}
 }
 let homeDir: string | undefined // HOME, kept once an answer came: the `~` of the places calls reach
@@ -592,6 +595,18 @@ export const splitOf = (xs: Entry[], from: number, to: number): number[] => {
   for (const [t, d, c] of pts) { const top = on.findIndex(n => n > 0); if (top >= 0) out[top]! += t - at; at = t; on[c]! += d }
   return out
 }
+// The band's note on a turn that ended unusually, or none: `#4 took 41.2s, 3× the usual` against the median of main's earlier
+// turns (3 or more of them), else `#4: hooks 12.0s of 20.0s` when hooks or a slow permission decision held the turn longest.
+// Turns under 10 s never note: a short turn is not worth a look. Waiting on you is left out: that is your time, not a fault
+export const unusualOf = (n: number, split: number[], ms: number, prior: number[]): string | undefined => {
+  if (ms < 10_000) return undefined
+  const ps = prior.filter(p => p > 0).sort((a, b) => a - b), mid = ps.length >= 3 ? ps[ps.length >> 1]! : undefined
+  if (mid && ms > 2 * mid) return `#${n} took ${secs(ms)}, ${Math.round(ms / mid)}× the usual`
+  const top = split.reduce((m, v, i) => v > split[m]! ? i : m, 0), other = ms - split.reduce((a, b) => a + b, 0)
+  const who = SPLIT[top]!
+  if ((who === 'hooks' || who === 'permission') && split[top]! > other && split[top]! >= 3000) return `#${n}: ${who} ${secs(split[top])} of ${secs(ms)}`
+  return undefined
+}
 // a spawned agent's name: the second and later of a type read `type #2`, `#3`, so two general-purpose agents tell apart in row
 // prefixes, the tree and the filter. counted: the loops already numbered, so not this one or a parallel spawn whose SubagentStart
 // named it before its agent.spawn resumed. One past the highest, not the count: saved() drops the names of loops evicted from the
@@ -634,7 +649,9 @@ const liveNow = new Map<string, Live>()
 const compactAt = new Map<string, number>() // loop -> when its PreCompact fired: PostCompact's row takes the time
 // the collector's last hook_execution_complete: the settings hooks a classic event just ran, how many failed and how many the engine
 // cancelled (a timeout). It lands inside that event's next, so classic.* reads it right after
-let lastRun: { t: number; event: string; errors: number; cancelled: number } | undefined
+// name: the collector's hook_name, `<event>:<target>` (`PostToolUse:Edit`). The first row that fits it takes it (classic.*), so one
+// record marks one row; two parallel calls of one tool both fit, and which takes it is a guess: the record names no call
+let lastRun: { t: number; event: string; name: string; errors: number; cancelled: number } | undefined
 let turnAt: number | undefined // when main's running turn began: your prompt's submit
 // a tool row -> PreToolUse context attachments still to come for it. The engine sends a PreToolUse hook's context with the request
 // after the call, so its attachment arrives once the call's row is logged; push files it just above that row, in call order
@@ -653,7 +670,9 @@ async function tick($: any): Promise<void> {
 }
 
 // ponytail: 2s poll while pane open, replace if an agent-status event lands in the API
-const startPoll = ($: any) => { timer ??= $.clock.every(2000, () => { tick($) }) }
+const startPoll = ($: any) => { timer ??= $.clock.every(2000, () => { tick($) }); note = undefined } // the pane is open: the band's note is read
+// the band's line above the prompt while the pane is closed: the last turn's unusualOf, until the next turn ends or the pane opens
+let note: string | undefined
 
 // The engine caches prompt.attachment and prompt.context answers, and when the cache drops it asks again for every one
 // in the history, in order, on a loop's next request: for a fresh instance of this plugin (a resume, a hot reload of
@@ -717,14 +736,18 @@ const sigOf = (type: string, origin: string | undefined, agent: string | undefin
 // stores written before `seen` hold entries alone; seed from them (only logged rows, so noisy kinds start at zero)
 const seed = (xs: Entry[]) => { const s: Record<string, number> = {}; for (const x of xs) if (x.kind === 'prompt' && x.type && x.bytes != null) { const g = sigOf(x.type, x.origin, x.agent, x.bytes); s[g] = (s[g] ?? 0) + 1 } return s }
 // names only for loops the kept entries still show: a session forks several times a turn, and the store has a size cap
-const saved = () => ({ entries, seen, turn: turnNo, names: Object.fromEntries(Object.entries(names).filter(([id]) => entries.some(x => x.agent === id))) })
+// `seen` likewise drops a subagent's counts once no kept entry shows it: else they grow all session. Main's (agent part '') stay
+const shown = (id: string) => entries.some(x => x.agent === id)
+const saved = () => ({ entries, seen: Object.fromEntries(Object.entries(seen).filter(([g]) => { const a = g.split('|')[2]; return !a || shown(a) })), turn: turnNo, names: Object.fromEntries(Object.entries(names).filter(([id]) => shown(id))) })
 
-// session id changes on /clear and resume; a failed load is retried next call
-async function load($: any): Promise<void> {
+// session id changes on /clear and resume; a failed load is retried next call. Outside the chain, so a load during a session
+// switch cannot interleave with a push's: loadNow runs only inside mutate, which is why it checks the key again
+const load = async ($: any): Promise<void> => { if (key && `r:${await $.session.id()}` === key) return; return mutate(() => loadNow($)) }
+async function loadNow($: any): Promise<void> {
   const id = await $.session.id()
-  const k = `r:${id}` // r: = redacted format (scrubbed, PEEK-capped text only); older s: keys hold unredacted text and prune() deletes them
+  const k = `r:${id}` // r: = redacted format (scrubbed, PEEK-capped text only); older s: keys hold unredacted text and pruneOthers() deletes them
   if (k === key) return
-  if (dirty && key) await $.store.set(key, saved()) // the old session's unflushed tail, before its key is dropped
+  if (dirty && key) { const tail = { key, value: saved() }; if (!await save($, tail.key, tail.value)) pendingTail = tail } // the old session's unflushed tail, before its key is dropped
   dirty = false
   const v = await $.store.get(k)
   if (key) { stepOf.clear(); bills = []; unbilled = [] } // the old session's requests; not on the first load, which a step's push can trigger after its pairing was queued
@@ -737,8 +760,11 @@ async function load($: any): Promise<void> {
   names = { ...(v?.names && !Array.isArray(v) ? v.names : {}), ...names } // merged: a fresh instance can name a loop before its first load. Ids are unique, and saved() drops the ones no entry shows
   owed = entries.length || Object.keys(seen).length ? { ...seen } : undefined // /clear's empty session owes nothing
   blind = false; closed.clear(); lead.clear(); rerun.clear(); pre.clear(); recent.clear(); composed.clear(); checks.clear(); inherited.clear(); took.clear(); postCtx = [] // the old session's calls
+  // every new key prunes the others: a session's start, and /clear and resume, which add a key. Queued, not awaited: prompt.submit
+  // awaits this load before its next, and a prune reads every other session
+  mutate(() => pruneOthers($)).catch(() => {})
 }
-const ready = ($: any) => key ? Promise.resolve() : mutate(() => load($)).catch(() => {}) // a fresh instance loads before the replay window is read
+const ready = ($: any) => key ? Promise.resolve() : load($).catch(() => {}) // a fresh instance loads before the replay window is read
 
 function mutate(fn: () => Promise<void>): Promise<void> {
   const run = chain.then(fn)
@@ -749,11 +775,39 @@ function mutate(fn: () => Promise<void>): Promise<void> {
 // The store is one JSON file for all sessions (~1 MB), so a write per entry made a burst (a resume re-asks
 // every past attachment) take seconds, and hooks awaiting it ran past their budget. Entries now land in
 // memory and flush at most once a second; a hot reload loses at most that last second.
+// A write the store refuses (its 4 MiB cap, shared by every session's key) keeps the rows dirty, shows "log not saved" (problemsOf),
+// prunes the other sessions and tries again in RETRY ms; pendingTail is a switched-away session's tail still to write
 let dirty = false
 let flushTimer: Timer | undefined
+let retryTimer: Timer | undefined
+let unsaved = false
+let pendingTail: { key: string; value: unknown } | undefined
+const RETRY = 5000
+async function save($: any, k: string, v: unknown): Promise<boolean> {
+  try { await $.store.set(k, v); return true } catch {}
+  unsaved = true
+  await pruneOthers($).catch(() => {})
+  retryTimer ??= $.clock.after(RETRY, () => { retryTimer = undefined; dirty = true; flush($).catch(() => {}) })
+  $.ui.invalidate('ui.render')
+  return false
+}
+// per session, in JSON text: SESSIONS of these and headroom fit the store's 4 MiB. Measured, as rows vary from ~200 bytes to over 2 KB
+const BUDGET = Math.floor((4 * 1024 * 1024 - 256 * 1024) / SESSIONS)
+const fit = () => {
+  let n = JSON.stringify(saved()).length
+  if (n <= BUDGET) return
+  const size = new Map(entries.map(x => [x, JSON.stringify(x).length + 1]))
+  while (n > BUDGET && entries.length) n -= size.get(evictOne())!
+  // the rows are gone and it is still over: `seen` alone, a session that logged thousands of signatures. Its rarest go first
+  if (n > BUDGET) for (const [g] of Object.entries(seen).sort((a, b) => a[1] - b[1])) { if (JSON.stringify(saved()).length <= BUDGET) break; delete seen[g] }
+}
 function flush($: any): Promise<void> {
   flushTimer?.cancel(); flushTimer = undefined
-  return mutate(async () => { if (dirty && key) { dirty = false; await $.store.set(key, saved()) } })
+  return mutate(async () => {
+    if (pendingTail && await save($, pendingTail.key, pendingTail.value)) pendingTail = undefined
+    if (dirty && key) { dirty = false; fit(); if (!await save($, key, saved())) dirty = true }
+    if (unsaved && !pendingTail && !dirty) { unsaved = false; retryTimer?.cancel(); retryTimer = undefined; $.ui.invalidate('ui.render') } // all written
+  })
 }
 const touch = ($: any) => { dirty = true; flushTimer ??= $.clock.after(1000, () => { flushTimer = undefined; flush($).catch(() => {}) }) }
 
@@ -812,7 +866,7 @@ export const markAgain = (xs: Entry[], x: Entry) => {
 function push($: any, e: Omit<Entry, 't'>, opt: { ahead?: number; above?: string; after?: string; start?: number } = {}): void {
   const t = opt.start ?? Date.now() // when it happened, not when the chain gets to it: rows are placed by it
   mutate(async () => {
-    await load($)
+    await loadNow($)
     const x: Entry = { t, turn: turnNo, ...e }
     // A call's row is pushed once the call is over, after everything that happened while it ran: its own hooks (they run inside
     // it), parallel calls that finished first, a foreground agent's whole run. So it goes in where it began: before the first
@@ -837,9 +891,8 @@ function push($: any, e: Omit<Entry, 't'>, opt: { ahead?: number; above?: string
     // the same hook text once more, or the engine putting the cwd back where the session began after a `cd`: nothing new, so info
     if (x.kind === 'prompt' && (x.src === 'hook' || x.src === 'plugin')) markAgain(entries, x)
     else if (envUpdate(x)) { const home = entries.findLast(y => y.kind === 'session' && y.name !== 'reload')?.detail; x.again = (!!home && ctxOf(x)[1] === ` → ${base(home)}`) || undefined }
-    // over `keep`, the oldest hidden or debug row goes first: chatter only fills slots the rest leaves free, so the store bound is unchanged
-    // an evicted first copy of a hook text hands that role to the next copy, which then ranks notice again (markAgain)
-    while (entries.length > keep) { const d = entries.findIndex(y => hiddenCtx(y) || lvl(y) === 0); const gone = entries.splice(Math.max(0, d), 1)[0]!; if (gone.kind === 'prompt' && !gone.again && (gone.src === 'hook' || gone.src === 'plugin')) markAgain(entries, gone) }
+    // over `keep`, the oldest hidden or debug row goes first: chatter only fills slots the rest leaves free (evictOne)
+    while (entries.length > keep) evictOne()
     touch($)
     $.ui.invalidate('ui.render') // a hidden row still redraws: its turn's hidden count changed
     if (lvl(x) < level) return // no "N new" for a row nobody sees
@@ -847,16 +900,28 @@ function push($: any, e: Omit<Entry, 't'>, opt: { ahead?: number; above?: string
   }).catch(() => {})
 }
 
-async function prune($: any): Promise<void> {
-  await load($)
+// over `keep` or the store budget (fit), the oldest hidden or debug row goes first, else the oldest; returns it
+// an evicted first copy of a hook text hands that role to the next copy, which then ranks notice again (markAgain)
+function evictOne(): Entry {
+  const d = entries.findIndex(y => hiddenCtx(y) || lvl(y) === 0)
+  const gone = entries.splice(Math.max(0, d), 1)[0]!
+  if (gone.kind === 'prompt' && !gone.again && (gone.src === 'hook' || gone.src === 'plugin')) markAgain(entries, gone)
+  return gone
+}
+
+// called from loadNow on each key change (session.start's first load among them), and when a write is refused
+async function pruneOthers($: any): Promise<void> {
   // keep the SESSIONS - 1 other sessions whose newest entry is newest. Insertion order pruned live sessions: every hot reload
-  // prunes in every running session, and a long-lived session's key is the oldest. A session idle behind 9 busier ones still goes
+  // prunes in every running session, and a long-lived session's key is the oldest. A session idle behind 9 busier ones still goes.
+  // And by bytes: keys written before BUDGET can be larger, so the oldest kept ones also go until this session's share is free
   const others: string[] = (await $.store.keys()).filter((k: string) => k !== key)
   const redacted = others.filter(k => k.startsWith('r:'))
-  const last = new Map<string, number>()
-  for (const k of redacted) { const v = await $.store.get(k); const es = Array.isArray(v) ? v : v?.entries; last.set(k, Array.isArray(es) ? es.at(-1)?.t ?? 0 : 0) }
-  const stale = [...others.filter(k => !k.startsWith('r:')), ...redacted.sort((a, b) => last.get(b)! - last.get(a)!).slice(SESSIONS - 1)]
-  for (const k of stale) await $.store.delete(k)
+  const last = new Map<string, number>(), size = new Map<string, number>()
+  for (const k of redacted) { const v = await $.store.get(k); const es = Array.isArray(v) ? v : v?.entries; last.set(k, Array.isArray(es) ? es.at(-1)?.t ?? 0 : 0); size.set(k, JSON.stringify(v ?? null).length) }
+  const kept = [...redacted].sort((a, b) => last.get(b)! - last.get(a)!).slice(0, SESSIONS - 1)
+  let total = kept.reduce((n, k) => n + size.get(k)!, 0)
+  while (kept.length && total > 4 * 1024 * 1024 - 256 * 1024 - BUDGET) total -= size.get(kept.pop()!)!
+  for (const k of others.filter(k => !kept.includes(k))) await $.store.delete(k)
 }
 
 // What broke this session, for the controls' red badge and the setup page: settings hook runs that failed or were cancelled (the collector's counts, else the red
@@ -869,13 +934,14 @@ const problemsOf = (xs: Entry[]): string[] => {
     many(runs || n(x => x.kind === 'hook' && stat(x) === 'failed'), 'hook run failed', 'hook runs failed'),
     many(n(x => x.kind === 'event' && x.name === 'API error'), 'API error'),
     many(n(x => x.kind === 'event' && x.name === 'turn failed'), 'turn failed', 'turns failed'),
+    unsaved ? 'log not saved' : '',
     many([...setup.mcp.values()].filter(m => m.status !== 'connected' && m.status !== 'disconnected').length || n(x => x.kind === 'event' && x.name === 'MCP failed'), 'MCP server down', 'MCP servers down'),
   ].filter(Boolean)
 }
 
 // === HOOKS ===
 export const register: Register = (on, options) => {
-  keep = Math.min(300, Math.max(1, Number(options.keep) || 300)) // store cap is 4 MiB total: 300 entries x SESSIONS (10) x at most ~800 bytes stays under it
+  keep = Math.min(300, Math.max(1, Number(options.keep) || 300)) // the most a session keeps, as plugin.json says; fit() keeps fewer when its rows are large (step rows run to 2 KB)
 
   // what identifies a call: the scrubbed Bash command, a file target, or a short handle (agent type and task, skill, query, URL).
   // Prompts, file contents and edit bodies stay out of the store
@@ -890,12 +956,12 @@ export const register: Register = (on, options) => {
     return arg ? `${tool}: ${scrub(arg)}` : tool
   }
   const detailOf = (e: any): string =>
-    e.tool === 'Bash' ? e.description || noCd(scrub(e.command ?? '')) // the model's own label; else the command minus a leading cd
+    e.tool === 'Bash' ? scrub(e.description ?? '') || noCd(scrub(e.command ?? '')) // the model's own label; else the command minus a leading cd
     : /^(Read|Edit|Write|NotebookEdit|Grep|Glob)$/.test(e.tool) ? e.file_path ?? e.notebook_path ?? e.path ?? ''
     : e.tool === 'Agent' ? `${e.subagent_type ?? 'general-purpose'}: ${e.description ?? ''}`
     : e.tool === 'Skill' ? `${e.skill ?? ''}${e.args ? ` ${scrub(e.args)}` : ''}`
     : e.tool === 'WebFetch' ? scrub(e.url ?? '')
-    : /^(WebSearch|ToolSearch)$/.test(e.tool) ? e.query ?? ''
+    : /^(WebSearch|ToolSearch)$/.test(e.tool) ? scrub(e.query ?? '')
     : String(e.tool).startsWith('mcp__') ? mcpDetail(e)
     : ''
 
@@ -921,7 +987,7 @@ export const register: Register = (on, options) => {
     }).catch(() => {})
     else if (e.event === 'tool_decision' && typeof a.tool_use_id === 'string') { decided.set(a.tool_use_id, { t: Date.now(), source: a.source, decision: a.decision }); const l = liveNow.get(`t${a.tool_use_id}`); if (l?.asking) { l.asking = false; $.ui.invalidate('ui.render') } }
     if (e.event === 'hook_execution_complete') {
-      const run = lastRun = { t: Date.now(), event: String(a.hook_event ?? ''), errors: Number(a.num_non_blocking_error) || 0, cancelled: Number(a.num_cancelled) || 0 }
+      const run = lastRun = { t: Date.now(), event: String(a.hook_event ?? ''), name: String(a.hook_name ?? ''), errors: Number(a.num_non_blocking_error) || 0, cancelled: Number(a.num_cancelled) || 0 }
       // the count is this session's: /clear and resume start it over, here and at load(). A record can land before the new session's
       // first load (its SessionStart hooks run first), so it asks the id itself. The plugins and MCP servers stay: the process loaded them once
       try { const sid = await $.session.id(); if (sid !== setup.runsOf) { setup.runs.clear(); setup.runsOf = sid } } catch {}
@@ -929,10 +995,8 @@ export const register: Register = (on, options) => {
       setup.runs.set(run.event, { n: r.n + 1, ms: r.ms + (Number(a.total_duration_ms) || 0), errors: r.errors + run.errors, cancelled: r.cancelled + run.cancelled })
     }
     if (e.event === 'plugin_loaded' && a['plugin.name']) setup.plugins.set(String(a['plugin.name']), { version: a['plugin.version'], scope: a['plugin.scope'], hooks: a.has_hooks === true || a.has_hooks === 'true', mcp: a.has_mcp === true || a.has_mcp === 'true' })
-    if (e.event === 'mcp_server_connection' && a.server_name) { // a close keeps the time it took to connect: its own duration is the connection's life
-      const was = setup.mcp.get(String(a.server_name))
-      setup.mcp.set(String(a.server_name), { status: String(a.status ?? ''), ms: a.status === 'disconnected' ? was?.ms : Number(a.duration_ms) || undefined, transport: a.transport_type, error: a.error })
-    }
+    // each server's last status, for the problems' `MCP server down`; the server list itself is /mcp's
+    if (e.event === 'mcp_server_connection' && a.server_name) setup.mcp.set(String(a.server_name), { status: String(a.status ?? '') })
     if (e.event === 'permission_mode_changed' && a.to_mode) setup.mode = String(a.to_mode)
     try { const x = harnessOf(e.event, a); if (x) push($, x, { start: x.ms != null ? Date.now() - x.ms : undefined }) } catch {}
     if (e.event === 'api_request' && String(a.query_source ?? '').startsWith('repl_main_thread')) streamEnd = Date.now()
@@ -987,7 +1051,7 @@ export const register: Register = (on, options) => {
     if (sp) spawned = spawned.filter(s => s !== sp)
     // a rejected decision is a refusal, whether it reaches the call as a deny or as the error result the model reads
     const outcome = r.deny || refused ? 'deny' : r.isError ? 'error' : 'ok'
-    const why = CLASSIFIED.test(text) ? classifierWhy(text) : refused && DENIED.test(text) ? deniedWhy(text)
+    const why = CLASSIFIED.test(text) ? scrub(classifierWhy(text)) : refused && DENIED.test(text) ? scrub(deniedWhy(text))
       : r.deny ? peek(r.deny) ?? peek(v?.reason) : r.isError ? peek(r.text) : undefined // only failures keep text: an ok result can be a whole file
     const ins = r.isError && !r.deny && !refused && !hookBlocked && text ? insightOf(cmd, text) : undefined // refused: it never ran, so no output to boil down
     const status: Status = r.deny || refused || hookBlocked ? 'denied' : ins?.quiet ? 'nomatch' : r.isError ? 'failed' : 'ok'
@@ -1043,7 +1107,7 @@ export const register: Register = (on, options) => {
         if (!e.agentId) { setup.model = e.model; setup.effort = e.effort }
         push($, { kind: 'step', name: e.model, detail: '', outcome: '', status, agent: e.agentId, ms: end - t0, step: key, effort: e.effort, ttft, think: think || undefined,
           stop: r?.stopReason ?? undefined, tok, asked: names.length ? names : undefined, server: server?.length ? server : undefined, cost: b?.cost, req: b?.req,
-          thought: first(thought).replace(/^#+\s*|\*\*|__/g, '').slice(0, 200) || undefined, // its first line: a summary's title, and the store's budget
+          thought: scrub(first(thought)).replace(/^#+\s*|\*\*|__/g, '').slice(0, 200) || undefined, // its first line: a summary's title, and the store's budget
           peek: peek(said) ?? (err ? peek(err instanceof Error ? err.message : String(err)) : undefined) }, { start: t0 })
       } catch {}
     }
@@ -1059,7 +1123,7 @@ export const register: Register = (on, options) => {
       case 'PostModelSwitch': return ev('model switch', `${e.from_model} → ${e.to_model}`, e.source, { peek: `${num(Number(e.context_tokens) || 0)} tokens of context; the prompt cache was ${e.prompt_cache_warm ? 'warm' : `cold, so the next request writes it again (~$${(Number(e.estimated_cache_write_usd) || 0).toFixed(2)})`}` })
       case 'StopFailure': return ev('turn failed', e.error, '', { status: 'failed', peek: peek(e.error_details) })
       case 'PostCompact': { const t = compactAt.get(agent ?? 'main'); compactAt.delete(agent ?? 'main'); return ev('compacted', e.trigger, '', { ms: t != null ? Date.now() - t : undefined, peek: peek(e.compact_summary) }) }
-      case 'ConfigChange': return ev('settings changed', e.file_path ? at(e.file_path) : e.source) // the path says whose settings: no `(user_settings)` after it
+      case 'ConfigChange': hookFresh = false; return ev('settings changed', e.file_path ? at(e.file_path) : e.source) // the path says whose settings: no `(user_settings)` after it
       case 'DirectoryAdded': return ev('directory added', at(e.directory ?? ''), e.source)
       case 'WorktreeCreate': return ev('worktree created', e.name)
       case 'WorktreeRemove': return ev('worktree removed', at(e.worktree_path ?? ''))
@@ -1113,11 +1177,13 @@ export const register: Register = (on, options) => {
     const detail = String(e.tool_name ?? e.tool ?? (event === 'ConfigChange' ? undefined : e.source) ?? e.reason ?? [e.load_reason, e.file_path && at(e.file_path)].filter(Boolean).join(' ')).slice(0, 120) // no e.prompt: that is the person's prompt
     // settings hooks that exited with an error or that the engine cancelled (a timeout), as the collector counted them: a red row,
     // even when the rest of the event changed nothing. Only with OTEL export on
-    const run = lastRun && lastRun.event === event && lastRun.t >= t0 ? lastRun : undefined
+    // classic.PreToolUse's e is the tool.call envelope: `tool`, no `tool_name` or `hook_event_name`
+    const target = e.tool ?? e.tool_name ?? e.source ?? e.trigger ?? e.reason
+    const run = lastRun && lastRun.event === event && lastRun.t >= t0 && (!lastRun.name.includes(':') || fits(lastRun.name.slice(lastRun.name.indexOf(':') + 1), target)) ? lastRun : undefined
+    if (run) lastRun = undefined
     const broke = run ? [run.cancelled && `${run.cancelled} cancelled`, run.errors && `${run.errors} failed`].filter(Boolean).join(', ') : ''
     const said = (typeof blocked === 'string' ? blocked : ctx.join('\n')) || broke // the block reason, else the context the hooks added, else what broke
-    // classic.PreToolUse's e is the tool.call envelope: `tool`, no `tool_name` or `hook_event_name`
-    const cfg = await hooksOf($), target = e.tool ?? e.tool_name ?? e.source ?? e.trigger ?? e.reason
+    const cfg = await hooksOf($)
     // the wrapped hooks that ran on this event and call, within its span
     const runs = wraps(cfg, event, target) ? await runsOf($, r => r.event === event && (r.use ?? undefined) === e.tool_use_id && r.t0 >= t0 - SKEW && r.t1 <= Date.now() + SKEW, t0) : []
     // each context entry is one hook's: by the run that said it, else named in its own first line. Context leaves the silent hooks
@@ -1207,25 +1273,26 @@ export const register: Register = (on, options) => {
     if (!OWN.has(e.origin.kind)) return next(e)
     if (e.turnId) { const r = await next(e); if (!('drop' in r && r.drop)) { pending++; queued.push(wordsOf(e)) } return r }
     const t = Date.now() // the turn's start: its UserPromptSubmit hooks run inside next
-    await mutate(async () => { await load($); turnNo++; words.set(turnNo, wordsOf(e)); touch($) }).catch(() => {}) // before next: the UserPromptSubmit hooks it runs belong to the new number
+    await mutate(async () => { await loadNow($); turnNo++; words.set(turnNo, wordsOf(e)); touch($) }).catch(() => {}) // before next: the UserPromptSubmit hooks it runs belong to the new number
     const r = await next(e)
     if ('drop' in r && r.drop) mutate(async () => { words.delete(turnNo); turnNo--; touch($) }).catch(() => {}) // a dropped prompt never entered
     else { busy = true; turnAt = t }
     return r
   })
 
-  // usage as the engine measures it: context, rate limits and cost, for the setup button and page
+  // rate limits as the engine measures them, for the setup button's `limit 80%`. Context, cost and the limits in full are
+  // /context, /cost and /status's; the setup page leaves them out
   on('session.measure', async ($, e, next) => {
-    setup.cost = e.cost?.usd; setup.limits = [...e.rateLimits]; setup.context = { tokens: e.context.tokens, window: e.context.window, percent: e.context.percent }
+    setup.limits = [...e.rateLimits]
     return next(e)
   })
 
   on('session.start', async ($, e, next) => {
     refreshSetup($).catch(() => {})
     try { await $.command.register({ name: 'agentlog', description: `Toggle the agent log pane; "clear" empties it, "${SHOWN.join('|')}" picks a view, "level debug|info|notice|error" the least important row shown.`, argumentHint: `[clear|${SHOWN.join('|')}|level <debug|info|notice|error>]` }) } catch {} // throws on hot reload: no session bound yet
-    if (e.isInteractive) { await $.ui.open({ id: PANE, title: 'Agent log' }); startPoll($) }
+    // never opens by itself: a debugger, not a dashboard. A turn that ended unusually says so in the band (AbovePrompt)
     try {
-      await prune($)
+      await load($) // which prunes the other sessions
       // session.start fires once per process, then again on each fresh load of this plugin (a reload, an enable, a worker
       // respawn): only the first is the session beginning. No flag says which, so the first marks it in $.state (declared in state.d.ts)
       const started = { plugin: 'agent-log', key: 'started' } as const
@@ -1251,6 +1318,16 @@ export const register: Register = (on, options) => {
     return r
   })
 
+  // The band above the prompt, shared with other mods: theirs stays, ours goes on top. Between turns, while the pane is closed
+  // (timer lives only while it is open) and the last turn ended unusually
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const theirs = await next(e)
+    if (!note || timer || e.props.hasSurvey || e.props.isWorking) return theirs
+    const { Box, Text } = $.ui.resolve(e)
+    const line = <Text key="agent-log-band" wrap="truncate-end"><Text dimColor>/agentlog </Text><Text color="yellow">{note}</Text></Text>
+    return theirs ? <Box flexDirection="column">{line}{theirs}</Box> : line
+  })
+
   on('session.end', async ($, e, next) => {
     owed = undefined
     try { await flush($) } catch {} // the last second of entries, before the process goes
@@ -1260,10 +1337,11 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'agentlog' }, async ($, e) => {
     if (e.args.trim() === 'clear') {
       await mutate(async () => {
-        await load($)
+        await loadNow($)
         entries = [] // `seen` stays: clearing the log takes nothing out of the model's context
         expanded.clear()
-        await $.store.set(key, saved())
+        fit()
+        dirty = !await save($, key, saved())
         $.ui.invalidate('ui.render')
       })
       return { text: 'agent log cleared' }
@@ -1340,10 +1418,14 @@ export const register: Register = (on, options) => {
     // main's split, once its rows are in (queued behind the push): kept on its turn row, so a full log evicting them loses nothing
     if (!e.agentId) mutate(async () => {
       const y = entries.findLast(z => z.kind === 'turn' && !z.agent)
-      if (y?.ms != null) { y.split = splitOf(entries.filter(z => z.turn === y.turn), y.t - y.ms, y.t); touch($) }
+      if (y?.ms != null) {
+        y.split = splitOf(entries.filter(z => z.turn === y.turn), y.t - y.ms, y.t)
+        note = unusualOf(y.turn ?? turnNo, y.split, y.ms, entries.filter(z => z !== y && z.kind === 'turn' && !z.agent && z.ms != null).map(z => z.ms!))
+        touch($)
+      }
     }).catch(() => {})
     if (!e.agentId) { busy = false; turnAt = undefined }
-    if (!e.agentId && pending) mutate(async () => { await load($); queued.forEach((w, i) => words.set(turnNo + 1 + i, w)); turnNo += pending; pending = 0; queued = []; touch($) }).catch(() => {}) // queued after the push, so the turn row keeps its number
+    if (!e.agentId && pending) mutate(async () => { await loadNow($); queued.forEach((w, i) => words.set(turnNo + 1 + i, w)); turnNo += pending; pending = 0; queued = []; touch($) }).catch(() => {}) // queued after the push, so the turn row keeps its number
     return r
   })
 
@@ -1869,9 +1951,6 @@ export const register: Register = (on, options) => {
     const problems = problemsOf(entries)
     const elsewhere = entries.filter(x => x.out && !routine(x.out)).length // calls into another project, magenta in the controls (u: the outside view lists them)
     const hookN = new Set(Object.values(hookCfg ?? {}).flat().map(h => h.cmd ?? h.name)).size // distinct scripts, not registrations: context-mode registers one script on 9 PreToolUse matchers
-    const servers = new Map<string, number>() // MCP server -> its tools, from the tool list (`mcp__server__tool`) and the connection records
-    for (const t of setup.tools ?? []) if (t.mcp) { const sv = t.name.split('__')[1] ?? t.name; servers.set(sv, (servers.get(sv) ?? 0) + 1) }
-    for (const sv of setup.mcp.keys()) if (!servers.has(sv)) servers.set(sv, 0)
     const peak = setup.limits.reduce<Setup['limits'][number] | undefined>((m, l) => !m || l.percentUsed > m.percentUsed ? l : m, undefined)
     const plugins = setup.plugins.size || enabled.length
     const bgN = setup.bg?.tasks.length ?? 0, cronN = setup.bg?.crons.length ?? 0
@@ -1913,19 +1992,16 @@ export const register: Register = (on, options) => {
       const outs = [...xs(x => !!x.out).reduce((m, x) => m.set(x.out!, (m.get(x.out!) ?? 0) + 1), new Map<string, number>())].sort((p, q) => q[1] - p[1])
       // the key column fits the longest key (hook events like PermissionRequest, plugin and server names), capped at a third of the
       // pane; a key past the cap is cut, never wrapped into its value
-      const keys = ['calls outside', ...events, ...(setup.plugins.size ? setup.plugins.keys() : enabled.map(id => id.split('@')[0]!)), ...servers.keys()]
+      const keys = ['calls outside', ...events, ...(setup.plugins.size ? setup.plugins.keys() : enabled.map(id => id.split('@')[0]!))]
       const keyW = Math.max(15, Math.min(Math.max(...keys.map(k => k.length)) + 2, Math.floor(cols / 3)))
       const kw = (k: string, v: string, id = k) => <Box key={`k${id}`} flexDirection="row"><Box flexShrink={0} width={keyW}><Text dimColor wrap="truncate-end">{fit(k, keyW - 2)}</Text></Box><Text wrap="wrap">{v}</Text></Box>
       const title = (k: string, t: string) => [<Text key={`gap${k}`}> </Text>, <Text key={`t${k}`} weight="semibold">{t}</Text>]
       return (
         <Box key="setup" flexDirection="column" width={e.props.bodyColumns}>
           <Box flexDirection="row" columnGap={2}><Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} /></Box>
-          {title('cc', `Claude Code ${setup.version ?? ''}`.trim())}
+          {title('cc', 'Session')}
           {kw('model', setup.model ? `${modelName(setup.model)} (${setup.model})${setup.effort != null ? ` · effort ${setup.effort}` : ''}` : '—')}
           {kw('mode', setup.mode ?? '—')}
-          {setup.context && kw('context', `${setup.context.tokens != null ? `${num(setup.context.tokens)} of ` : ''}${num(setup.context.window)} tokens${setup.context.percent != null ? ` (${Math.round(setup.context.percent)}%)` : ''}`)}
-          {setup.cost != null && kw('cost', `$${setup.cost.toFixed(2)} this session`)}
-          {setup.limits.length > 0 && kw('limits', setup.limits.map(l => `${l.kind.replace(/_/g, ' ')} ${Math.round(l.percentUsed)}%${l.resetsAt ? ` (resets ${new Date(l.resetsAt).toLocaleTimeString()})` : ''}`).join(' · '))}
           {title('wh', 'Where')}
           {at && kw('root', tilde(at[0], at[2]))}
           {at && at[1] !== at[0] && kw('cwd', tilde(at[1], at[2]))}
@@ -1939,9 +2015,6 @@ export const register: Register = (on, options) => {
           {title('pl', `Plugins: ${plugins}`)}
           {setup.plugins.size ? [...setup.plugins].map(([n, pl]) => kw(n, [pl.version, pl.scope, pl.hooks && 'hooks', pl.mcp && 'MCP'].filter(Boolean).join(' · '), `pl${n}`))
             : enabled.map(id => kw(id.split('@')[0]!, `enabled in your settings (${id.split('@')[1] ?? ''})`, `pl${id}`))}
-          {title('mc', `MCP servers: ${servers.size}`)}
-          {[...servers].map(([sv, k]) => { const c = setup.mcp.get(sv)
-            return kw(sv, [c ? (c.status === 'connected' ? `connected${c.transport ? ` over ${c.transport}` : ''}${c.ms != null ? ` in ${exact(c.ms)}` : ''}` : `${c.status || 'failed'}${c.error ? `: ${c.error}` : ''}`) : '', k && `${k} tool${k === 1 ? '' : 's'}`].filter(Boolean).join(' · '), `mc${sv}`) })}
           {title('us', 'Model use this session')}
           {kw('main', use(steps.filter(x => !x.agent)))}
           {steps.some(x => x.agent) && kw('subagents', use(steps.filter(x => x.agent)))}

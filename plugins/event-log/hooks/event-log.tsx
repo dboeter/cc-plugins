@@ -1,4 +1,5 @@
 import type { EngineInterface, Register, Timer } from 'claude-code'
+import { scrub } from './scrub'
 
 // One flat, complete, chronological record of a session: every event that crosses Claude Code, whoever raised it, as an
 // enter row before the chain runs and an exit row after. Nested events land between the two, so seq order is the order
@@ -8,8 +9,8 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 // === TEXT ===
 const CAP = 16 * 1024 // chars kept per string in a payload
 const PEEK = 160
-// Copied from agent-log.tsx (`scrub`, not exported there): keep the two in step. ponytail: best-effort, not a guarantee
-export const scrub = (s: string) => s.replace(/(bearer\s+|\b\w*(token|secret|password|passwd|api[_-]?key)\w*[=:]\s*|--?(password|token|api-key)[= ]|:\/\/[^:\/\s]+:)[^\s@'"]+/gi, '$1***')
+// scrub: secret-shaped text as ***, from hooks/scrub.ts (a copy of plugins/shared/scrub.ts, as agent-log's is); re-exported for the tests
+export { scrub }
 
 // JSON text of any event value: never throws. Cycles are tracked by ancestor stack, so a value shared by two fields is
 // written twice, not called a cycle

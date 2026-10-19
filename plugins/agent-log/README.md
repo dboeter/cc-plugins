@@ -1,14 +1,46 @@
 # agent-log
 
-A pane that shows what Claude Code does in this session and where the time goes: every model request, tool call, hook run and engine event, per agent and per turn. Each colour has one meaning: red `✗` broke, cyan `⊘` refused, yellow `⚠` `■` ended early or slow, blue `↩` a hook's feedback, green `●` running, magenta `↗` another project. Rows that did something draw bright (shell commands, edits, agents, web and MCP calls, a request that replied); routine rows draw dim.
+Why was that turn slow, and who allowed that call? A live pane that splits each turn's time across the model (time to first token, thinking), tools, hooks and waiting on you, read from Claude Code's own model stream. With OTEL on, also who decided each call: you, a hook or the classifier.
 
-- **Model requests**: one row per request of the main loop or a subagent, with the model and effort, time to first token, time spent thinking, the start of the reply, the tools it called, the calls the API ran itself (the advisor) with their times, and tokens. With OTEL export on, also the price and request id. The row reads by what the request did: `Reply: <its first line>`, `Thought: <the thought>`, or `Called Read ×3, Bash` when it only called tools, which follow as rows of their own. A subagent's request, or one of Claude Code's own, is named by its model when that differs from the main loop's at that time; the main loop's requests never are, and a `Model:` row marks a switch. A plugin's model call is named by the plugin. A request that only called tools hides at the `info` level. The API's own calls show as rows below their request.
-- **Tool calls**: each call with its time, in seconds (`<0.1s`, `1.3s`, `2m05s`; the inspector gives milliseconds) and the permission decision behind it: the settings rule, you, a hook or the auto-mode classifier. A Grep or Glob row shows its pattern (`Search "secs\(" in hooks`). The log is flat: every call, hook run and context entry is a row of its own, in time order. Only an Agent row folds, its subagent's rows beneath it: the row opens its inspector, its `▸` opens the fold. A call that waited for its decision gets a `Waiting for …` row above it. The hooks that ran on a call, and the text they injected, sit next to it while it is drawn, its PreToolUse ones above it and the rest below, all on one bracket with the call (`╭` opens it, `├` marks the call, `╰` closes it). Hook rows are dim unless they blocked or broke. Each is marked by what it did: `⊘` blocked, `↩` feedback to the model, `+` added context, `·` changed nothing, `■` stopped the session, `✗` failed. Claude Code runs an event's hooks as one chain; the log draws one row per hook, by name only on its call's bracket (`guard`, `context-mode context`), by name and event where its call is hidden (`guard on PreToolUse Bash`). What a hook said shows only in its inspector, with the call it ran on, its command, its own time and exit code. Claude Code times only the whole chain and merges its hooks' text, so where a settings command runs through a wrapper that appends `{name, event, use, t0, t1, say}` lines to `~/.claude/hook-times/<session_id>.jsonl` (`say`: the first line the hook handed back), the log names the hooks that actually ran, each row shows its hook's own time, and text goes to the hook whose `say` it holds. Hooks the wrapper does not cover (a plugin's) are named from your settings and the plugins' `hooks.json`, and their text by the name in its first line. A failed command shows its exit code and its output boiled down in its inspector. A refused call reads `⊘ denied` in cyan, not a red `✗`, and one `⊘` marks it: the hook that refused it, on its bracket, shows its time in cyan. Where that hook is not drawn, the call names who refused it (`· guard`, a rule, the classifier or you). The inspector says who decided a call (`asked you; you allowed it once`, `allowed by rule Bash(git push:*)`), what it waited for, and what each hook did (`guard (blocked), context-mode (added text)`).
-- **Outside the project root**: a call that reached outside the session's project root is marked `↗` with the directory's `~` path, cut from the left at a folder when long (the inspector gives the full path): a file outside it, a `cd` out of it, or a path under your home that a command names. Another project draws magenta, and the controls count those calls (`↗ 3 outside root`); `~/.claude` and `/tmp` are routine and stay dim. An Agent fold names another project's place before a routine one. The `outside` view keeps these calls, added directories, worktrees and cwd changes.
-- **The harness**: hook runs and the text they injected, plugins' own model calls and forks, Claude Code's own model requests (session titles, prompt suggestions, compaction), model switches, compactions, API errors, MCP servers connecting, failing or closing, and permission mode changes.
-- **Turns**: each prompt's header shows the prompt's first few words (a slash command's name only), how long the turn took and the two largest parts of where the time went. Rows before the first prompt sit under a bare `start` header. Pressing `#N` opens the turn, with the whole split (model, tools, agents, hooks, compaction, permission prompts and you) and the loops that acted. A header's `N hidden ▸` shows the turn's rows below the level in place, dim; `hide N ▾` hides them again.
-- **Running now**: what streams or runs at this moment, as green `●` lines under the log, with a permission prompt that waits for you. Only what will stay as a row at the current level gets a line: a model request shows once it writes text.
-- **Setup**: the controls end with the model and effort, a rate limit once it passes 80%, and, in red, the first thing that broke this session (`✗ 1 API error +1`). `s` opens the setup page: Claude Code's version, permission mode, context use, cost and rate limits, the problems (each opens its row), hooks per event with their runs, plugins, MCP servers, model use per source, where the session is (root, cwd, added directories, the places calls reached outside the root), and the background work still running when the last turn ended.
+```
+#1 · tools 17.2s · model 12.3s · 4 hidden ▸                                           39.6s
+╭ context-mode context
+│ Waiting for you to answer the permission prompt                                       4.2s
+╰ Run the tests                                                                     ✗ 18.4s
+╭ guard                                                                               <0.1s
+╰ Clean the build output                                                          ⊘ denied
+╭ Edit agent-log.tsx                                                                    0.1s
+╰ lint-feedback                                                                     ↩ 1.3s
+  Read index.ts ↗ ~/other-project/src                                                <0.1s
+╭ Reply: The test fails because the header grew a row.                                 6.1s
+╰ Advisor                                                                               3.2s
+```
+
+agent-log is the interpreted view of a session. [event-log](../event-log) is the raw record, every event with its full payload on disk. The two work as a pair.
+
+## What it shows
+
+Parts marked *(OTEL)* need OpenTelemetry export on (`CLAUDE_CODE_ENABLE_TELEMETRY=1`). Without it they are missing and the rest works.
+
+- **Turns**: each prompt's header gives the turn's time and its two largest parts. `#N` opens the full split: model, tools, agents, hooks, compaction, permission prompts and you.
+- **Model requests**: one row per request of the main loop or a subagent, with time to first token, thinking time, tokens and the start of the reply. Price and request id *(OTEL)*.
+- **Tool calls**: each call with its run time, and its hooks bracketed around it (`╭ ├ ╰`). The inspector says who decided it: a settings rule, or, *(OTEL)*, you, a hook or the auto-mode classifier. A call that waited for that decision gets a `Waiting for …` row above it *(OTEL)*.
+- **Outside the project root**: a call that reached outside it is marked `↗` with the place. The `outside` view keeps only those calls.
+- **The harness**: hook runs and what they injected, plugins' model calls, compactions, model switches and MCP failures. Claude Code's own requests (titles, suggestions) and API errors *(OTEL)*.
+- **Running now**: what streams or runs at this moment, as green `●` lines under the log.
+- **Setup page** (`s`): what broke this session (each problem opens its row), hooks per event with their runs *(OTEL for the run counts)*, plugins, model use per source, where the session is, and background work still running. Context, cost, rate limits and MCP servers are left to `/context`, `/cost`, `/status` and `/mcp`.
+
+`i` opens the keys page, which lists what every mark and colour means.
+
+## Per-hook times
+
+Claude Code times an event's hooks as one chain and merges their text, so without help the log can only say "these hooks ran, together, in 1.3s". Wrapping each settings hook in [`bin/hook-timer`](bin/hook-timer) gives each hook its own row, its own time and the text it injected. It needs bash 5+ and `jq`. Copy it onto your `PATH` and put it in front of each hook command in `settings.json`:
+
+```json
+{ "type": "command", "command": "hook-timer ~/.claude/hooks/guard.sh" }
+```
+
+The hook keeps its stdin, stdout, stderr and exit code. hook-timer appends one line per run to `~/.claude/hook-times/<session_id>.jsonl`, which agent-log reads. Plugins' hooks can't be wrapped; they are named from their `hooks.json`, and their text by the name in its first line.
 
 ## Install
 
@@ -20,15 +52,20 @@ Answer `y` to add the marketplace, then pick a scope.
 
 ## Use
 
-The pane opens with every interactive session. `/agentlog` shows or hides it, `/agentlog all|model|harness|outside` picks a view (`agent` still works for `model`), `/agentlog level debug|info|notice|error` sets the least important row shown, and `/agentlog clear` empties the log.
+The pane never opens by itself. While it is closed, a turn that ended unusually gets one line above the prompt, between turns, until the next turn ends or you open the pane:
 
-In the pane, `a` `m` `h` `u` switch views: all, what the model did, the harness, outside the root. `l` toggles the level between info and notice. `o` opens or closes every Agent fold. `s` opens the setup page and `i` the keys page, which lists every mark and key. `j` and `k` (or ↓ and ↑) move a row cursor, and Enter opens its row. `e` jumps to the newest row once the window has left it, and ctrl+↑↓ (`turn ↑↓`) to the previous or next prompt. `b` goes back. A row opens its inspector, where `n` and `p` (or `j` and `k`) step to the next and previous row; an Agent row's inspector has `f` to keep only that agent's rows. While an agent runs, or a filter is set, a tree of the main loop and its agents sits at the top, and pressing one filters the log to it.
+- `/agentlog #4 took 41.2s, 3× the usual`: the turn ran over twice the median of your earlier turns (once there are three).
+- `/agentlog #2: hooks 12.0s of 20.0s`: hooks, or a slow permission decision, held the turn longest.
+
+Turns under 10 seconds never get a line, and time spent waiting on you never counts as unusual. `/agentlog` shows or hides the pane, `/agentlog all|model|harness|outside` picks a view (`agent` still works for `model`), `/agentlog level debug|info|notice|error` sets the least important row shown, and `/agentlog clear` empties the log.
+
+In the pane, `a` `m` `h` `u` switch views: all, what the model did, the harness, outside the root. `l` toggles the level between info and notice. `o` opens or closes every Agent fold. `s` opens the setup page and `i` the keys page. `j` and `k` (or ↓ and ↑) move a row cursor, and Enter opens its row. `e` jumps to the newest row, ctrl+↑↓ to the previous or next prompt, and `b` goes back. In a row's inspector, `n` and `p` step to the next and previous row; an Agent row's inspector has `f` to keep only that agent's rows. While an agent runs, a tree of the main loop and its agents sits at the top, and pressing one filters the log to it.
 
 ## What it does on your machine
 
-- **Storage**: the rows of the 10 newest sessions in the plugin store, at most 300 per session (the `keep` option). Text is secret-scrubbed and cut short: 300 characters, 400 for a command. Your prompts and a slash command's arguments are never stored; a turn header's first few words of the prompt are kept in memory only, so a resumed session's headers have none.
-- **OTEL**: with OpenTelemetry export on (`CLAUDE_CODE_ENABLE_TELEMETRY=1`), it reads the records Claude Code sends the collector: request prices and ids, who decided each permission, hook run counts, plugins loaded, MCP connections, API errors and Claude Code's own model requests. Without it, those parts are missing. It reads them and sends nothing.
-- **Reads**: your settings and the `hooks.json` of enabled plugins (to name hooks), `~/.claude/hook-times/<session_id>.jsonl` when a timing wrapper writes it, Claude Code's version and tool list at session start, and the session's root and cwd at each tool call. It makes no model requests and no network calls.
+- **Storage**: the rows of the 10 newest sessions in the plugin store. A session keeps at most 300 rows (the `keep` option), and fewer when its rows are large, since each session is held to a tenth of the store's 4 MiB. Every new session prunes the older ones. If the store refuses a write, the rows stay in memory, the setup badge shows "log not saved", and the write is retried. Secret-shaped text (tokens, keys, passwords, `Authorization` headers) is masked as `***` on a best-effort basis, and text is cut short: 300 characters, 400 for a command. Your typed prompts and a slash command's arguments are not stored as such. A turn header's first few words of the prompt are kept in memory only, so a resumed session's headers have none. Two stored texts can still restate what you typed: a skill's expanded text (which can include the arguments after `/name`) and a compaction summary. Both are kept scrubbed, up to 300 characters.
+- **OTEL**: with export on, it reads the records Claude Code sends the collector: request prices and ids, who decided each permission, hook run counts, plugins loaded, MCP connections, API errors and Claude Code's own model requests. It reads them and sends nothing.
+- **Reads**: your settings and the `hooks.json` of enabled plugins (to name hooks), `~/.claude/hook-times/<session_id>.jsonl` when hook-timer writes it, the main loop's model at session start, and the session's root and cwd at each tool call. It makes no model requests and no network calls.
 
 ## Develop
 
@@ -38,3 +75,5 @@ tsc -p plugins                          # type-checks every plugin against plugi
 claude plugin test plugins/agent-log    # tests
 claude plugin validate plugins/agent-log
 ```
+
+`hooks/scrub.ts` is a copy of `plugins/shared/scrub.ts`: edit that file and run `plugins/shared/sync.sh`.

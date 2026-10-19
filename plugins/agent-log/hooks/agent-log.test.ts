@@ -1,6 +1,6 @@
 // Pane tests share the module's state (level, folds, finished agents shown): a test that changes one sets it back before it ends.
 import { test, expect, mock, type TestBody } from 'claude-code/testing'
-import { ASKED, costOf, ctxOf, harnessOf, hookName, markAgain, modelName, outsideOf, pack, pickRuns, rootOf, routine, runNames, speaker, withSilent, splitOf, tagOf } from './agent-log'
+import { ASKED, costOf, scrub, ctxOf, harnessOf, hookName, markAgain, modelName, outsideOf, pack, pickRuns, rootOf, routine, runNames, speaker, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
 
 // the shape hooksOf builds: settings hooks by script name, plugin hooks by plugin. Texts are real rows from the store
 const cfg = {
@@ -969,6 +969,42 @@ test('a turn\'s time splits by what held it, each instant once', () => {
   expect(splitOf(xs as any, 0, 10000)).toEqual([1000, 500, 300, 300, 2000, 2700, 3000]) // you, permission, hooks, compact, agents, tools, model; 200 other
 })
 
+test('a turn notes as unusual when it ran over twice the usual, or hooks or a permission decision held it longest', () => {
+  const split = (o: Partial<Record<'you' | 'permission' | 'hooks' | 'tools' | 'model', number>>) => [o.you ?? 0, o.permission ?? 0, o.hooks ?? 0, 0, 0, o.tools ?? 0, o.model ?? 0]
+  expect(unusualOf(4, split({ model: 40_000 }), 41_200, [10_000, 12_000, 14_000])).toBe('#4 took 41.2s, 3× the usual')
+  expect(unusualOf(4, split({ model: 40_000 }), 41_200, [10_000, 12_000])).toBe(undefined) // two earlier turns: no usual yet
+  expect(unusualOf(2, split({ hooks: 12_000, model: 6_000 }), 20_000, [])).toBe('#2: hooks 12.0s of 20.0s')
+  expect(unusualOf(2, split({ permission: 9_000, tools: 4_000 }), 15_000, [])).toBe('#2: permission 9.0s of 15.0s')
+  expect(unusualOf(2, split({ you: 30_000, model: 5_000 }), 36_000, [])).toBe(undefined) // your time is not a fault
+  expect(unusualOf(2, split({ hooks: 6_000 }), 8_000, [])).toBe(undefined) // under 10 s: never noted
+})
+
+test('the pane never opens by itself; a turn that ended unusually says so in the band above the prompt until the pane opens', async ($, on) => {
+  const turns = [1, 2, 3].map(n => ({ t: Date.now() - (5 - n) * 60_000, turn: n, kind: 'turn', name: 'turn', detail: '', outcome: '', status: 'ok', ms: 10_000 }))
+  // session() minus its open pane: this one starts closed
+  on('session.id', () => ({ value: 'BN' }))
+  on('agent.list', () => ({ value: [] }))
+  on('config.list', () => ({ value: [] }))
+  mock.store(on, { 'r:BN': { entries: turns, seen: {}, turn: 4, names: {} } })
+  let up = false
+  on('ui.panes', () => ({ value: up ? [{ id: 'agent-log' }] : [] }) as any)
+  on('ui.open', () => { up = true; return { value: { isPlaced: true } } as any })
+  on('ui.render', ($, e: any) => { const { Text } = $.ui.resolve(e) as any; return Text({ key: 'theirs', children: ['other mod'] }) }) // another mod's band line, beneath
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('turn.complete', () => ({ text: '' }))
+  await ($ as any).session.start({ cwd: '/w', surface: 'terminal', isInteractive: true, source: 'startup' })
+  expect(up).toBe(false)
+  await ($ as any).turn.complete({ reason: 'answer', answer: '', durationMs: 40_000, usage: undefined })
+  const BAND = { isWorking: false, hasSurvey: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 } } as any
+  const band = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+  expect(await band.find({ text: /^#\d+ took 40\.0s, 4× the usual$/ })).toBeDefined()
+  expect(await band.find({ text: 'other mod' })).toBeDefined() // theirs stays, below ours
+  expect(await (await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND, isWorking: true } })).find({ text: /the usual/ })).toBe(undefined) // mid-turn: hidden
+  await ($ as any).command.run({ command: 'agentlog', args: '', origin: { kind: 'composer' }, presentation: 'text' })
+  expect(up).toBe(true)
+  expect(await (await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'AbovePrompt', props: BAND })).find({ text: /the usual/ })).toBe(undefined) // read: gone
+})
+
 // a model request as the engine streams it, the test's hook standing in for the API: thinking, text, then a call
 const STEP = { turnId: 'e7d91f2f-e937', index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 3 }
 const BILL = { to: 'collector', event: 'api_request', attributes: { input_tokens: 2, cache_read_tokens: 9000, cache_creation_tokens: 100, output_tokens: 50, cost_usd: 0.0123, request_id: 'req_1', query_source: 'repl_main_thread' } }
@@ -1216,13 +1252,11 @@ test('the setup button reads what the session runs on, and the controls what bro
   expect(await m.find({ type: 'Button', text: /^Opus 5\.5 high$/ })).toBeDefined() // the rest is on the page; a limit under 80% says nothing here
   await m.press({ key: 'fsetup' })
   expect(await m.find({ text: 'Opus 5.5 (claude-opus-5-5) · effort high' })).toBeDefined()
-  expect(await m.find({ text: '41.0k of 200.0k tokens (21%)' })).toBeDefined()
-  expect(await m.find({ text: /^five hour 42%/ })).toBeDefined()
+  // context, cost, rate limits and the MCP server list are /context, /cost, /status and /mcp's: the page leaves them out
+  expect(await m.find({ text: /200\.0k tokens|five hour 42%|\$1\.23|connected over http/ })).toBe(undefined)
   expect(await m.find({ text: 'Problems: 1 hook run failed, 1 API error, 1 MCP server down' })).toBeDefined()
   expect(await m.find({ text: /1 run · 420ms · 1 failed$/ })).toBeDefined() // PostToolUse's, as the collector counted them
   expect(await m.find({ text: '0.2.0 · user · hooks' })).toBeDefined()
-  expect(await m.find({ text: 'connected over http in 997ms' })).toBeDefined()
-  expect(await m.find({ text: 'failed: ECONNREFUSED' })).toBeDefined()
   expect(await m.find({ text: /^1 request · / })).toBeDefined() // main's
   await m.press({ key: (await m.find({ type: 'Button', text: /^✗ API error/ }))!.key! })
   expect(await m.find({ text: /A model request failed/ })).toBeDefined()
@@ -1427,4 +1461,120 @@ test('each hook outcome has its mark: + context, · nothing, ■ a stop (yellow,
   expect(await m.find({ type: 'Text', text: '⊘ 0.4s' })).toBeDefined()
   expect(await m.find({ type: 'Text', text: /^✗/ })).toBe(undefined)
   await toLevel($, m, 'info')
+})
+
+// === STORE AND SCRUB ===
+// the secret shapes a review found passing the old scrub, each masked with what frames it kept; code-like text stays
+test('scrub masks common secret shapes and leaves code alone', () => {
+  const masked: [string, string][] = [
+    ['export API_KEY="abc123def"', 'export API_KEY="***"'],
+    ["DB_PASSWORD='hunter2'", "DB_PASSWORD='***'"],
+    ['{"api_key": "abc123def"}', '{"api_key": "***"}'],
+    ['token ghp_' + 'a'.repeat(36) + ' end', 'token *** end'],
+    ['AKIA' + 'ABCDEFGHIJKLMNOP', '***'],
+    ['key sk-' + 'b'.repeat(24), 'key ***'],
+    ['curl -u admin:s3cretpw https://h', 'curl -u admin:*** https://h'],
+    ['curl --user admin:s3cretpw https://h', 'curl --user admin:*** https://h'],
+    ['mysql -u root -ps3cretpw db', 'mysql -u root -p*** db'],
+    ['-H "Authorization: Basic dXNlcjpwYXNz"', '-H "Authorization: Basic ***"'],
+    ['Authorization: Bearer abcdefgh12345', 'Authorization: Bearer ***'],
+    ['git clone https://me:pw123@host/r', 'git clone https://me:***@host/r'],
+    ['tool --token abc123', 'tool --token ***'],
+    ['-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----', '***'],
+  ]
+  for (const [raw, out] of masked) expect(scrub(raw)).toBe(out)
+  for (const kept of ['const token = getToken()', 'TOKEN=$GITHUB_TOKEN', 'cat plugins/agent-log/hooks/agent-log.tsx', 'git push -u origin main', 'self.token = token'])
+    expect(scrub(kept)).toBe(kept)
+  expect(scrub(scrub('export API_KEY="abc123def"'))).toBe('export API_KEY="***"') // a scrubbed text scrubs to itself: peeks of insights scrub twice
+})
+
+test('a new session key prunes the store to the 10 newest sessions and drops the unredacted format', async ($, on) => {
+  const db = capture(on, 'PN')
+  for (let i = 0; i < 12; i++) db[`r:old${i}`] = { entries: [{ t: 1000 + i, kind: 'session', name: 'start', detail: '', outcome: '' }], seen: {} }
+  db['s:legacy'] = [{ t: 9999 }]
+  on('prompt.attachment', (_$, e) => ({ text: e.text }))
+  await $.prompt.attachment({ type: 'date', text: 'Today\'s date is 2026-10-18.', origin: { kind: 'engine' } } as any)
+  await flushed($, 'PN', db)
+  expect(Object.keys(db).sort()).toEqual(['r:PN', ...[3, 4, 5, 6, 7, 8, 9, 10, 11].map(i => `r:old${i}`)].sort())
+})
+
+test('a write the store refuses keeps the rows, says "log not saved", and lands once the store takes it', async ($, on) => {
+  mock.clock(on) // the retry timer waits on this clock, so it never fires into a later test
+  const db: Record<string, any> = {}
+  let full = true
+  on('session.id', () => ({ value: 'NS' }))
+  on('agent.list', () => ({ value: [] }))
+  on('config.list', () => ({ value: [] }))
+  ;(on as any)('ui.panes', () => ({ value: [{ id: 'agent-log' }] }))
+  on('store.get', (_$: any, e: any) => ({ value: db[e.key] }))
+  on('store.set', (_$: any, e: any) => { if (full) throw new Error('store over 4 MiB'); db[e.key] = e.value; return { value: undefined } })
+  on('store.delete', (_$: any, e: any) => { delete db[e.key]; return { value: undefined } })
+  on('store.keys', () => ({ value: Object.keys(db) }))
+  on('session.end', (_$: any, e: any) => ({ sessionId: e.sessionId }))
+  on('prompt.attachment', (_$, e) => ({ text: e.text }))
+  await $.prompt.attachment({ type: 'date', text: 'Today\'s date is 2026-10-18.', origin: { kind: 'engine' } } as any)
+  await flushed($, 'NS', db)
+  expect(db['r:NS']).toBe(undefined)
+  const m = await pane($, 60, 160)
+  expect(await m.find({ type: 'Text', text: /log not saved/ })).toBeDefined()
+  full = false
+  expect((await flushed($, 'NS', db)).some(r => r.type === 'date')).toBe(true) // still dirty, so the next flush writes it
+  await m.redraw()
+  expect(await m.find({ type: 'Text', text: /log not saved/ })).toBe(undefined)
+})
+
+test('a session\'s key stays inside its share of the store, however large its rows', async ($, on) => {
+  const db = capture(on, 'BG')
+  const big = (i: number) => ({ t: 1000 + i, turn: 1, kind: 'step', name: 'claude-opus-5-5', detail: '', outcome: '', status: 'ok', peek: 'p'.repeat(300), thought: 't'.repeat(200), cmd: 'c'.repeat(1400) })
+  db['r:BG'] = { entries: Array.from({ length: 300 }, (_, i) => big(i)), seen: {}, turn: 1, names: {} }
+  on('prompt.attachment', (_$, e) => ({ text: e.text }))
+  await $.prompt.attachment({ type: 'date', text: 'Today\'s date is 2026-10-18.', origin: { kind: 'engine' } } as any)
+  const rows = await flushed($, 'BG', db)
+  expect(JSON.stringify(db['r:BG']).length).toBeLessThanOrEqual(Math.floor((4 * 1024 * 1024 - 256 * 1024) / 10))
+  expect(rows.length).toBeLessThan(300)
+  expect(rows.at(-1)!.t).toBe(1299) // the oldest went, not the newest (the debug date row goes first, as over `keep`)
+})
+
+test('a subagent\'s replay counts leave the store with its last row; main\'s stay', async ($, on) => {
+  const db = capture(on, 'SN')
+  db['r:SN'] = { entries: [{ t: 1000, turn: 1, kind: 'tool', name: 'Read', detail: 'a', outcome: 'ok', status: 'ok' }], seen: { 'date||| 30': 1, 'skill_listing||gone1|400': 2 }, turn: 1, names: { gone1: 'Explore' } }
+  on('prompt.attachment', (_$, e) => ({ text: e.text }))
+  await $.prompt.attachment({ type: 'date', text: 'Today\'s date is 2026-10-18.', origin: { kind: 'engine' } } as any)
+  await flushed($, 'SN', db)
+  expect(Object.keys(db['r:SN'].seen).some(g => g.includes('gone1'))).toBe(false)
+  expect(db['r:SN'].seen['date||| 30']).toBe(1)
+  expect(db['r:SN'].names).toEqual({})
+})
+
+test('a collector failure count marks the event whose target it names, not another', async ($, on) => {
+  const db = capture(on, 'HN')
+  on('telemetry.log', () => ({ value: undefined }))
+  on('classic.SessionStart', async () => {
+    await ($ as any).telemetry.log({ to: 'collector', event: 'hook_execution_complete', attributes: { hook_event: 'SessionStart', hook_name: 'SessionStart:resume', num_hooks: '1', num_success: '0', num_non_blocking_error: '1', num_cancelled: '0' } })
+    return {}
+  })
+  await ($ as any).classic.SessionStart({ source: 'startup' })
+  expect((await flushed($, 'HN', db)).some(r => r.kind === 'hook' && r.status === 'failed')).toBe(false)
+})
+
+test('a store filled by older, larger sessions frees room for this one on the first write', async ($, on) => {
+  const db: Record<string, any> = {}
+  const CAP = 4 * 1024 * 1024
+  on('session.id', () => ({ value: 'FR' }))
+  on('agent.list', () => ({ value: [] }))
+  on('config.list', () => ({ value: [] }))
+  on('store.get', (_$: any, e: any) => ({ value: db[e.key] }))
+  on('store.set', (_$: any, e: any) => { // as the engine's: over 4 MiB of JSON text in all, refused
+    const total = Object.entries({ ...db, [e.key]: e.value }).reduce((n, [, v]) => n + JSON.stringify(v).length, 0)
+    if (total > CAP) throw new Error('store over 4 MiB'); db[e.key] = e.value; return { value: undefined }
+  })
+  on('store.delete', (_$: any, e: any) => { delete db[e.key]; return { value: undefined } })
+  on('store.keys', () => ({ value: Object.keys(db) }))
+  on('session.end', (_$: any, e: any) => ({ sessionId: e.sessionId }))
+  on('prompt.attachment', (_$, e) => ({ text: e.text }))
+  for (let i = 0; i < 9; i++) db[`r:fat${i}`] = { entries: [{ t: 1000 + i, kind: 'tool', name: 'Bash', detail: 'd'.repeat(450_000), outcome: 'ok' }], seen: {} }
+  await $.prompt.attachment({ type: 'date', text: 'Today\'s date is 2026-10-18.', origin: { kind: 'engine' } } as any)
+  expect((await flushed($, 'FR', db)).some(r => r.type === 'date')).toBe(true)
+  expect(db['r:fat0']).toBe(undefined) // the oldest went
+  expect(db['r:fat8']).toBeDefined() // the newest stayed
 })

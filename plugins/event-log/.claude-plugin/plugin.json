@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "event-log",
   "version": "0.1.0",
-  "description": "Every event that crosses Claude Code in a session, in the order it happened, whoever raised it (you, the model, the engine, settings hooks, plugins): full payloads to ~/.claude/event-log/<session>/NNNN.jsonl, a peek per event in a live pane. UI events and plugins' read-only calls are only counted; /eventlog toggles it, /eventlog <you|claude|engine|hook|plugin|all> filters by who.",
+  "description": "The raw record of a session: every event that crosses Claude Code, whoever raised it (you, the model, the engine, settings hooks, plugins), with its full payload to ~/.claude/event-log/<session>/NNNN.jsonl, and a peek per event in a live pane. agent-log is the interpreted view. /eventlog toggles it, /eventlog <you|claude|engine|hook|plugin|all> filters by who.",
   "author": {
     "name": "dboeter",
     "email": "daan.boeter@hotmail.com"

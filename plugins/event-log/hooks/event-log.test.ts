@@ -1,6 +1,6 @@
 // Tests share the module's state (pending rows, seq, the current chunk): the storage test runs last and reads what it wrote.
 import { test, expect, mock } from 'claude-code/testing'
-import { enter, isNoise, isQuery, lineOf, linesOf, pack, peekOf, ser, tally, whoOf, type Row } from './event-log'
+import { enter, isNoise, isQuery, lineOf, linesOf, pack, peekOf, ser, tally, whoOf, type Row, scrub } from './event-log'
 
 const ENGINE = { plugin: 'engine', tier: 'core' }
 
@@ -99,6 +99,15 @@ test('chunks rotate before a line would cross the limit', () => {
   expect(done).toEqual([{ n: 1, text: 'aaaa\nbbbb\n' }])
   expect(c).toEqual({ n: 2, buf: 'cccc\ndddd\n' })
   expect(pack({ n: 1, buf: '' }, ['x'.repeat(50)], 12)).toEqual([]) // an oversized line still lands in an empty chunk
+})
+
+// the same rules as agent-log's scrub (three copies kept in step: redact, agent-log, event-log)
+test('scrub masks common secret shapes and leaves code alone', () => {
+  for (const [raw, out] of [['export API_KEY="abc123def"', 'export API_KEY="***"'], ['{"api_key": "abc123def"}', '{"api_key": "***"}'],
+    ['token ghp_' + 'a'.repeat(36), 'token ***'], ['curl -u admin:s3cretpw https://h', 'curl -u admin:*** https://h'],
+    ['mysql -ps3cretpw', 'mysql -p***'], ['Authorization: Basic dXNlcjpwYXNz', 'Authorization: Basic ***']])
+    expect(scrub(raw!)).toBe(out!)
+  for (const kept of ['const token = getToken()', 'TOKEN=$GITHUB_TOKEN', 'git push -u origin main']) expect(scrub(kept)).toBe(kept)
 })
 
 test('the * hook wraps each event in enter/exit rows, flushed after the chunk a reload left, seq continued', async ($, on) => {

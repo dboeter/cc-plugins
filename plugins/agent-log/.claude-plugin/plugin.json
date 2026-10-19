@@ -2,12 +2,12 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "agent-log",
   "version": "0.1.0",
-  "description": "Live pane of what Claude Code does in this session: model requests, tool calls, hooks and engine events, per agent and per turn, and where the time went.",
+  "description": "Why was that turn slow, and who allowed that call? A live pane that splits each turn's time across the model (first token, thinking), tools, hooks and waiting on you, read from Claude Code's own model stream. With OTEL on, also who decided each call: you, a hook or the classifier.",
   "author": { "name": "dboeter", "email": "daan.boeter@hotmail.com" },
   "license": "MIT",
   "repository": "https://github.com/dboeter/cc-plugins",
   "types": "./types/index.d.ts",
   "userConfig": {
-    "keep": { "type": "number", "title": "Entries kept", "default": 300, "description": "Entries kept per session" }
+    "keep": { "type": "number", "title": "Entries kept", "default": 300, "description": "Entries kept per session, at most 300; fewer when the rows are large, so 10 sessions fit the 4 MiB store" }
   }
 }
