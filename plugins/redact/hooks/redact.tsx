@@ -10,7 +10,8 @@ import type { EngineInterface, Register } from 'claude-code'
 // (WebFetch, WebSearch, MCP): the person chose an uninterrupted workflow over blocking those,
 // knowing that a page telling the model to put a placeholder in a URL gets the value sent. The
 // permission check, which runs beneath this hook, sees the real values too. The terminal draws
-// them back; a remote surface keeps the placeholders.
+// them back, unless the pane's toggle shows them as the model reads them; a remote surface keeps
+// the placeholders.
 // Fails closed: a masking hook that throws or outruns its budget withholds what it masks (the
 // `.catch` on each), and a placeholder the vault does not hold refuses the call. The model's own
 // tool_use input is recorded before any hook runs, so the transcript keeps the placeholders.
@@ -18,10 +19,15 @@ import type { EngineInterface, Register } from 'claude-code'
 
 // ⟦ and ⟧ open and close a placeholder: no rule's value holds them (STOP below) and real text
 // rarely does, so a placeholder is never masked again and a token of its shape is read as ours.
-// Spelled as escapes, so no file of this plugin holds a placeholder a restore would fill in.
+// Spelled as escapes, so no file of this plugin holds a placeholder a restore would fill in, nor
+// an escaped one (`!` after the bracket) a restore would rewrite.
 const OPEN = '⟦'
-const PH = /⟦([A-Z][A-Z0-9_]*)_(\d+)⟧/g
-const PH_SPLIT = /(⟦[A-Z][A-Z0-9_]*_\d+⟧)/
+// a placeholder or an escaped one, both kept whole by every pass that splits on it
+const PH_SPLIT = /(⟦!?[A-Z][A-Z0-9_]*_\d+⟧)/
+// A placeholder escaped: `!` after the opening bracket. Restore gives its literal text and never
+// looks it up, so text about placeholders (a doc, a report) can name one.
+const ESC = OPEN + '!'
+const PH_OR_ESC = /⟦(!?)([A-Z][A-Z0-9_]*_\d+⟧)/g
 const LABEL = /^[A-Z][A-Z0-9_]*$/
 
 // Every repeat that can run into a failing match is bounded ({0,64}, {1,512}, {0,8192}):
@@ -35,99 +41,163 @@ const STOP = String.raw`\s'"\`,;&<>()[\]{}⟦⟧`
 const VAL = String.raw`[^${STOP}]+`
 const END = String.raw`(?![^${STOP}])`
 // Unquoted values that read as code and stay: a `$` reference or shell default (`${X:-}`,
-// `${X:-$Y}`), a call or index (`getToken(`, `os.environ[`), a keyword, type or literal
+// `${X:-$Y}`), a call, index or generic (`getToken(`, `os.environ[`, `Promise<`), a keyword, type or literal
 // (`await`, `string`, `1000`), a dotted path (`self.token`; a dotted literal password leaks,
 // the price of this one), or the name itself (Python's `f(token=token)`). Anything else is
 // masked: a miss masks. `\k<name>` is the assign rule's NAME group: CODE only works inside it.
-const CODE = String.raw`(?!-?\$|[\w.]+[(\[]|(?:await|new|string|number|boolean|bool|str|int|bytes|any|unknown|undefined|none|nil|true|false|null|\d+|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+|\k<name>|-)${END})`
+const CODE = String.raw`(?!-?\$|[\w.]+[(\[<]|(?:await|new|string|number|boolean|bool|str|int|bytes|any|unknown|undefined|none|nil|true|false|null|\d+|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+|\k<name>|-)${END})`
 
-// A rule masks its `v` (or `v2`) group and keeps `pre`, `q` and `post` around it; a rule with no
-// groups masks its whole match. `type` is the content type, the placeholder's label unless the
-// rule names its own `label`; `name` is what the /redact show pane calls it.
-type Rule = { re: RegExp; type: string; label?: string; name: string }
-// ordered: whole-value shapes first, so the later rules see the placeholder and leave it
-const RULES: Rule[] = [
+// The rules redact ships with, as lines of the patterns file: the file is created with them, and
+// one written before they moved there gets them once (MARK below). From there they are the
+// person's to change or delete. Each is [name, regex, options]; the name is the comment line
+// above it, which the pane shows. Ordered: whole-value shapes first, so the later ones see the
+// placeholder and leave it. A `min` rule guesses from a name or a place, so it masks only a
+// value that long: a short password still masks, a stray `a` or `|` does not, though once vaulted
+// it masks as a word all session. A `strong` rule guesses from context alone (`strong` below).
+const SEEDS: [string, string, string][] = [
   // with no END line (output cut short by head or a Read limit), the whole-line base64 body
   // after BEGIN, raw, `cat -n` numbered or JSON-escaped; a prose line stops it, and a BEGIN
   // line with no body (a doc naming the format) is left alone
-  { re: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]{0,8192}?-----END [A-Z ]*PRIVATE KEY-----|(?:(?:\r?\n|\\n)[ \t]*(?:\d+\t)?[A-Za-z0-9+/=]+(?=[\r\n\\]|$))+)/g,
-    type: 'PRIVATE_KEY', name: 'private key blocks, cut-short ones too' },
+  ['private key blocks, cut-short ones too',
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]{0,8192}?-----END [A-Z ]*PRIVATE KEY-----|(?:(?:\r?\n|\\n)[ \t]*(?:\d+\t)?[A-Za-z0-9+/=]+(?=[\r\n\\]|$))+)/.source,
+    'label=PRIVATE_KEY'],
   // JS copy of ~/dotagents/scripts/git-hooks/lib/secret-content.ere's vendor shapes (plus hf_, ya29.): keep in sync
-  { re: /\b(?:sk-[\w-]{20,}|gh[pousr]_\w{36,}|github_pat_\w{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}|xox[abprs]-[\w-]{10,}|AIza[\w-]{35}|[sr]k_(?:live|test)_[0-9A-Za-z]{24,}|glpat-[\w-]{20,}|npm_[A-Za-z0-9]{36}|dckr_pat_[\w-]{20,}|SG\.[\w-]{20,}\.[\w-]{20,}|hf_[A-Za-z0-9]{30,}|ya29\.[\w-]{20,}|eyJ[\w-]{1,512}\.[\w-]+\.[\w-]+)/g,
-    type: 'API_KEY', name: 'vendor tokens (sk-, gh*_, github_pat_, AKIA, ASIA, xox*-, AIza, sk_live_, glpat-, npm_, dckr_pat_, SG., hf_, ya29.) and JWTs' },
-  { re: /(?<pre>bearer[ \t]+)(?<v>[\w.~+/-]+=*)/gi, type: 'TOKEN', name: 'the value after "Bearer"' }, // RFC 6750 token chars
-  { re: /(?<pre>:\/\/[^:\/\s@]+:)(?!\$)(?<v>[^\s@\/]+)(?<post>@)/g, type: 'PASSWORD', name: 'passwords in URLs (://user:...@)' },
-  { re: new RegExp(String.raw`(?<pre>--(?:password|token|api-key|secret)[ \t]+)(?![$-])(?<v>${VAL})`, 'gi'), type: 'SECRET',
-    name: 'values after --password, --token, --api-key, --secret' },
+  ['vendor tokens (sk-, gh*_, github_pat_, AKIA, ASIA, xox*-, AIza, sk_live_, glpat-, npm_, dckr_pat_, SG., hf_, ya29.) and JWTs',
+    /\b(?:sk-[\w-]{20,}|gh[pousr]_\w{36,}|github_pat_\w{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}|xox[abprs]-[\w-]{10,}|AIza[\w-]{35}|[sr]k_(?:live|test)_[0-9A-Za-z]{24,}|glpat-[\w-]{20,}|npm_[A-Za-z0-9]{36}|dckr_pat_[\w-]{20,}|SG\.[\w-]{20,}\.[\w-]{20,}|hf_[A-Za-z0-9]{30,}|ya29\.[\w-]{20,}|eyJ[\w-]{1,512}\.[\w-]+\.[\w-]+)/.source,
+    'label=API_KEY'],
+  // RFC 6750 token chars; strong only, so prose ("the bearer of this letter") stays
+  ['a token-shaped value after "Bearer"', /\b(?<pre>bearer[ \t]+)(?<v>[\w.~+/-]+=*)/.source, 'label=TOKEN strong i'],
+  ['passwords in URLs (between the user name and the @)', /(?<pre>:\/\/[^:\/\s@]+:)(?!\$)(?<v>[^\s@\/]+)(?<post>@)/.source, 'label=PASSWORD min=4'],
+  ['values after --password, --token, --api-key, --secret', String.raw`(?<pre>--(?:password|token|api-key|secret)[ \t]+)(?![$-])(?<v>${VAL})`, 'label=SECRET min=4 i'],
   // `NAME=v`, `name: v`, `"name": "v"`: a quoted value up to its closing quote (or the line's
   // end), unless empty or a `$` reference; an unquoted one unless CODE says it is code
-  { re: new RegExp(String.raw`(?<pre>\b(?<name>${NAME})["']?[ \t]*[=:][ \t]*)(?:(?<q>["'])(?!\$)(?<v>(?:(?!\k<q>)[^\n])+)(?<post>\k<q>?)|${CODE}(?<v2>${VAL}))`, 'gi'), type: 'SECRET',
-    name: 'values assigned to a name with token, secret, password, api key, private key, access key or credential in it' },
-  // last, so a password in a URL (`://me:pw@host.com`) and a value assigned to a secret's name keep
+  ['values assigned to a name with token, secret, password, api key, private key, access key or credential in it',
+    String.raw`(?<pre>\b(?<name>${NAME})["']?[ \t]*[=:][ \t]*)(?:(?<q>["'])(?!\$)(?<v>(?:(?!\k<q>)[^\n])+)(?<post>\k<q>?)|${CODE}(?<v2>${VAL}))`,
+    'label=SECRET min=4 prose i'],
+  // last, so a password in a URL and a value assigned to a secret's name keep
   // their own label. Starts where a run of address characters does, so a local part past 64 is
   // left whole rather than cut. Not `git@`, a git host's ssh user; a TLD of letters leaves
   // `react@18.2.0` alone, `(?![1-9]x\.)` an image's `@2x.png`.
-  { re: /(?<![\w.+-])(?!git@)[\w.+-]{1,64}@(?![1-9]x\.)(?:[\w-]{1,63}\.){1,8}[A-Za-z]{2,24}(?![\w-])/g,
-    type: 'EMAIL', name: 'email addresses (not git@)' },
+  ['email addresses (not git@)', /(?<![\w.+-])(?!git@)[\w.+-]{1,64}@(?![1-9]x\.)(?:[\w-]{1,63}\.){1,8}[A-Za-z]{2,24}(?![\w-])/.source, 'label=EMAIL'],
 ]
+export const SEED = SEEDS.map(([name, src, opts]) => `# ${name}\n${src}  #! ${opts}\n`).join('')
 
-// A pattern of the person's: each match masked whole (a lookbehind keeps a prefix), under the
-// name of its first named group as its label, SECRET when it has none.
-type Extra = { re: RegExp; label: string }
+// A pattern: each match masked whole, or only its `v` (or `v2`) group when it has one, under
+// `label`; `by` is what the pane says masked it. Its options: `strong` masks only a value that
+// passes `strong` below, `min` only one that long and not all lowercase (WORD), `prose` leaves an
+// unquoted value after a colon alone when words follow it (PROSE).
+type Pattern = { re: RegExp; label: string; by?: string; strong?: boolean; min?: number; prose?: boolean }
+// a pattern's label without a `label=` option: its first named group other than `v` and `v2`
 export const labelOf = (src: string) => {
-  const name = /\(\?<([A-Za-z_]\w*)>/.exec(src)?.[1]?.toUpperCase()
+  const name = [...src.matchAll(/\(\?<([A-Za-z_]\w*)>/g)].map(m => m[1]!).find(n => n !== 'v' && n !== 'v2')?.toUpperCase()
   return name && LABEL.test(name) ? name : 'SECRET'
+}
+// A line of the patterns file: the regex, then its options after ` #!`, the last one on the line.
+// Throws why it does not read: an unknown option, a regex that does not compile.
+const read = (line: string) => {
+  const [, src = line, opts = ''] = /^(.*)\s#!(\s.*)?$/.exec(line) ?? []
+  const spec: Omit<Pattern, 're'> & { src: string; flags: string } = { src: src.trim(), flags: 'gd', label: labelOf(src) }
+  for (const o of opts.split(/\s+/).filter(Boolean)) {
+    const [k, v] = o.split('=')
+    if (k === 'label' && v && LABEL.test(v)) spec.label = v
+    else if (k === 'min' && v && /^\d+$/.test(v)) spec.min = Number(v)
+    else if (o === 'strong' || o === 'prose') spec[o] = true
+    else if (o === 'i') spec.flags += 'i'
+    else throw new Error(`unknown option ${o}`)
+  }
+  new RegExp(spec.src, spec.flags)
+  return spec
 }
 
 // A session's vault: the next number per label and each placeholder's value, as the store keeps
-// it; `at` is when it last changed, for pruning. Held adds the reverse index and the
+// it, and which rule or pattern masked each (`by`, absent from a vault saved before it was
+// kept); `at` is when it last changed, for pruning. Held adds the reverse index and the
 // known-values pattern, both rebuilt from `ph`, and whether it changed since it was saved.
-type Vault = { at: number; n: Record<string, number>; ph: Record<string, string> }
-type Held = { id: string; v: Vault; byValue: Map<string, string>; known?: RegExp; dirty: boolean }
+// `known` is undefined until knownOf builds it, null when the vault is empty.
+type Vault = { at: number; n: Record<string, number>; ph: Record<string, string>; by?: Record<string, string> }
+type Held = { id: string; v: Vault; byValue: Map<string, string>; known?: RegExp | null; dirty: boolean }
 export const fresh = (id = ''): Held => ({ id, v: { at: 0, n: {}, ph: {} }, byValue: new Map(), dirty: false })
 
 // The placeholder of a value: the one it has, or the next number under its label.
-const mint = (h: Held, value: string, label: string) => {
+const mint = (h: Held, value: string, label: string, by: string) => {
   let p = h.byValue.get(value)
   if (p) return p
   const n = (h.v.n[label] ?? 0) + 1
   h.v.n[label] = n
   p = `${OPEN}${label}_${n}⟧`
   h.v.ph[p] = value
+  ;(h.v.by ??= {})[p] = by
   h.byValue.set(value, p)
   h.known = undefined
   h.dirty = true
   return p
 }
 
-const swap = (h: Held, label: string) => (m: string, ...rest: unknown[]) => {
-  const last = rest[rest.length - 1]
-  const g = last && typeof last === 'object' ? last as Record<string, string | undefined> : undefined
-  const value = g ? g.v ?? g.v2 : m
-  if (!value || value.includes(OPEN)) return m
-  return g ? `${g.pre ?? ''}${g.q ?? ''}${mint(h, value, label)}${g.post ?? ''}` : mint(h, value, label)
+// a value with no letter or digit (`**`, `...`) is markup or code, never a secret
+const ALNUM = /[A-Za-z0-9]/
+// An unquoted value after `name:` with a word after it is prose, a heading or a list (`TOKEN: a
+// token-shaped value`, the pane's own rows read back), not a setting.
+const PROSE = /^[ \t]+[A-Za-z]/
+// A `min` rule leaves a value of lowercase letters alone (`password: value`, `--token word`): a doc
+// or a usage line puts a word there far more often than a setting puts a password, and once
+// vaulted, the word is masked everywhere all session. The person's choice, at a price: a
+// lowercase-only password (`password=letmein`) is sent as it is.
+const WORD = /^[a-z]+$/
+// `part` with each match of `x` that passes its checks swapped for a placeholder: the `v` or `v2`
+// span where the match has one (a pattern compiled with `d` gives their indices), else the whole match.
+const swap = (part: string, h: Held, x: Pattern) => {
+  let out = '', at = 0
+  for (const r of part.matchAll(x.re)) {
+    const g = r.indices?.groups
+    const [from, to] = g?.v ?? g?.v2 ?? [r.index, r.index + r[0].length]
+    const value = part.slice(from, to)
+    if (!value || value.includes(OPEN) || !ALNUM.test(value) || (x.strong && !strong(value)) || value.length < (x.min ?? 0)) continue
+    if (x.min && WORD.test(value)) continue
+    if (x.prose && /:[ \t]*$/.test(part.slice(r.index, from)) && PROSE.test(part.slice(r.index + r[0].length))) continue
+    out += part.slice(at, from) + mint(h, value, x.label, x.by ?? 'a pattern')
+    at = to
+  }
+  return at ? out + part.slice(at) : part
 }
 
-// Every value the vault holds, longest first, as one pattern; a value that starts or ends with
-// a word character only where a word does, so `abc` leaves `abcdef` alone.
+// A value that looks like a secret on its own: 8 or more characters, of at least two kinds out
+// of letters, digits and symbols (whitespace is no symbol, so a misread phrase is not one). A
+// `strong` rule, which guesses from context alone, masks only such a value.
+const strong = (s: string) => s.length >= 8 && [/[A-Za-z]/, /[0-9]/, /[^A-Za-z0-9\s]/].filter(k => k.test(s)).length >= 2
+// Every value the vault holds, longest first, as one pattern, each only where it stands apart
+// from word characters, so `abc123xy` leaves `abc123xyz` alone; null when the vault is empty.
+// Weak ones too (`hunter2`, a PIN): a value comes back in shapes no rule matches (a prompt the
+// model writes for a subagent, after restore). The price: a word or number a rule misread stays
+// masked, as a whole word, for the whole session.
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&')
-const knownOf = (h: Held) => h.known ??= new RegExp([...h.byValue.keys()].sort((a, b) => b.length - a.length)
-  .map(s => (/^\w/.test(s) ? '(?<!\\w)' : '') + escape(s) + (/\w$/.test(s) ? '(?!\\w)' : '')).join('|'), 'g')
-
-// Rules first, then the person's patterns, then every value the vault already holds, wherever it
-// stands: a value once matched is never sent, in whatever shape it comes back. Placeholders stay
-// as they are, so masking twice is masking once.
-export const mask = (s: string, h: Held, extra: readonly Extra[] = []) => {
-  const ruled = extra.reduce((acc, x) => acc.replace(x.re, m => m && !m.includes(OPEN) ? mint(h, m, x.label) : m),
-    RULES.reduce((acc, r) => acc.replace(r.re, swap(h, r.label ?? r.type)), s))
-  if (!h.byValue.size) return ruled
-  const known = knownOf(h)
-  return ruled.split(PH_SPLIT).map((part, i) => i % 2 ? part : part.replace(known, m => h.byValue.get(m) ?? m)).join('')
+const knownOf = (h: Held) => {
+  if (h.known !== undefined) return h.known
+  const values = [...h.byValue.keys()].sort((a, b) => b.length - a.length)
+  return h.known = values.length ? new RegExp(values.map(s => '(?<!\\w)' + escape(s) + '(?!\\w)').join('|'), 'g') : null
 }
 
-// The real values back in a string; `missing` collects the placeholders the vault does not hold.
+// `f` over the text between placeholders, the placeholders left as they are
+const between = (s: string, f: (part: string) => string) => s.split(PH_SPLIT).map((part, i) => i % 2 ? part : f(part)).join('')
+
+// Rules first, over the whole text, so a later rule sees an earlier one's placeholder and leaves
+// it. Then, only between placeholders (a pattern like `\d+` would rewrite one's number), the
+// person's patterns, and every value the vault already holds, wherever it stands: a value
+// once matched is never sent, in whatever shape it comes back. A placeholder-shaped text the
+// vault does not hold (a doc naming the format) reads escaped, so writing it back gives the
+// literal. Masking twice is masking once.
+export const mask = (s: string, h: Held, patterns: readonly Pattern[] = defaults) => {
+  const ruled = patterns.reduce((acc, x) => between(acc, part => swap(part, h, x)), s)
+  if (!ruled.includes(OPEN) && !h.byValue.size) return ruled
+  const known = h.byValue.size ? knownOf(h) : null
+  const placeholder = (p: string) => p.startsWith(ESC) || p in h.v.ph ? p : ESC + p.slice(OPEN.length)
+  const text = (t: string) => known ? t.replace(known, m => h.byValue.get(m) ?? m) : t
+  return ruled.split(PH_SPLIT).map((part, i) => i % 2 ? placeholder(part) : text(part)).join('')
+}
+
+// The real values back in a string, and an escaped placeholder as its literal text; `missing`
+// collects the placeholders the vault does not hold.
 export const restore = (s: string, h: Held, missing?: Set<string>) =>
-  s.includes(OPEN) ? s.replace(PH, p => h.v.ph[p] ?? (missing?.add(p), p)) : s
+  s.includes(OPEN) ? s.replace(PH_OR_ESC, (p, esc: string, body: string) => esc ? OPEN + body : h.v.ph[p] ?? (missing?.add(p), p)) : s
 
 // `f` over every string in a value; the same value back where nothing changed.
 const deep = (v: unknown, f: (s: string) => string): unknown => {
@@ -151,6 +221,8 @@ const blocks = (content: any, f: (s: string) => string): any => {
     : b)
   return out.some((b: any, i: number) => b.text !== content[i].text || b.content !== content[i].content) ? out : content
 }
+// a /redact command line as the engine records it, its arguments in group 2
+const REDACT_ARGS = /(<command-name>\/redact<\/command-name>[\s\S]*?<command-args>)[\s\S]*?(<\/command-args>)/g
 const WITHHELD = 'redact: withheld, as masking it failed. Tell the user; the redact plugin needs a look.'
 
 // The input fields whose text lands in a file or runs. Bash is checked whole: a write that
@@ -158,48 +230,145 @@ const WITHHELD = 'redact: withheld, as masking it failed. Tell the user; the red
 const WRITES: Record<string, string[]> = { Write: ['content'], Edit: ['old_string', 'new_string'], NotebookEdit: ['new_source'], Bash: ['command'] }
 
 // why a pattern source does not compile, or undefined when it does
-const fault = (src: string) => { try { new RegExp(src, 'g'); return undefined } catch (err) { return (err as Error).message } }
-const compile = (sources: readonly string[]): Extra[] => sources.filter(s => !fault(s)).map(s => ({ re: new RegExp(s, 'g'), label: labelOf(s) }))
-
+const fault = (line: string) => { try { read(line); return undefined } catch (err) { return (err as Error).message } }
+// A pattern line read as the file has it, with the comment line right above it as its name.
+type Line = { line: string; name?: string }
+const compile = (lines: readonly Line[], from: string): Pattern[] => lines.filter(l => !fault(l.line)).map(l => {
+  const { src, flags, ...spec } = read(l.line)
+  return { ...spec, re: new RegExp(src, flags), by: `${from}: ${l.name ?? src}` }
+})
+const parse = (text: string): Line[] => {
+  let name: string | undefined
+  return text.split('\n').flatMap(raw => {
+    const l = raw.trim()
+    if (l.startsWith('#')) { name = l === MARK ? undefined : l.replace(/^#\s*/, '') || undefined; return [] } // MARK names nothing
+    const at = name
+    name = undefined
+    return l ? [{ line: l, name: at }] : []
+  })
+}
 const PANE = 'redact'
 const TITLE = 'Redact rules'
-// the patterns /redact add and the pane keep, in this plugin's $.store: per user, for every project
+// The patterns /redact add and the pane keep: a text file of the user's, per user, for every
+// project, next to settings.json, so they edit it by hand. Older versions kept the list in the
+// store under STORED; the first read with no file moves it there.
+const FILE = 'redact-patterns.txt'
 const STORED = 'patterns'
-// each session's vault, under its id, in the same store; one untouched this long is dropped
+const YOURS = 'your pattern'
+// The file's first lines, written when redact creates it; no placeholder-shaped text in it. MARK
+// ends them: a file without it (one written before the built-in rules moved into the file) gets
+// the header and the rules once, put above what it holds, so they still run first.
+const MARK = '# redact: its built-in rules follow. Change or delete any; keep this line, or they are added again.'
+export const HEADER = `# redact: the patterns it masks, one JavaScript regex a line, in every project. Read again
+# before every masking: a change masks from the next message on. A line is trimmed; blank lines
+# and lines starting with # are skipped (write \\# for a literal # at the start, \\x20 for a space
+# at either end). The comment line right above a pattern names it in /redact show.
+# Each match is masked whole, or only its group named v (or v2) when it has one. Its label is its
+# first other named group, (?<ACME_KEY>...) masks as ACME_KEY_n, SECRET without one.
+# Options go at the end of the line, after " #!": label=NAME names the label; i ignores case;
+# min=N masks only a match of N characters or more, not all lowercase letters; strong only one
+# of 8 or more with two of letters, digits and symbols; prose leaves an unquoted match after a
+# colon alone when words follow it.
+# The model cannot read or change this file; /redact show lists it.
+${MARK}
+`
+// the header an older version wrote, replaced when the rules are added
+const OLD_HEADER = `# redact: your patterns, one JavaScript regex a line, masked on top of the built-in rules,
+# in every project. Read again before every masking: a change masks from the next message on.
+# A line is trimmed; blank lines and lines starting with # are skipped (write \\# for a literal #
+# at the start, \\x20 for a space at either end). A named group names the label:
+# (?<ACME_KEY>...) masks as ACME_KEY_n, SECRET without one. A lookbehind keeps a prefix.
+# The model cannot read or change this file; /redact show lists it.
+`
+// the rules redact ships with, compiled: what `mask` uses on its own, and until the file reads
+export const defaults = compile(parse(SEED), YOURS)
+// each session's vault, under its id, in the store; one untouched this long is dropped
 const VAULT = 'vault:'
 const KEEP_MS = 30 * 24 * 3600 * 1000
 
-// The store's patterns as last read, and compiled; one per load. Read again at every masking,
-// so a pattern another session added masks here too; a failed read keeps the last list. The
-// vault being loaded, and the queue its saves wait in. These helpers sit at the top of the file
-// because the engine only follows `$` into such functions.
-type Kept = { stored: string[]; compiled: Extra[]; note: string; vault?: { id: string; held: Promise<Held> }; saving: Promise<unknown> }
-const sync = async ($: EngineInterface, k: Kept) => {
-  const v = await $.store.get(STORED).catch(() => undefined)
-  if (!Array.isArray(v) || JSON.stringify(v) === JSON.stringify(k.stored)) return
-  k.stored = v.filter((s): s is string => typeof s === 'string')
-  k.compiled = compile(k.stored)
+// The file's patterns as last read, and compiled, and where the file is; one per load. Read
+// again at every masking, so an edit by hand or a pattern another session added masks here too;
+// a failed read keeps the last list. The vault being loaded, and the queue its saves wait in;
+// whether the terminal draws placeholders (`raw`), the settings patterns that did not compile,
+// and the status line last set. These helpers sit at the top of the file because the engine only
+// follows `$` into such functions.
+type Kept = { stored: string[]; names: (string | undefined)[]; compiled: Pattern[]; last?: string; file?: Promise<string>; seeded?: boolean; note: string
+  vault?: { id: string; held: Promise<Held> }; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; opened?: boolean }
+// CLAUDE_CONFIG_DIR, else ~/.claude; USERPROFILE is Windows' HOME
+const place = ($: EngineInterface, k: Kept) => k.file ??= (async () => {
+  const dir = await $.env.get('CLAUDE_CONFIG_DIR') || `${await $.env.get('HOME') || await $.env.get('USERPROFILE') || '~'}/.claude`
+  return `${dir.replace(/[\\/]+$/, '')}/${FILE}`
+})()
+// The file's text, undefined when it is there but did not read. One without MARK, or none at all,
+// reads with the header and the built-in rules (and a list an older version kept in the store
+// moved below them), written back once per load: a write that fails still masks with them.
+const text = async ($: EngineInterface, k: Kept, path: string) => {
+  const there = await $.fs.exists(path).catch(() => true)
+  const t = there ? await $.fs.read(path).then(String, () => undefined) : ''
+  if (t === undefined || t.split('\n').some(l => l.trim() === MARK)) return t
+  const old = there ? undefined : await $.store.get(STORED).catch(() => undefined)
+  const moved = Array.isArray(old) ? old.filter(s => typeof s === 'string').map(s => `${s}\n`).join('') : ''
+  const seeded = HEADER + SEED + (t.startsWith(OLD_HEADER) ? t.slice(OLD_HEADER.length) : t) + moved
+  if (!k.seeded) {
+    k.seeded = true
+    await $.fs.write(path, seeded).then(
+      () => moved && $.store.delete(STORED).catch(() => {}), // left, it is never read again: the file is there
+      err => $.ui.log(`redact: ${FILE} not written: ${(err as Error)?.message ?? err}`, { to: 'debug' }))
+  }
+  return seeded
 }
-const save = async ($: EngineInterface, k: Kept, list: string[]) => {
-  await $.store.set(STORED, list)
-  k.stored = list
-  k.compiled = compile(list)
+// the file's patterns from its text, compiled again only when the text changed
+const take = (k: Kept, t: string) => {
+  if (t === k.last) return
+  k.last = t
+  const lines = parse(t)
+  k.stored = lines.map(l => l.line)
+  k.names = lines.map(l => l.name)
+  k.compiled = compile(lines, YOURS)
+}
+const sync = async ($: EngineInterface, k: Kept) => {
+  const t = await text($, k, await place($, k))
+  if (t !== undefined) take(k, t)
+}
+// Writes the file's lines as `f` changes them, comments and all; a file that did not read is
+// left alone, never written over.
+const save = async ($: EngineInterface, k: Kept, f: (lines: string[]) => string[]) => {
+  const path = await place($, k)
+  const t = await text($, k, path)
+  if (t === undefined) throw new Error(`${FILE} did not read`)
+  const next = f(t.replace(/\n$/, '').split('\n')).join('\n') + '\n'
+  await $.fs.write(path, next)
+  take(k, next)
   $.ui.invalidate('ui.render')
 }
-const add = async ($: EngineInterface, k: Kept, src: string) => {
+const add = async ($: EngineInterface, k: Kept, typed: string) => {
   await sync($, k)
-  if (!src) return 'nothing added: give a regex'
+  if (!typed) return 'nothing added: give a regex'
+  const src = typed.replace(/^#/, '\\#') // a line starting with # is a comment
   const f = fault(src)
   if (f) return `not added: ${f}`
   if (k.stored.includes(src)) return `already there, as #${k.stored.indexOf(src) + 1}`
-  await save($, k, [...k.stored, src])
+  await save($, k, lines => [...lines, src])
   return `added as #${k.stored.length}: it masks from the next message on`
 }
 const remove = async ($: EngineInterface, k: Kept, src: string | undefined) => {
   const i = src === undefined ? -1 : k.stored.indexOf(src)
   if (i < 0) return 'no such pattern'
-  await save($, k, k.stored.filter((_, j) => j !== i))
-  return `removed #${i + 1}`
+  await save($, k, lines => { const at = lines.findIndex(l => l.trim() === src); return lines.filter((_, j) => j !== at) })
+  return `removed #${i + 1}` // not the pattern: a reply to a typed command can reach the model
+}
+
+// /redact's reply to its arguments, undefined for the pane. It answers in a toast, never as text:
+// a command's output row is one the model reads, and none of /redact is its business
+// (prompt.submit drops the line itself).
+const answer = async ($: EngineInterface, k: Kept, args: string) => {
+  const [, verb = '', rest = ''] = /^\s*(\S*)\s*([\s\S]*?)\s*$/.exec(args) ?? []
+  if (verb === 'add') return add($, k, rest)
+  // by its number, or by the pattern itself; a number in range is read as the number
+  // (a pattern typed with a leading # was written escaped)
+  if (verb === 'remove') { await sync($, k); return remove($, k, /^\d+$/.test(rest) && k.stored[Number(rest) - 1] !== undefined ? k.stored[Number(rest) - 1] : rest.replace(/^#/, '\\#')) }
+  if (verb === '' || verb === 'show') { k.note = ''; await $.ui.open({ id: PANE, title: TITLE, focus: true }); k.opened = true; return undefined }
+  return 'usage: /redact show | add <regex> | remove <n|regex>'
 }
 
 // The vault of the session the hook runs in, read from the store once per session id (a /clear
@@ -214,12 +383,56 @@ const load = async ($: EngineInterface, id: string): Promise<Held> => {
 const hold = async ($: EngineInterface, k: Kept) => {
   const id = await $.session.id()
   if (k.vault?.id !== id) {
+    k.revealed.clear() // a new session numbers from 1 again: no reveal carries over to its placeholders
     const held = load($, id)
     k.vault = { id, held }
     held.catch(() => { if (k.vault?.held === held) k.vault = undefined })
   }
   return k.vault.held
 }
+// A toast that never throws: a catch's notice of what it left out (the model never learns it is
+// missing), a refusal the person should see.
+const told = ($: EngineInterface, text: string) => { try { $.ui.toast(text) } catch {} }
+// The status line under the prompt: how many values this session's vault holds, so masking shows
+// though the terminal draws the real values back. Set only when it changes.
+const badge = ($: EngineInterface, k: Kept, h: Held) => {
+  const n = Object.keys(h.v.ph).length
+  const line = [`redact: ${n} masked`, ...k.skipped.length ? [`skipped pattern ${k.skipped.join(', ')} (/redact show)`] : [],
+    ...k.raw ? ['drawn as the model reads it'] : []].join(' · ')
+  if (line === k.shown) return
+  k.shown = line
+  try { $.ui.status(line) } catch {}
+}
+// Drops a placeholder from the vault. Its number is never handed out again (`n` stays), so a row
+// still holding it never restores to another value: a call naming it is refused, and the value,
+// matched again, masks under a new number.
+const drop = (h: Held, p: string) => {
+  const value = h.v.ph[p]
+  if (value === undefined) return false
+  delete h.v.ph[p]
+  delete h.v.by?.[p]
+  h.byValue.delete(value)
+  h.known = undefined
+  h.dirty = true
+  return true
+}
+const forget = async ($: EngineInterface, k: Kept, p: string) => {
+  const h = await hold($, k)
+  if (!drop(h, p)) return 'already forgotten'
+  await keep($, k, h)
+  badge($, k, h)
+  return `forgot ${p}: a call naming it is refused from now on, and the value, matched again, masks under a new number`
+}
+// every placeholder at once, in one save
+const forgetAll = async ($: EngineInterface, k: Kept) => {
+  const h = await hold($, k)
+  const n = Object.keys(h.v.ph).filter(p => drop(h, p)).length
+  await keep($, k, h)
+  badge($, k, h)
+  return `forgot ${n}: a call naming one is refused from now on, and each value, matched again, masks under a new number`
+}
+// What the pane lists: each placeholder, its value, and the rule or pattern that masked it.
+const masked = (h: Held) => Object.entries(h.v.ph).map(([p, v]) => ({ p, v, by: h.v.by?.[p] ?? 'not recorded (masked before redact kept it)' }))
 // Saves the vault when a masking added to it, one save at a time so an older copy never lands
 // last. A save that fails throws, and the hook withholds: a --resume would not find the value.
 const keep = ($: EngineInterface, k: Kept, h: Held) => {
@@ -231,12 +444,13 @@ const keep = ($: EngineInterface, k: Kept, h: Held) => {
     catch (err) { h.dirty = true; throw err }
   })
 }
-// One hook's masking: the session's vault with the settings' and the stored patterns.
-const masker = async ($: EngineInterface, k: Kept, fixed: readonly Extra[]) => {
+// One hook's masking: the session's vault with the file's patterns (the built-in rules among
+// them), then the settings'.
+const masker = async ($: EngineInterface, k: Kept, fixed: readonly Pattern[]) => {
   await sync($, k)
   const h = await hold($, k)
-  const extra = [...fixed, ...k.compiled]
-  return { m: (s: string) => mask(s, h, extra), done: () => keep($, k, h) }
+  const patterns = [...k.compiled, ...fixed]
+  return { m: (s: string) => mask(s, h, patterns), done: async () => { await keep($, k, h); badge($, k, h) } }
 }
 // drops the vaults of sessions untouched for KEEP_MS; a --resume of one finds its placeholders gone
 const prune = async ($: EngineInterface) => {
@@ -248,14 +462,31 @@ const prune = async ($: EngineInterface) => {
   }
 }
 
-// Tamper guard: what decides this plugin's masking, kept out of the model's reach. Its store
-// file (the patterns /redact keeps and the vaults; Bash is checked whole, so reading it is
-// refused too, and /redact show lists the patterns), and its enabledPlugins and pluginConfigs
-// entries in a settings file. Best effort: a Bash command that spells a path another way (a
-// variable, `cd` first) gets past it, and the plugin's own source and `claude plugin disable`
-// are not guarded.
+// Tamper guard: what decides this plugin's masking, kept out of the model's reach. The patterns
+// file, read or written (/redact show lists it); the store file of vaults (Bash is checked whole,
+// so reading it is refused too); and its enabledPlugins and pluginConfigs entries in a settings
+// file. Best effort: a Bash command that spells a path another way (a variable, `cd` first, a
+// search over the home folder), an MCP server's own file tools, the plugin's own source and
+// `claude plugin disable` get past it.
 // its file, a glob over the folder, or the folder itself (`rm -rf …/store`)
 const STORE = /plugins[\\/]+store(?:[\\/]+(?:redact|[^\s'"]*[*?[])|[\\/]*(?=[\s'";|&)]|$))/i
+// Bash and the patterns file: its name (FILE), a glob at the top of a `.claude` folder
+// (`cat ~/.claude/*`), or a recursive reader or copier naming that folder. A bare `ls ~/.claude`
+// passes, and so does the word claude (`grep -rn claude .`, `~/dotagents/claude/*`). A
+// CLAUDE_CONFIG_DIR not named .claude gets the name rule only.
+const PATTERNS_SH = /redact-patterns\.txt|(?:^|[\s'"=~\\/])\.claude[\\/]+[^\s'"\\/]*[*?[]|\b(?:grep|rg|ag|ack|find|tar|zip|rsync|cp|scp)\b[^|;&\n]*(?:^|[\s'"=~\\/])\.claude[\\/]*(?=[\s'";|&)]|$)/i
+// where a path lands, `/`-separated and lowercased (a case alias on Windows and macOS), else as
+// spelled; a Grep with no path searches the working directory
+const land = async ($: EngineInterface, p: string) =>
+  ((await $.fs.stat(p, { resolve: true }).catch(() => undefined))?.realPath ?? p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+// a file tool's path that lands on the patterns file, or a Grep over a folder that holds it
+const reaches = async ($: EngineInterface, e: any, file: string) => {
+  const p = e.tool === 'Grep' ? String(e.path ?? '.') : e.file_path ?? e.notebook_path ?? e.path
+  if (typeof p !== 'string' || !p) return false
+  if (p.toLowerCase().includes(FILE)) return true
+  const [at, f] = await Promise.all([land($, p), land($, file)])
+  return at === f || (e.tool === 'Grep' && f.startsWith(at + '/'))
+}
 // A file tool's settings file is any of that name, since ~/.claude/settings.json can be a link
 // to one elsewhere (a dotfiles repo) and the tool names the target: the before and after decide.
 // Bash names it under a claude folder, and redact.
@@ -269,8 +500,9 @@ const ours = (text: string) => {
     return JSON.stringify(['enabledPlugins', 'pluginConfigs'].map(k => Object.entries(j?.[k] ?? {}).filter(([id]) => id === 'redact' || id.startsWith('redact@'))))
   } catch { return undefined }
 }
-const tamper = async ($: EngineInterface, e: any) => {
-  if (e.tool === 'Bash') return STORE.test(e.command) || (SETTINGS_SH.test(e.command) && /redact/i.test(e.command))
+const tamper = async ($: EngineInterface, e: any, file: string) => {
+  if (e.tool === 'Bash') return STORE.test(e.command) || PATTERNS_SH.test(e.command) || (SETTINGS_SH.test(e.command) && /redact/i.test(e.command))
+  if (await reaches($, e, file)) return true
   if (!WRITES[e.tool]) return false
   const path = String(e.file_path ?? e.notebook_path ?? '')
   if (STORE.test(path)) return true
@@ -283,31 +515,33 @@ const tamper = async ($: EngineInterface, e: any) => {
 }
 
 export const register: Register = (on, options) => {
-  // Extra patterns, masked on top of RULES: the `patterns` option, and the ones kept in the store.
+  // The `patterns` option, masked after the patterns file's (the built-in rules among them).
   // One that does not compile is skipped, the rest stay on. They run in each hook's budget: a slow
   // one gets the text withheld by the `.catch`es below, never passed on, so bounding its repeats
   // is the user's call.
   const settings = typeof options.patterns === 'string' ? [options.patterns] : Array.isArray(options.patterns) ? options.patterns : []
-  const fromSettings = compile(settings)
-  let skipped = settings.flatMap((src, i) => { const f = fault(src); return f ? [`#${i + 1} (${f})`] : [] })
-  // note: the pane's answer to its last add or remove
-  const kept: Kept = { stored: [], compiled: [], note: '', saving: Promise.resolve() }
+  const fromSettings = compile(settings.map(line => ({ line })), 'pattern from settings')
+  const skipped = settings.flatMap((src, i) => fault(src) ? [`#${i + 1}`] : [])
+  // note: the pane's answer to its last add, remove or forget
+  const kept: Kept = { stored: [], names: [], compiled: defaults, note: '', saving: Promise.resolve(), raw: false, skipped, revealed: new Set() }
+  // The tamper guard is off while redact is being developed (it refuses the work on its own
+  // files); the tests turn it on with this undeclared option. Default it back to on before release.
+  const guarded = options.guard === true
   const failed = (where: string, kind: string) => `redact could not mask ${where} (${kind})`
 
   on('session.start', async ($, e, next) => {
-    try { await $.command.register({ name: 'redact', description: 'Show the redact rules in a pane, and add or remove patterns of your own.', argumentHint: 'show | add <regex> | remove <n>' }) }
+    try { await $.command.register({ name: 'redact', description: 'Show the redact rules in a pane, add or remove patterns of your own, and forget held values.', argumentHint: 'show | add <regex> | remove <n|regex>' }) }
     catch (err) { $.ui.log(`redact: /redact not registered: ${(err as Error)?.message ?? err}`, { to: 'debug' }) } // throws on hot reload (no session bound yet)
     try { await prune($) } catch (err) { $.ui.log(`redact: old vaults not pruned: ${(err as Error)?.message ?? err}`, { to: 'debug' }) }
+    try { badge($, kept, await hold($, kept)) } // a --resume starts with a vault
+    catch (err) { $.ui.log(`redact: vault not loaded: ${(err as Error)?.message ?? err}`, { to: 'debug' }) }
     return next(e)
   })
 
-  // What follows `add` lands in the transcript the model reads; what the pane's field takes does not.
   on('command.run', { command: 'redact' }, async ($, e) => {
-    const [, verb = '', rest = ''] = /^\s*(\S*)\s*([\s\S]*?)\s*$/.exec(e.args) ?? []
-    if (verb === 'add') return { text: await add($, kept, rest) }
-    if (verb === 'remove') { await sync($, kept); return { text: await remove($, kept, kept.stored[Number(rest) - 1]) } }
-    if (verb === '' || verb === 'show') { await $.ui.open({ id: PANE, title: TITLE, focus: true }); return { text: 'redact rules shown' } }
-    return { text: 'usage: /redact show | add <regex> | remove <n>' }
+    const reply = await answer($, kept, e.args)
+    if (reply) told($, `redact: ${reply}`)
+    return {}
   })
 
   // ---- Masking: everything the model reads, before it is recorded or sent.
@@ -315,6 +549,14 @@ export const register: Register = (on, options) => {
   // A slash command's line takes no rewrite here: its arguments are masked at command.run, a
   // skill's text at skill.prompt.
   on('prompt.submit', async ($, e, next) => {
+    // Every /redact line stays out of the conversation: dropped, it never enters it. command.run
+    // has run it by now (`e.command.args` is what its hooks left); the pane opens here only when
+    // command.run did not open it, should a build drop before it runs.
+    if (e.command?.name === 'redact') {
+      if (!kept.opened && /^\s*(show)?\s*$/.test(e.command.args)) { kept.note = ''; await $.ui.open({ id: PANE, title: TITLE, focus: true }) }
+      kept.opened = false
+      return { drop: 'redact: kept out of the conversation' }
+    }
     if (e.command) return next(e)
     const { m, done } = await masker($, kept, fromSettings)
     const text = m(e.text)
@@ -322,7 +564,7 @@ export const register: Register = (on, options) => {
     return next(text === e.text ? e : { ...e, text })
   }).catch((_, _e, next) => ({ drop: `${failed('this prompt', next.error.kind)}, so it was not sent.` }))
 
-  // /redact's own arguments are a regex for the store, not text for the model.
+  // /redact's own arguments are a regex for the patterns file, not text for the model.
   on('command.run', async ($, e, next) => {
     if (e.command === 'redact' || !e.args) return next(e)
     const { m, done } = await masker($, kept, fromSettings)
@@ -347,7 +589,7 @@ export const register: Register = (on, options) => {
     const blocks = r.blocks.map(b => { const text = m(b.text); return text === b.text ? b : { ...b, text } })
     await done()
     return blocks.some((b, i) => b !== r.blocks[i]) ? { ...r, blocks } : r
-  }).catch(() => ({ blocks: [] }))
+  }).catch(($, _e, next) => { told($, `${failed('the first request\'s context (CLAUDE.md, the date)', next.error.kind)}, so it was left out.`); return { blocks: [] } })
 
   // The system prompt. Nothing changed hands core's own list back, so `shared` sections keep the
   // prompt cache; failing, only those stay: they read the same for everyone, so hold nothing of ours.
@@ -357,7 +599,10 @@ export const register: Register = (on, options) => {
     const sections = r.sections.map(s => { const text = m(s.text); return text === s.text ? s : { ...s, text } })
     await done()
     return sections.some((s, i) => s !== r.sections[i]) ? { sections } : r
-  }).catch(async (_, e, next) => ({ sections: (await next(e)).sections.filter(s => s.scope === 'shared') }))
+  }).catch(async ($, e, next) => {
+    told($, `${failed('the system prompt', next.error.kind)}, so only its shared sections were sent.`)
+    return { sections: (await next(e)).sections.filter(s => s.scope === 'shared') }
+  })
 
   // What the engine injects per request (a reminder, a mentioned file, a hook's context): the
   // transcript keeps the engine's record, the request carries this answer.
@@ -368,7 +613,7 @@ export const register: Register = (on, options) => {
     const text = m(r.text)
     await done()
     return text === r.text ? r : { ...r, text }
-  }).catch(() => ({ text: null }))
+  }).catch(($, e, next) => { told($, `${failed(`an injected ${e.type}`, next.error.kind)}, so it was left out.`); return { text: null } })
 
   // An MCP server's words about its tools; the built-in tools' are the engine's own.
   on('tool.describe', async ($, e, next) => {
@@ -384,9 +629,13 @@ export const register: Register = (on, options) => {
   // request sends. The model's response holds no value it never saw, and a notice is never sent.
   // Failing, the row's text is withheld: the catch maps blocks to a constant, nothing that can throw.
   on('session.append', async ($, e, next) => {
-    if (e.door === 'response' || e.door === 'notice') return next(e)
+    if (e.door === 'response') return next(e)
+    // a /redact line's arguments (a pattern being added) are emptied in any row, a notice too:
+    // the engine records them empty already, this holds should it stop
+    const scrubbed = blocks(e.message.content, s => s.replace(REDACT_ARGS, '$1$2'))
+    if (e.door === 'notice') return next(scrubbed === e.message.content ? e : { ...e, message: { ...e.message, content: scrubbed } })
     const { m, done } = await masker($, kept, fromSettings)
-    const content = blocks(e.message.content, m)
+    const content = blocks(scrubbed, m)
     await done()
     return next(content === e.message.content ? e : { ...e, message: { ...e.message, content } })
   }).catch((_, e, next) => next({ ...e, message: { ...e.message, content: blocks(e.message.content, () => WITHHELD) } }))
@@ -394,19 +643,19 @@ export const register: Register = (on, options) => {
   // ---- Restoring: the real values, where they run or are drawn on this machine.
 
   on('tool.call', async ($, e, next) => {
-    if (skipped.length) {
-      // on the first call, not at session.start: that does not fire again on a hot reload
-      try { $.ui.toast(`redact: skipped pattern ${skipped.join(', ')}`) } catch {}
-      skipped = []
-    }
     const h = await hold($, kept)
     const missing = new Set<string>()
     const input = deep(e, s => restore(s, h, missing)) as typeof e
     if (missing.size) {
-      return { deny: `${[...missing].join(', ')} is no placeholder this session's redact vault holds, so its real value cannot be put back. Use the placeholders exactly as they appear in the conversation, or ask the user.` }
+      const names = [...missing].join(', ')
+      const isNo = missing.size > 1 ? 'are no placeholders' : 'is no placeholder'
+      // the deny reaches only the model; the person sees why their call stopped too
+      told($, `redact refused ${e.tool}: ${names} ${isNo} this session holds`)
+      const escaped = [...missing].map(p => ESC + p.slice(OPEN.length)).join(', ')
+      return { deny: `${names} ${isNo} this session's redact vault holds, so its real value cannot be put back. Use the placeholders exactly as they appear in the conversation, or ask the user. To write one as literal text (a doc, a report), put ! after its opening bracket: ${escaped}.` }
     }
-    if (await tamper($, input)) {
-      return { deny: `this call would touch the redact plugin's own config (its stored patterns and vaults, or its entries in a settings file), which decides what gets masked. Ask the user to make that change: /redact show, or their settings file.` }
+    if (guarded && await tamper($, input, await place($, kept))) {
+      return { deny: `this call would reach the redact plugin's own config (its patterns file, its store of vaults, or its entries in a settings file), which decides what gets masked. Ask the user to make that change: they edit the file themselves, or use /redact show.` }
     }
     return next(input)
   }).catch(async (_, e, next) => ({
@@ -416,9 +665,12 @@ export const register: Register = (on, options) => {
       : `${e.tool} did not run: the redact plugin failed before it (${next.error.kind}).`,
   }))
 
-  // The terminal is this machine's; a remote surface (the mobile app over Remote Control) keeps
-  // the placeholders, so drawing never sends a value. A failed hook draws the engine's row, placeholders and all.
-  const drawn = (s: string) => s.includes(OPEN)
+  // The terminal is this machine's; every other surface (the mobile app over Remote Control, the
+  // desktop app, VS Code) keeps the placeholders, so drawing never sends a value off the terminal. A
+  // failed hook draws the engine's row, placeholders and all.
+  // `kept.raw` (the pane's toggle) draws the placeholders on the terminal too, as the model reads
+  // them: the transcript and the suggested prompt
+  const drawn = (s: string) => !kept.raw && s.includes(OPEN)
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) =>
     e.surface === 'terminal' && drawn(e.props.text) ? next({ ...e, props: { ...e.props, text: restore(e.props.text, await hold($, kept)) } }) : next(e))
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) =>
@@ -438,32 +690,74 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     await sync($, kept)
-    const { stored, note } = kept
+    const file = await place($, kept)
+    const vault = masked(await hold($, kept))
+    const { stored, names, note } = kept
     const { Box, Text, Button } = $.ui.resolve(e)
+    const redraw = (s: string) => { kept.note = s; $.ui.invalidate('ui.render') }
+    // The value, on the terminal only: every other surface (mobile, desktop, VS Code) keeps the
+    // placeholders, so the pane never sends a value there either. The model never reads a pane, and a tool that reads the
+    // screen back (a Bash `tmux capture-pane`) returns text the vault masks again, as it holds
+    // every value shown here; a screenshot is an image, which nothing masks (README, Limits).
+    // A value with a line break or past 40 characters (a private key runs to 8 KB) is cut to its ends
+    // until its reveal is pressed, so one key does not fill the pane or show whole on a shared screen.
+    const long = (v: string) => e.surface === 'terminal' && (v.includes('\n') || v.length > 40)
+    const shown = (p: string, v: string) => {
+      if (e.surface !== 'terminal') return `${v.length} chars`
+      if (!long(v) || kept.revealed.has(p)) return v
+      const lines = v.split('\n').length
+      const size = `(${lines > 1 ? `${lines} lines, ` : ''}${v.length} chars)`
+      // a short one shows its size alone, as its ends would be all of it; a line break draws as ⏎
+      const ends = v.length > 20 ? `${v.slice(0, 6)}…${v.slice(-4)} `.replace(/\r?\n/g, '⏎') : ''
+      return ends + size
+    }
+    const reveal = (p: string) => { kept.revealed.has(p) ? kept.revealed.delete(p) : kept.revealed.add(p); $.ui.invalidate('ui.render') }
+    // a long pattern is cut in the middle, so its row keeps the remove button on a narrow terminal
+    const pattern = (text: string) => <Box flexShrink={1}><Text wrap="truncate-middle">{text}</Text></Box>
     const skip = (src: string) => { const f = fault(src); return f ? <Text color="red"> skipped: {f}</Text> : null }
     let field = <Text dimColor>{'add one with /redact add <regex>'}</Text> // mobile has no Input
     if (e.surface !== 'mobile') {
       const { Input } = $.ui.resolve(e)
-      field = <Input key="add" label="add " placeholder="a regex; each match is masked whole, a named group names its label" submitLabel="add" onSubmit={async v => { kept.note = await add($, kept, v.trim()); $.ui.invalidate('ui.render') }} />
+      field = <Input key="add" label="add " placeholder="a regex; each match is masked whole, a named group names its label" submitLabel="add" onSubmit={async v => redraw(await add($, kept, v.trim()))} />
     }
-    const label = (src: string) => <Text dimColor> as {labelOf(src)}</Text>
+    const label = (line: string) => { try { return <Text dimColor> as {read(line).label}</Text> } catch { return null } }
+    // This session first: a word a rule misread is masked all session, and forget is the fix
     return (
       <Box flexDirection="column">
-        <Text weight="semibold">Built in</Text>
-        {RULES.map(r => <Text dimColor>  {r.label ?? r.type}: {r.name}</Text>)}
-        <Box marginTop={1}><Text weight="semibold">From settings</Text><Text dimColor> · the patterns option in settings.json</Text></Box>
-        {settings.length === 0 && <Text dimColor>  none</Text>}
-        {settings.map(src => <Text>  {src}{label(src)}{skip(src)}</Text>)}
-        <Box marginTop={1}><Text weight="semibold">Yours</Text><Text dimColor> · kept across sessions and projects</Text></Box>
+        <Box gap={1}>
+          <Box flexShrink={1}><Text weight="semibold">This session</Text><Text dimColor> · {vault.length} masked; forget drops one from the vault</Text></Box>
+          {vault.length > 1 && <Box flexShrink={0}><Button key="forget-all" label="forget all" onPress={async () => redraw(await forgetAll($, kept))} /></Box>}
+        </Box>
+        {vault.length === 0 && <Text dimColor>  nothing masked yet</Text>}
+        {vault.map(({ p, v, by }) => (
+          <Box flexDirection="column">
+            <Box gap={1}>
+              <Box flexShrink={1}><Text>  {p} {shown(p, v)}</Text></Box>
+              {long(v) && <Box flexShrink={0}><Button key={`reveal-${p}`} label={kept.revealed.has(p) ? 'hide' : 'reveal'} onPress={() => reveal(p)} /></Box>}
+              <Box flexShrink={0}><Button key={`forget-${p}`} label="forget" onPress={async () => redraw(await forget($, kept, p))} /></Box>
+            </Box>
+            <Text dimColor>    masked by {by}</Text>
+          </Box>
+        ))}
+        {e.surface === 'terminal' && (
+          <Box gap={1}>
+            <Text dimColor>terminal draws: {kept.raw ? 'as the model reads it' : 'the real values'}</Text>
+            <Button key="raw" label="switch" onPress={async () => { kept.raw = !kept.raw; badge($, kept, await hold($, kept)); $.ui.invalidate('ui.render') }} />
+          </Box>
+        )}
+        {note && <Text dimColor>{note}</Text>}
+        <Box marginTop={1}><Text weight="semibold">Yours</Text><Text dimColor> · in {file}, for every project, the built-in rules first; edit it by hand or here</Text></Box>
         {stored.length === 0 && <Text dimColor>  none yet</Text>}
         {stored.map((src, i) => (
           <Box gap={1}>
-            <Text>  {i + 1}. {src}{label(src)}{skip(src)}</Text>
-            <Button key={`remove-${i}`} label="remove" onPress={async () => { kept.note = await remove($, kept, src); $.ui.invalidate('ui.render') }} />
+            <Box flexShrink={1}>{pattern(`  ${i + 1}. ${names[i] ? `${names[i]}: ${src}` : src}`)}{label(src)}{skip(src)}</Box>
+            <Box flexShrink={0}><Button key={`remove-${i}`} label="remove" onPress={async () => redraw(await remove($, kept, src))} /></Box>
           </Box>
         ))}
+        <Box marginTop={1}><Text weight="semibold">From settings</Text><Text dimColor> · the patterns option in settings.json</Text></Box>
+        {settings.length === 0 && <Text dimColor>  none</Text>}
+        {settings.map(src => <Box>{pattern(`  ${src}`)}{label(src)}{skip(src)}</Box>)}
         <Box marginTop={1}>{field}</Box>
-        {note && <Text dimColor>{note}</Text>}
       </Box>
     )
   })

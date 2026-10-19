@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "redact",
   "version": "0.1.0",
-  "description": "Swaps secret-shaped values and email addresses for numbered placeholders (API_KEY_1, EMAIL_1) in everything the model is sent, from the first request on, keeps the real values in a local vault per session, and puts them back in every tool call's input and in the terminal. Refuses a placeholder it cannot restore and changes to its own config. /redact show lists the rules in a pane, where you add and remove your own.",
+  "description": "Lets Claude use your API keys, tokens, passwords and email addresses, hiding the ones its patterns match from the model. They are swapped for stable placeholders (API_KEY_1, EMAIL_1) in everything sent to the model, kept in a local vault, and restored in tool calls and your terminal. Fails closed. Pattern-based; add your own with /redact.",
   "author": {
     "name": "dboeter",
     "email": "daan.boeter@hotmail.com"
@@ -12,7 +12,7 @@
       "type": "string",
       "multiple": true,
       "title": "Extra patterns",
-      "description": "Regex sources masked on top of the built-in rules, each match whole (a lookbehind keeps a prefix), labelled by the first named group, SECRET without one. A list, so set it in settings.json pluginConfigs: /config does not show list fields"
+      "description": "Pattern lines in the patterns file's format, masked after its patterns (the built-in rules among them): each match whole, or its v group (a lookbehind keeps a prefix), labelled by label= or the first other named group, SECRET without one. A list, so set it in settings.json pluginConfigs: /config does not show list fields"
     }
   },
   "license": "MIT",

@@ -3,6 +3,8 @@
     "deny": [
       "Read(~/.claude/plugins/store/redact_*)",
       "Edit(~/.claude/plugins/store/redact_*)",
+      "Read(~/.claude/redact-patterns.txt)",
+      "Edit(~/.claude/redact-patterns.txt)",
       "Bash(claude plugin disable*)",
       "Bash(claude plugin uninstall*)",
       "Bash(claude plugin marketplace remove*)"
