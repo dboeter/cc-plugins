@@ -1,0 +1,12 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "guard-context",
+  "version": "0.1.0",
+  "description": "Adds a line under the permission dialog when dotagents' guard.sh asks: for a recursive rm, what the targets hold. Spike.",
+  "author": {
+    "name": "dboeter",
+    "email": "daan.boeter@hotmail.com"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/dboeter/cc-plugins"
+}
