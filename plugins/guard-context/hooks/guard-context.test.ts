@@ -13,3 +13,8 @@ test('wrappers, paths and the first rm clause only', () => {
   expect(rmTargets('cd x && rm -rf a; rm -rf b')).toEqual(['a'])
   expect(rmTargets('git rm -r a')).toEqual([])
 })
+
+test('a rm without -r has no targets: guard.sh does not ask on it', () => {
+  expect(rmTargets('rm a b')).toEqual([])
+  expect(rmTargets('rm --recursive a')).toEqual(['a'])
+})
