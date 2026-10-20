@@ -47,28 +47,42 @@ Every tool, remote ones included: WebFetch, WebSearch, MCP tools. The restore is
 
 ## Use
 
-No `/redact` command enters the conversation: its line is dropped and its reply is a toast, so the model reads neither. `/redact show` (or `/redact`) opens a pane with what this session masked first, then every pattern in the order they run: those in your patterns file, the built-in rules first, each by its name and regex with the label it masks under and a remove button, then the ones from your settings (one that does not compile is marked skipped, and named in the status line), and a field to add one. On the mobile app, with no field, add from the prompt.
+No `/redact` command enters the conversation: its line is dropped and its reply is a toast, so the model reads neither. `/redact` (or `/redact show`) opens a tabbed pane on **This session**; `/redact patterns` (or `/redact test [text]`) opens it on **Patterns**, and `/redact guide` (or `help`) on **Guide**. The top bar switches tabs (`s`, `p`, `h`), flags any skipped patterns, and on the terminal shows what the terminal draws (`the real values` or `as the model reads it`) with a switch (`d`).
 
-Under **This session**, at the top, the pane lists each placeholder the vault holds, with its value (the length alone off the terminal), the pattern that masked it, and a forget button; with more than one, a forget all button drops them all. A value with a line break or over 40 characters (a private key) shows its first 6 and last 4 characters and its size until you press its reveal button. The model never reads the pane, and text read back off the screen (`tmux capture-pane` in a Bash call) comes back masked, as the vault holds every value the pane shows; a screenshot does not, as images are not masked. Forgetting drops the value from the vault: a tool call naming that placeholder is refused from then on, and the value, matched again, masks under a new number, never the old one. On the terminal, a switch below says what the terminal draws and flips it between the real values and the placeholders the model reads.
+- **This session** lists each placeholder the vault holds, with its value (the length alone off the terminal), the pattern that masked it, and a red ✗ that forgets it; with more than one, a red ✗ all drops them all. A value with a line break or over 40 characters (a private key) shows its first 6 and last 4 characters and its size until you press its ▸ (▾ hides it again). The model never reads the pane, and text read back off the screen (`tmux capture-pane` in a Bash call) comes back masked, as the vault holds every value the pane shows; a screenshot does not, as images are not masked. Forgetting drops the value from the vault: a tool call naming that placeholder is refused from then on, and the value, matched again, masks under a new number, never the old one.
+- **Patterns** starts with a **Test** section that previews on Enter (or via `/redact test <text>`) what your active patterns mask in sample text without saving to the vault. Below it, **Built-in** lists the rules redact ships with, each by its name, id and label, with a switch that turns it off or on; **Yours** has an `add` field at the top followed by the patterns in your file, each by its name (or the line itself), the label it masks under and a red ✗ that removes it; then **From settings** (where a pattern that does not read is marked skipped and named in the status line). On the mobile app, with no field, test and add from the prompt.
+- **Guide** summarizes the pattern format, placeholder escaping, and where real values go.
 
-`/redact add <regex>` and `/redact remove <n|regex>` do the same from the prompt, answered in a toast; remove takes a pattern's number or the pattern itself, and a number that names a pattern is read as its number. Should a `/redact` line reach the conversation all the same, its arguments are emptied in every row the model is sent.
+`/redact test <text>`, `/redact add <pattern>`, `/redact remove <n|pattern>`, `/redact off <rule>` and `/redact on <rule>` work from the prompt, answered in a toast; remove takes a pattern's number or the line itself, and a number that names a pattern is read as its number. Should a `/redact` line reach the conversation all the same, its arguments are emptied in every row the model is sent.
 
-Your patterns live in `~/.claude/redact-patterns.txt` (in `$CLAUDE_CONFIG_DIR` when that is set), one for every project. Edit it by hand: one regex per line, each line trimmed, blank lines and lines starting with `#` skipped (`\#` for a pattern that starts with `#`, `\x20` for a space at either end). It is read again before every masking, so an edit masks from the next message on, in every open session. `/redact add` and `remove` keep your comments. A comment line right above a pattern names it in the pane.
+Your patterns live in `~/.claude/redact-patterns.txt` (in `$CLAUDE_CONFIG_DIR` when that is set), one for every project. redact creates it on first use holding a short header that explains the format, and nothing else: the built-in rules stay in redact, so a fix to one reaches you with an update. Edit the file by hand, or with `/redact add`, `remove`, `off` and `on`, which keep your comments. It is read again before every masking, so an edit masks from the next message on, in every open session. Each line is trimmed; blank lines and lines starting with `#` are skipped, and the first line of the comment right above a pattern names it in the pane. A line is one of:
 
-The built-in rules live in this file too. redact creates it on first use with a header explaining the format, then the rules, each under a comment naming it: change or delete any, and it masks that way from the next message on. A file from an older version gets the header and the rules once, above the patterns it holds; the header's last line, `# redact: its built-in rules follow…`, records that, so keep it, or the rules are added again. Patterns an older version kept in its store move into the file on first use. Should the file not read, masking goes on with the rules redact ships with.
+```
+# masks each match as ACME_KEY_n
+ACME_KEY: (?<=ACME_KEY=)\S+
+# options go between the label and the colon
+EMPLOYEE_ID min=6 i: \be\d{6}\b
+# a bare regex masks as SECRET
+\bproj-[0-9a-f]{12}\b
+# turns a built-in rule off
+off email
+```
 
-Each match of a pattern is masked whole; a lookbehind keeps a prefix: `(?<=ACME_KEY=)\S+`, and so does a group named `v` (or `v2`), which is all that is masked when it matched: `(?<pre>ACME_KEY=)(?<v>\S+)`. Its first other named group names its label, `SECRET` without one: `(?<=ACME_KEY=)(?<ACME_KEY>\S+)` masks as `⟦ACME_KEY_n⟧`. Options go at the end of the line, after ` #!`:
+The regex is the rest of the line after the first `: `, as written; a label is capital letters, digits and `_`. Each match is masked whole; a lookbehind keeps a prefix, and so does a group named `v` (or `v2`), which is all that is masked when it matched: `(?<pre>ACME_KEY=)(?<v>\S+)`. The options:
 
-- `label=NAME`: the label, whatever the groups are called.
-- `i`: ignore case.
+- `i`: match whatever the case.
 - `min=N`: mask only a match of N characters or more, and not one of lowercase letters only.
 - `strong`: mask only a match of 8 or more characters of at least two kinds out of letters, digits and symbols.
 - `prose`: leave an unquoted match right after a colon alone when words follow it on the line.
 
-A line that does not read (a regex that does not compile, an unknown option) is skipped and marked in the pane. Patterns run in file order, so the rules at its top run before yours and none of yours can split a value a rule masks whole. More can be set in the `patterns` option, in the same format, run after the file's; it is a list, so set it in settings.json (`/config` does not show list fields):
+The built-in rules and their ids: `private-key`, `vendor-token`, `bearer`, `url-password`, `flag` (the value after `--password` and the like), `assigned` (a value assigned to a secret's name) and `email`. To change one, turn it off and add your own version; the pane names what each hides and leaves alone. They run first, in that order, then your patterns in file order, so none of yours can split a value a rule masks whole. A line that does not read (an unknown option or rule, a regex that does not compile) is skipped and marked in the pane. Should the file not read, masking goes on with every built-in rule.
+
+A file an older version wrote, with the built-in rules in it, is rewritten once in this format: a rule it holds unchanged goes, one you deleted or edited becomes an `off` line (your edited copy stays, as your pattern), and each pattern's options move from after ` #!` to before it. Patterns an older version kept in its store move into the file on first use.
+
+More can be set in the `patterns` option, in the same format (an `off` line there turns nothing off), run after the file's; it is a list, so set it in settings.json (`/config` does not show list fields):
 
 ```json
-"pluginConfigs": { "redact@dboeter": { "options": { "patterns": ["(?<=ACME_KEY=)\\S+"] } } }
+"pluginConfigs": { "redact@dboeter": { "options": { "patterns": ["ACME_KEY: (?<=ACME_KEY=)\\S+"] } } }
 ```
 
 ## What it refuses

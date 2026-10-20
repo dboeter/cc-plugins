@@ -1,5 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing'
-import { defaults, fresh, HEADER, labelOf, mask, restore, SEED } from './redact'
+import { BUILTIN, defaults, fresh, HEADER, mask, migrate, restore } from './redact'
 
 // Fixtures are split so no literal matches ~/dotagents/scripts/git-hooks/lib/secret-content.ere,
 // which dotagents' pre-push gate runs over every added line (this file came from there), and
@@ -157,12 +157,6 @@ test('restore puts every value back, and names the placeholders it does not hold
   expect([...missing]).toEqual([ph('API_KEY', 9)])
 })
 
-test('a pattern of yours is labelled by its first named group, SECRET without one', () => {
-  expect(labelOf('(?<acme_key>acme_[a-z0-9]{8})')).toBe('ACME_KEY')
-  expect(labelOf('(?<=ACME=)\\S+')).toBe('SECRET')
-  expect(labelOf('(?<_x>a)')).toBe('SECRET')
-  expect(m1(`id ${ACME} ok`, [{ re: /(?<ACME>acme_[a-z0-9]{8})/g, label: 'ACME' }])).toBe(`id ${ph('ACME')} ok`)
-})
 
 test('a pattern that can match empty inserts no placeholders', () => {
   expect(m1('hello', [{ re: /x*/g, label: 'SECRET' }])).toBe('hello')
@@ -195,8 +189,15 @@ const DAY = 24 * 3600 * 1000
 // the patterns file, and the patterns of a file redact wrote, past the built-in rules it starts with
 const PATTERNS = '/h/.claude/redact-patterns.txt'
 const lines = (t: string) => t.split('\n').filter(l => l && !l.startsWith('#'))
-const RULES = lines(SEED).length
-const yours = (files: Map<string, string>) => lines(files.get(PATTERNS) ?? '').slice(RULES)
+const yours = (files: Map<string, string>) => lines(files.get(PATTERNS) ?? '')
+// the built-in rules as the file of the last older version held them: each under its name and
+// note, its options after ` #!`, then the line that said where yours go
+const OLD_MARK = '# ---- built-in rules: edit or delete any; keep this line, or they are added back ----'
+const legacy = (rules = BUILTIN) => '# redact patterns: what redact hides from the model, in every project.\n#\n' + OLD_MARK + '\n\n' + rules.map(r => {
+  const [head, src] = [r.line.slice(0, r.line.indexOf(': ')), r.line.slice(r.line.indexOf(': ') + 2)]
+  const [label, ...o] = head.split(' ')
+  return `# ${r.name}\n#   ${r.note}\n${src}  #! ${['label=' + label, ...o.map(x => x === 'i' ? 'ignore-case' : x)].join(' ')}\n\n`
+}).join('') + '# ---- your patterns: add them below ----\n\n'
 const HOLDS_GH = { 'vault:s1': { at: 39 * DAY, n: { API_KEY: 1 }, ph: { [ph('API_KEY')]: GH } } }
 
 test('a prompt is masked before it enters the session, its values kept in the vault', async ($, on) => {
@@ -308,7 +309,7 @@ test('a pattern from the options is masked too', { options: { patterns: ['acme_[
   expect(await entered($, `id ${ACME} ok`)).toBe(`id ${ph('SECRET')} ok`)
 })
 
-test('a pattern that does not compile is skipped and named in the status line, the rest stay on', { options: { patterns: ['(', '(?<ACME>acme_[a-z0-9]{8})'] } }, async ($, on) => {
+test('a pattern that does not compile is skipped and named in the status line, the rest stay on', { options: { patterns: ['(', 'ACME: acme_[a-z0-9]{8}'] } }, async ($, on) => {
   const { entered } = world(on)
   const statuses = statusLine(on)
   expect(await entered($, `id ${ACME} ok`)).toBe(`id ${ph('ACME')} ok`)
@@ -370,16 +371,18 @@ test('/redact add keeps a pattern that masks from the next message on, /redact r
     expect(((await $.command.run({ command: 'redact', args } as any)) as any).text).toBeUndefined()
     return toasts.length > n ? toasts.at(-1)!.replace(/^redact: /, '') : undefined
   }
-  expect(await run('add acme_[a-z0-9]{8}')).toContain(`added as #${RULES + 1}`)
-  expect(await run('add x_[0-9]+')).toBe(`added as #${RULES + 2}: it masks from the next message on`)
-  expect(yours(files)).toEqual(['acme_[a-z0-9]{8}', 'x_[0-9]+'])
-  expect(files.get(PATTERNS)).toStartWith(HEADER + SEED)
-  expect(await entered($, `id ${ACME} ok`)).toBe(`id ${ph('SECRET')} ok`)
-  expect(await run('add acme_[a-z0-9]{8}')).toContain('already there')
+  expect(await run('add ACME: acme_[a-z0-9]{8}')).toContain('added as #1')
+  expect(await run('add x_[0-9]+')).toBe('added as #2: it masks from the next message on')
+  expect(yours(files)).toEqual(['ACME: acme_[a-z0-9]{8}', 'x_[0-9]+'])
+  expect(files.get(PATTERNS)).toStartWith(HEADER)
+  expect(await entered($, `id ${ACME} ok`)).toBe(`id ${ph('ACME')} ok`)
+  expect(await run('add ACME: acme_[a-z0-9]{8}')).toContain('already there')
   expect(await run('add (')).toContain('not added')
-  expect(await run(`remove ${RULES + 3}`)).toBe('no such pattern')
-  expect(await run(`remove ${RULES + 1}`)).toBe(`removed #${RULES + 1}`)
-  expect(await run('remove x_[0-9]+')).toBe(`removed #${RULES + 1}`)
+  expect(await run('add X bogus: x')).toBe('not added: unknown option bogus')
+  expect(await run('add x  #! i')).toContain('not added: options go before the regex')
+  expect(await run('remove 3')).toBe('no such pattern')
+  expect(await run('remove 1')).toBe('removed #1')
+  expect(await run('remove x_[0-9]+')).toBe('removed #1')
   expect(await run('remove x_[0-9]+')).toBe('no such pattern')
   expect(await run('show')).toBeUndefined()
   expect(opened).toMatchObject([{ id: 'redact', focus: true }])
@@ -396,39 +399,82 @@ test('a /redact line keeps its arguments out of the rows the model reads', async
   expect(row.message.content[0].text).toBe('<command-name>/redact</command-name>\n<command-message>redact</command-message>\n<command-args></command-args>')
 })
 
-test('a new patterns file starts with the built-in rules, each named by the comment above it', async ($, on) => {
+test('a new patterns file holds the header alone; the pane lists the built-in rules, on', async ($, on) => {
   const { files } = world(on)
   const m = await mount($)
-  expect(files.get(PATTERNS)).toBe(HEADER + SEED)
-  expect(await m.find({ text: /1\. private key blocks/ })).toBeDefined()
-  expect(await m.find({ text: /3\. a token-shaped value after "Bearer"/ })).toBeDefined()
-  expect(await m.find({ text: / as TOKEN/ })).toBeDefined()
+  await m.press({ key: 'tab-patterns' })
+  expect(files.get(PATTERNS)).toBe(HEADER)
+  expect(await m.find({ text: /^  Private key blocks/ })).toBeDefined()
+  expect(await m.find({ text: /^  A token after "Bearer"$/ })).toBeDefined()
+  expect(await m.find({ text: / bearer · as TOKEN/ })).toBeDefined()
+  expect(await m.find({ text: /7 of 7 on/ })).toBeDefined()
+  expect(await m.find({ text: /none yet/ })).toBeDefined()
 })
 
-test('a file from before the rules moved gets them once, above its own patterns; one deleted stays deleted', async ($, on) => {
-  const { files, entered } = world(on, {}, { [PATTERNS]: 'acme_[a-z0-9]{8}\n' })
+test('a built-in rule turns off and on, from the pane, the prompt or the file', async ($, on) => {
+  const { files, entered } = world(on)
+  const toasts: string[] = []
+  on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
+  const mail = 'ann' + '@example.com'
+  expect(await entered($, `mail ${mail}`)).toBe(`mail ${ph('EMAIL')}`)
+  await $.command.run({ command: 'redact', args: 'off email' } as any)
+  expect(toasts.at(-1)).toBe('redact: email off: from the next message on')
+  expect(files.get(PATTERNS)).toBe(HEADER + 'off email\n')
+  const other = 'bob' + '@example.com'
+  expect(await entered($, `mail ${other}`)).toBe(`mail ${other}`)
+  await $.command.run({ command: 'redact', args: 'off email' } as any)
+  expect(toasts.at(-1)).toBe('redact: already off: email')
+  await $.command.run({ command: 'redact', args: 'off nope' } as any)
+  expect(toasts.at(-1)).toContain('no such rule: nope')
+  const m = await mount($)
+  await m.press({ key: 'tab-patterns' })
+  expect(await m.find({ text: /6 of 7 on/ })).toBeDefined()
+  await m.press({ key: 'turn-email' })
+  expect(files.get(PATTERNS)).toBe(HEADER)
+  expect(await entered($, `mail ${other}`)).toBe(`mail ${ph('EMAIL', 2)}`)
+  // an off line naming no rule is marked, and turns nothing off
+  files.set(PATTERNS, HEADER + 'off emails\n')
+  await m.unmount()
+  expect(await (await mount($)).find({ text: /skipped: no built-in rule emails/ })).toBeDefined()
+})
+test('a file of the last format drops its unchanged rules, turns a deleted or edited one off, and moves options before the regex', async ($, on) => {
+  const kept = BUILTIN.filter(r => r.id !== 'email' && r.id !== 'bearer')
+  const edited = legacy(kept).replace('label=API_KEY', 'label=KEY')
+  const { files, entered } = world(on, {}, { [PATTERNS]: edited + '# mine\n(?<pre>id=)(?<v>\\w+)  #! label=ID min=4 ignore-case\n(?<acme>acme_[a-z0-9]{8})\n' })
+  const mail = 'ann' + '@example.com'
+  expect(await entered($, `id=Ab12 ${ACME} ${mail} ${GH}`)).toBe(`id=${ph('ID')} ${ph('ACME')} ${mail} ${ph('KEY')}`)
+  const vendor = BUILTIN.find(r => r.id === 'vendor-token')!
+  expect(files.get(PATTERNS)).toBe(HEADER + 'off vendor-token\noff bearer\noff email\n\n'
+    + `# ${vendor.name}\n#   ${vendor.note}\n${vendor.line.replace('API_KEY', 'KEY')}\n\n`
+    + '# mine\nID min=4 i: (?<pre>id=)(?<v>\\w+)\nACME: (?<acme>acme_[a-z0-9]{8})\n')
+  // the file of this repo's user: every rule unchanged, nothing of their own
+  expect(migrate(legacy())).toBe(HEADER)
+  expect(migrate(HEADER + 'x\n')).toBeUndefined()
+  // no header, options in the old place: moved, every rule left on
+  expect(migrate('acme_[a-z]+  #! label=ACME ignore-case\n')).toBe(HEADER + 'ACME i: acme_[a-z]+\n')
+})
+test('a file from before the rules moved keeps its patterns and every rule on', async ($, on) => {
+  const old = '# redact: your patterns, one JavaScript regex a line, masked on top of the built-in rules,\n#\n#\n#\n#\n#\n'
+  const { files, entered } = world(on, {}, { [PATTERNS]: old + 'acme_[a-z0-9]{8}\n' })
   expect(await entered($, `GITHUB_TOKEN=${GH} id ${ACME}`)).toBe(`GITHUB_TOKEN=${ph('API_KEY')} id ${ph('SECRET')}`)
-  expect(files.get(PATTERNS)).toBe(HEADER + SEED + 'acme_[a-z0-9]{8}\n')
-  files.set(PATTERNS, HEADER + 'acme_[a-z0-9]{8}\n')
-  const gl = 'gl' + 'pat-' + 'b'.repeat(20)
-  expect(await entered($, `then ${gl}`)).toBe(`then ${gl}`)
-  expect(files.get(PATTERNS)).toBe(HEADER + 'acme_[a-z0-9]{8}\n')
+  expect(files.get(PATTERNS)).toBe(HEADER + 'SECRET: acme_[a-z0-9]{8}\n')
 })
-
-test('a pattern masks its v group under its label= option, min= and the rest after #!; an unknown option is skipped', async ($, on) => {
-  const { entered } = world(on, {}, { [PATTERNS]: HEADER + '(?<pre>id=)(?<v>\\w+)  #! label=ID min=4\nzz_[0-9]+  #! bogus\n' })
+test('a pattern masks its v group under its label, with its options; an unknown option is skipped', async ($, on) => {
+  const { entered } = world(on, {}, { [PATTERNS]: HEADER + 'ID min=4: (?<pre>id=)(?<v>\\w+)\nZZ bogus: zz_[0-9]+\n' })
   expect(await entered($, 'id=Ab12 id=Ab1 id=abcd zz_12')).toBe(`id=${ph('ID')} id=Ab1 id=abcd zz_12`)
   const m = await mount($)
+  expect(await m.find({ text: /1 skipped/ })).toBeDefined()
+  await m.press({ key: 'tab-patterns' })
   expect(await m.find({ text: /skipped: unknown option bogus/ })).toBeDefined()
 })
-
 test('the pane lists every pattern by its label, and adds and removes your own', async ($, on) => {
-  const { files } = world(on, {}, { [PATTERNS]: HEADER + '(?<FIRST>first_[0-9]+)\n' })
+  const { files } = world(on, {}, { [PATTERNS]: HEADER + 'FIRST: first_[0-9]+\n' })
   const m = await mount($)
-  expect(await m.find({ text: /1\. \(\?<FIRST>first_/ })).toBeDefined()
+  await m.press({ key: 'tab-patterns' })
+  expect(await m.find({ text: /1\. FIRST: first_/ })).toBeDefined()
   expect(await m.find({ text: / as FIRST/ })).toBeDefined()
   await m.input({ key: 'add', text: 'acme_[a-z0-9]{8}', kind: 'submit' })
-  expect(files.get(PATTERNS)).toBe(HEADER + '(?<FIRST>first_[0-9]+)\nacme_[a-z0-9]{8}\n')
+  expect(files.get(PATTERNS)).toBe(HEADER + 'FIRST: first_[0-9]+\nacme_[a-z0-9]{8}\n')
   expect(await m.find({ text: /added as #2/ })).toBeDefined()
   expect(await m.find({ text: /in \/h\/\.claude\/redact-patterns\.txt/ })).toBeDefined()
   await m.press({ key: 'remove-0' })
@@ -453,11 +499,11 @@ test('the pane lists what this session masked, the whole value on the terminal o
 })
 
 test('the pane names the rule or pattern that masked each value; the model reads it masked back', async ($, on) => {
-  const { store, entered } = world(on, {}, { [PATTERNS]: HEADER + SEED + 'acme_[a-z0-9]{8}\n' })
+  const { store, entered } = world(on, {}, { [PATTERNS]: HEADER + 'acme_[a-z0-9]{8}\n' })
   const session = mock.session(on)
   await entered($, `GITHUB_TOKEN=${GH} id ${ACME}`)
   expect((store.get('vault:s1') as any).by).toEqual({
-    [ph('API_KEY')]: expect.stringMatching(/^your pattern: vendor tokens/), [ph('SECRET')]: 'your pattern: acme_[a-z0-9]{8}' })
+    [ph('API_KEY')]: expect.stringMatching(/^built-in rule: Vendor tokens/), [ph('SECRET')]: 'your pattern: acme_[a-z0-9]{8}' })
   const m = await mount($)
   expect(await m.find({ text: new RegExp(`${ph('SECRET')} ${ACME}`) })).toBeDefined()
   expect(await m.find({ text: /masked by your pattern: acme_/ })).toBeDefined()
@@ -492,6 +538,7 @@ test('the pane toggles the terminal to draw placeholders, as the model reads the
 test('a long pattern on a narrow pane keeps its remove button in the tree', async ($, on) => {
   world(on, {}, { [PATTERNS]: 'x'.repeat(60) })
   const m = await $.ui.mount({ plugin: 'redact', surface: 'terminal', component: 'Pane', requestId: 'redact', props: { ...PROPS, bodyColumns: 30 } })
+  await m.press({ key: 'tab-patterns' })
   expect(await m.find({ key: 'remove-0' })).toBeDefined()
 })
 
@@ -499,8 +546,9 @@ test('/redact show clears the last note', async ($, on) => {
   world(on)
   on('ui.open', () => ({ value: { isPlaced: true } }) as any)
   const m = await mount($)
+  await m.press({ key: 'tab-patterns' })
   await m.input({ key: 'add', text: 'acme_[a-z0-9]{8}', kind: 'submit' })
-  expect(await m.find({ text: new RegExp(`added as #${RULES + 1}`) })).toBeDefined()
+  expect(await m.find({ text: /added as #1/ })).toBeDefined()
   await $.command.run({ command: 'redact', args: 'show' } as any)
   await m.unmount()
   expect(await (await mount($)).find({ text: /added as #/ })).toBeUndefined()
@@ -510,6 +558,7 @@ test('a settings pattern that does not compile is marked; mobile, with no field,
   world(on)
   const m = await mount($, 'mobile')
   expect(await m.find({ text: /skipped/ })).toBeDefined()
+  await m.press({ key: 'tab-patterns' })
   expect(await m.find({ key: 'add' })).toBeUndefined()
   expect(await m.find({ text: /\/redact add/ })).toBeDefined()
 })
@@ -568,24 +617,23 @@ test('the model cannot read or change the patterns file, however it names it; th
 })
 
 test('the patterns file is read by hand-written lines: comments, blanks and spaces are skipped', async ($, on) => {
-  const { files, entered } = world(on, {}, { [PATTERNS]: HEADER + '# mine\n\n  acme_[a-z0-9]{8}  \r\n# x_[0-9]+\n\\#tag[0-9]+\n' })
-  expect(await entered($, `id ${ACME} x_12 #tag42`)).toBe(`id ${ph('SECRET')} x_12 ${ph('SECRET', 2)}`)
+  const { files, entered } = world(on, {}, { [PATTERNS]: HEADER + '# mine\n\n  acme_[a-z0-9]{8}  \r\n# x_[0-9]+\nTAG: #tag[0-9]+\n' })
+  expect(await entered($, `id ${ACME} x_12 #tag42`)).toBe(`id ${ph('SECRET')} x_12 ${ph('TAG')}`)
   // added by hand in another editor: the next masking reads it
   files.set(PATTERNS, files.get(PATTERNS) + 'x_[0-9]+\n')
-  expect(await entered($, 'x_12')).toBe(ph('SECRET', 3))
-  // /redact keeps the comments; a pattern typed with a leading # is written escaped
+  expect(await entered($, 'x_12')).toBe(ph('SECRET', 2))
+  // /redact keeps the comments; a pattern typed with a leading # is written with a label
   await $.command.run({ command: 'redact', args: 'add #id[0-9]+' } as any)
   await $.command.run({ command: 'redact', args: 'remove 1' } as any)
-  expect(files.get(PATTERNS)).toBe(HEADER + '# mine\n\n# x_[0-9]+\n\\#tag[0-9]+\nx_[0-9]+\n\\#id[0-9]+\n')
+  expect(files.get(PATTERNS)).toBe(HEADER + '# mine\n\n# x_[0-9]+\nTAG: #tag[0-9]+\nx_[0-9]+\nSECRET: #id[0-9]+\n')
   await $.command.run({ command: 'redact', args: 'remove #id[0-9]+' } as any)
-  expect(files.get(PATTERNS)).toBe(HEADER + '# mine\n\n# x_[0-9]+\n\\#tag[0-9]+\nx_[0-9]+\n')
+  expect(files.get(PATTERNS)).toBe(HEADER + '# mine\n\n# x_[0-9]+\nTAG: #tag[0-9]+\nx_[0-9]+\n')
 })
-
 test('patterns an older version kept in the store move into the file once', async ($, on) => {
   const { store, files, entered } = world(on, { patterns: ['acme_[a-z0-9]{8}'] })
   expect(await entered($, `id ${ACME}`)).toBe(`id ${ph('SECRET')}`)
   expect(store.has('patterns')).toBe(false)
-  expect(files.get(PATTERNS)).toBe(HEADER + SEED + 'acme_[a-z0-9]{8}\n')
+  expect(files.get(PATTERNS)).toBe(HEADER + 'SECRET: acme_[a-z0-9]{8}\n')
 })
 
 // Crafted shapes that took quadratic time before the repeats were bounded (seconds at these
@@ -610,13 +658,13 @@ test('a context rule leaves a value of lowercase letters alone, a word a doc put
   expect(m1('pass' + 'word=Letmein')).toBe(`password=${ph('SECRET')}`)
 })
 
-test('the pane lists this session first, a long value cut to its ends until revealed, and forgets all at once', async ($, on) => {
+test('the pane opens on This session, a long value cut to its ends until revealed, and forgets all at once', async ($, on) => {
   const head = '-----BEGIN RSA ' + KEY
   const pem = `${head}\nMIIEowIBAAKCAQEA\nabc+/=`
   const { store } = world(on, { 'vault:s1': { at: 39 * DAY, n: { API_KEY: 1, PRIVATE_KEY: 1 }, ph: { [ph('API_KEY')]: GH, [ph('PRIVATE_KEY')]: pem } } })
   const m = await mount($)
-  const heads = (await m.findAll({ text: /^(This session|Yours)$/ })).map(f => f.text)
-  expect([...new Set(heads)]).toEqual(['This session', 'Yours']) // a Box and its Text both match
+  expect(await m.find({ text: /^This session$/ })).toBeDefined()
+  expect(await m.find({ text: /^Yours$/ })).toBeUndefined()
   expect(await m.find({ text: /-----B…c\+\/= \(3 lines, \d+ chars\)/ })).toBeDefined()
   expect(await m.find({ text: /MIIEow/ })).toBeUndefined()
   await m.press({ key: `reveal-${ph('PRIVATE_KEY')}` })
@@ -627,6 +675,30 @@ test('the pane lists this session first, a long value cut to its ends until reve
   await m.press({ key: 'forget-all' })
   expect(store.get('vault:s1')).toMatchObject({ n: { API_KEY: 1, PRIVATE_KEY: 1 }, ph: {} })
   expect(await m.find({ text: /forgot 2/ })).toBeDefined()
+})
+
+test('tabs switch between This session, Patterns and Guide, and test previews masking on submit or /redact test without saving', async ($, on) => {
+  const { store } = world(on, {}, { [PATTERNS]: HEADER + 'acme_[a-z0-9]{8}\n' })
+  on('ui.open', () => ({ value: { isPlaced: true } }) as any)
+  const toasts: string[] = []
+  on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
+  await $.command.run({ command: 'redact', args: `test id ${ACME} ok` } as any)
+  expect(toasts.at(-1)).toContain(`→ id ${ph('SECRET')} ok`)
+  const m = await mount($)
+  expect(await m.find({ text: /^Test$/ })).toBeDefined()
+  expect(await m.find({ text: /^Yours$/ })).toBeDefined()
+  expect(await m.find({ text: new RegExp(`→ id ${ph('SECRET')} ok`) })).toBeDefined()
+  expect(await m.find({ text: /masked by your pattern: acme_/ })).toBeDefined()
+  await m.press({ key: 'clear-test' })
+  expect(await m.find({ text: new RegExp(`→ id ${ph('SECRET')} ok`) })).toBeUndefined()
+  await m.input({ key: 'test', text: `key ${GH}`, kind: 'submit' })
+  expect(await m.find({ text: new RegExp(`→ key ${ph('API_KEY')}`) })).toBeDefined()
+  expect(store.get('vault:s1')).toBeUndefined()
+  await m.press({ key: 'tab-help' })
+  expect(await m.find({ text: /^Pattern format$/ })).toBeDefined()
+  expect(await m.find({ text: /^Where real values go$/ })).toBeDefined()
+  await m.press({ key: 'tab-session' })
+  expect(await m.find({ text: /^This session$/ })).toBeDefined()
 })
 
 test('desktop keeps the placeholders: the pane shows lengths and has no draw toggle', async ($, on) => {

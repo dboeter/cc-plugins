@@ -12,7 +12,7 @@
       "type": "string",
       "multiple": true,
       "title": "Extra patterns",
-      "description": "Pattern lines in the patterns file's format, masked after its patterns (the built-in rules among them): each match whole, or its v group (a lookbehind keeps a prefix), labelled by label= or the first other named group, SECRET without one. A list, so set it in settings.json pluginConfigs: /config does not show list fields"
+      "description": "Lines in the patterns file's format (LABEL [options]: regex, or a bare regex masked as SECRET), masked after the built-in rules and the file's patterns. A list, so set it in settings.json pluginConfigs: /config does not show list fields"
     }
   },
   "license": "MIT",
