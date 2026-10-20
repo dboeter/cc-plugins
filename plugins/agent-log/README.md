@@ -7,7 +7,7 @@ Why was that turn slow, and who allowed that call? A live pane that splits each 
 ╭ context-mode context
 │ Waiting for you to answer the permission prompt                                       4.2s
 ╰ Run the tests                                                                     ✗ 18.4s
-╭ guard                                                                               <0.1s
+╭ guard                                                                             ⊘ <0.1s
 ╰ Clean the build output                                                          ⊘ denied
 ╭ Edit agent-log.tsx                                                                    0.1s
 ╰ lint-feedback                                                                     ↩ 1.3s
@@ -25,12 +25,12 @@ Parts marked *(OTEL)* need OpenTelemetry export on (`CLAUDE_CODE_ENABLE_TELEMETR
 - **Turns**: each prompt's header gives the turn's time and its two largest parts. `#N` opens the full split: model, tools, agents, hooks, compaction, permission prompts and you.
 - **Model requests**: one row per request of the main loop or a subagent, with time to first token, thinking time, tokens and the start of the reply. Price and request id *(OTEL)*.
 - **Tool calls**: each call with its run time, and its hooks bracketed around it (`╭ ├ ╰`). The inspector says who decided it: a settings rule, or, *(OTEL)*, you, a hook or the auto-mode classifier. A call that waited for that decision gets a `Waiting for …` row above it *(OTEL)*.
-- **Outside the project root**: a call that reached outside it is marked `↗` with the place. The `outside` view keeps only those calls.
+- **Outside the project root**: a call that reached another project is marked `↗` with the place, and the controls count them (`↗ 2 other project`). A routine place (`~/.claude`, `/tmp`) shows as a dim path without the `↗`. The `outside` view keeps all of these calls.
 - **The harness**: hook runs and what they injected, plugins' model calls, compactions, model switches and MCP failures. Claude Code's own requests (titles, suggestions) and API errors *(OTEL)*.
 - **Running now**: what streams or runs at this moment, as green `●` lines under the log.
 - **Setup page** (`s`): what broke this session (each problem opens its row), hooks per event with their runs *(OTEL for the run counts)*, plugins, model use per source, where the session is, and background work still running. Context, cost, rate limits and MCP servers are left to `/context`, `/cost`, `/status` and `/mcp`.
 
-`i` opens the keys page, which lists what every mark and colour means.
+`i` opens the keys page, which lists what every mark and colour means. Each mark has its own glyph, so none relies on colour alone. In the controls, bright means active: the view shown (also marked `•`), the open page, the loop the log is filtered to. When the log starts mid-turn, that turn's `#N` header stays pinned on its first line.
 
 ## Per-hook times
 
@@ -57,9 +57,9 @@ The pane never opens by itself. While it is closed, a turn that ended unusually 
 - `/agentlog #4 took 41.2s, 3× the usual`: the turn ran over twice the median of your earlier turns (once there are three).
 - `/agentlog #2: hooks 12.0s of 20.0s`: hooks, or a slow permission decision, held the turn longest.
 
-Turns under 10 seconds never get a line, and time spent waiting on you never counts as unusual. `/agentlog` shows or hides the pane, `/agentlog all|model|harness|outside` picks a view (`agent` still works for `model`), `/agentlog level debug|info|notice|error` sets the least important row shown, and `/agentlog clear` empties the log.
+Turns under 10 seconds never get a line, and time spent waiting on you never counts as unusual. `/agentlog` shows or hides the pane, `/agentlog all|model|harness|outside` picks a view (`agent` still works for `model`), `/agentlog level debug|info|notice|error` sets the least important row shown, and `/agentlog clear` empties the log. No `/agentlog` enters the conversation: its line is dropped and its reply is a toast, so the model reads neither.
 
-In the pane, `a` `m` `h` `u` switch views: all, what the model did, the harness, outside the root. `l` toggles the level between info and notice. `o` opens or closes every Agent fold. `s` opens the setup page and `i` the keys page. `j` and `k` (or ↓ and ↑) move a row cursor, and Enter opens its row. `e` jumps to the newest row, ctrl+↑↓ to the previous or next prompt, and `b` goes back. In a row's inspector, `n` and `p` step to the next and previous row; an Agent row's inspector has `f` to keep only that agent's rows. While an agent runs, a tree of the main loop and its agents sits at the top, and pressing one filters the log to it.
+In the pane, `a` `m` `h` `u` switch views: all, what the model did, the harness, outside the root. `l` toggles the level between info and notice. `o` opens or closes every Agent fold. `s` opens the setup page and `i` the keys page. `j` and `k` (or ↓ and ↑) move a row cursor, and Enter opens its row. `e` jumps to the newest row, ctrl+↑↓ (`^↑↓ turn`) to the previous or next prompt, and `b` goes back. In a row's inspector, `n` and `p` step to the next and previous row; an Agent row's inspector has `f` to keep only that agent's rows. While an agent runs, a tree of the main loop and its agents sits at the top, and pressing one filters the log to it.
 
 ## What it does on your machine
 

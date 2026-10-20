@@ -113,7 +113,7 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   expect(all.some(l => /Run the tests/.test(l))).toBe(true)
   expect(all.some(l => /\*Reply/.test(l))).toBe(true) // main's request on its advisor's bracket is no hook: bright
   expect(all.some(l => /Sonnet 5\.5 · /.test(l))).toBe(false) // main's requests name no model: the switch row says it
-  expect(all.some(l => /↗ 1 outside root/.test(l))).toBe(true)
+  expect(all.some(l => /↗ 1 other project/.test(l))).toBe(true)
   // rows say what happened: the pattern searched, the reply's first line; times all in seconds, never `0.0s`
   expect(all.some(l => /Search "secs\\\(" in hooks/.test(l))).toBe(true)
   expect(all.some(l => /Reply: The test fails because the header grew a row\./.test(l))).toBe(true)
@@ -122,15 +122,15 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   expect(all.some(l => /\d+ms\b/.test(l))).toBe(false) // milliseconds only in the inspector
   expect(plainOf(all.find(l => /^start/.test(plainOf(l)))!).trimEnd()).toBe('start · 2 hidden ▸') // no turn: no split, no time
   // weight and colour: one ⊘ per refusal, its hook named once on the bracket; lookups dim, calls that change things bright
-  expect(all.join('\n').match(/⊘/g)?.length).toBe(1)
+  expect(all.join('\n').match(/⊘/g)?.length).toBe(2) // the call's and its refusing hook's
   expect(all.some(l => /Clean the build output\*? *‹cyan:⊘ denied›/.test(l))).toBe(true)
-  expect(all.some(l => /\*guard\* +‹cyan:<0\.1s›/.test(l))).toBe(true)
+  expect(all.some(l => /\*guard\* +‹cyan:⊘ <0\.1s›/.test(l))).toBe(true)
   expect(all.some(l => /^  Read index\.ts‹magenta: ↗ ~\/other-project\/src›/.test(l))).toBe(true)
   expect(all.some(l => /\*Edit agent-log\.tsx\*/.test(l))).toBe(true)
   expect(all.some(l => /‹blue:↩ 1\.3s›/.test(l))).toBe(true)
   // the header: the controls, what broke and the setup packed in two rows, then the rule; no agent tree while none runs
   expect(ruleAt(all)).toBe(2)
-  expect(all.some(l => /^‹red:✗ 1 API error \+1›  ‹magenta:↗ 1 outside root›  s: Opus 5\.5/.test(l))).toBe(true)
+  expect(all.some(l => /^k: ↑  ‹red:✗ 1 API error \+1›  ‹magenta:↗ 1 other project›  s: setup Opus 5\.5/.test(l))).toBe(true)
   expect(all.some(l => /^\*?main\*?\s*$|done ▸/.test(plainOf(l)))).toBe(false)
   // a turn's hidden rows open in place under its header, dim
   await m.press({ key: 'hid0' })
@@ -140,7 +140,7 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   await m.press({ key: 'hid0' })
   // l toggles info and notice
   await m.press({ key: 'lvl' })
-  expect((await frame(m, 100, 'notice, by l')).some(l => /\*l: level notice\*/.test(l))).toBe(true)
+  expect((await frame(m, 100, 'notice, by l')).some(l => /l: level notice/.test(l))).toBe(true)
   await m.press({ key: 'lvl' })
   await agentlog($, 'level debug'); await m.redraw()
   const debug = await frame(m, 100, 'debug level')

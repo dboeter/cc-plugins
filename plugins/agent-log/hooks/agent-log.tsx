@@ -211,11 +211,11 @@ const DEBUG_ATTACHMENTS = new Set(['total_tokens_reminder', 'output_style', 'sil
 // first-message blocks the engine sends as attachments, not as themselves (read from 2.1.296): email and project inside
 // `session_context` (beside git status, which has no block), the date as `date`. The attachment row carries the size
 const SENT_AS_ATTACHMENT = new Set(['userEmail', 'attachedProject', 'currentDate'])
-const STATUS: Record<string, [string, string?]> = { running: ['●', 'green'], completed: ['✓'], failed: ['✗', 'red'], killed: ['■', 'yellow'] } // cell's colours
+const STATUS: Record<string, [string, string?]> = { running: ['●', 'green'], completed: ['✓'], failed: ['✗', 'red'], killed: ['⚠', 'yellow'] } // cell's colours; a killed agent ended early, ⚠ as an interrupt
 const TEAM = 'team' as const // pseudo node: header over main's direct teammate children
 const SLOW = 1000 // ms: a classic hook this slow logs even when it changed nothing
 // slow enough to flag ⚠. SessionStart is exempt: its hooks set the session up once and take seconds every time (context-mode's
-// 1.7-2.9 s), so a ⚠ on every session's first rows would teach you to read past the ⚠ on a slow ConfigChange
+// 1.7-2.9 s), so a ◷ on every session's first rows would teach you to read past the ◷ on a slow ConfigChange
 // one hook of a row of several, as a row of its own for its line's mark and its inspector: its own time, exit and text, the row's
 // outcome only if it said it. A row stored before says existed gives the whole text to its one speaker, else none
 export const hookOf = (x: Entry, n: string): Entry => {
@@ -303,15 +303,15 @@ let fresh = 0 // entries logged while not following: the jump button's "N new ev
 let chain: Promise<void> = Promise.resolve() // all store mutations run one after another, so no write lands a stale snapshot
 let only: string | undefined // agent filter: an agent id, 'main', or undefined for every loop
 // A row reads: disclosure, action, tool (muted), then one right cell (fixed width, so the action truncates first): the time.
-// A flag rides in front of the time in its color, one meaning per colour: red ✗ = broke, cyan ⊘ = refused, yellow ■ ⚠ = ended
-// early or slow (■ a hook stopped the session: on purpose, but it ends the turn), blue ↩ = a hook's feedback, green ● = running
-// (ran, the live lines), magenta ↗ = another project (line). Dim: + = a hook added context, · = it changed nothing, ∅ = found
+// A flag rides in front of the time in its color, one meaning per glyph so none needs the colour: red ✗ = broke, cyan ⊘ =
+// refused, yellow ⚠ = ended early (interrupted, cut off, an agent killed), ■ = a hook stopped the session (on purpose, but it ends
+// the turn), ◷ = slow, blue ↩ = a hook's feedback, green ● = running (ran, the live lines), magenta ↗ = another project (line). Dim: + = a hook added context, · = it changed nothing, ∅ = found
 // nothing (grep/diff exit 1): routine, no colour. No time (a denied call never ran) -> the status word stands in for it.
 // Derived at draw time so stored entries relabel too. Injected text shows no size for now (`+N tok` was a chars/4 guess)
 const cell = (x: Entry, ms = x.ms): [string, string?] => {
   const s = stat(x), time = ms == null ? undefined : secs(ms)
   return REFUSED.has(s) ? [`⊘ ${time ?? s}`, 'cyan'] : s === 'stopped' ? [`■ ${time ?? s}`, 'yellow'] : BAD.has(s) ? [`✗ ${time ?? s}`, 'red'] : s === 'feedback' ? [`↩ ${time ?? s}`, 'blue'] : s === 'aborted' ? [`⚠ ${time ?? s}`, 'yellow'] : s === 'nomatch' ? [`∅ ${time ?? 'no match'}`]
-    : slow(x, ms) ? [`⚠ ${time}`, 'yellow'] // over + and ·: slowness is what a slow hook's row has to say
+    : slow(x, ms) ? [`◷ ${time}`, 'yellow'] // over + and ·: slowness is what a slow hook's row has to say
     : x.kind === 'hook' ? (x.outcome.startsWith('context') ? [`+ ${time ?? '—'}`] : [`· ${time ?? '—'}`])
     : [time ?? (x.kind === 'tool' ? '—' : '')]
 }
@@ -406,7 +406,7 @@ const PATHS = /(?:^|[\s"'=(])((?:~|\$HOME|\$\{HOME\})?\/[^\s"'|;&<>()`]+)/g // t
 // From a command's words only paths under home count: /tmp, /usr and /dev are scratch and system files, not work elsewhere, and
 // a word need not be a path. undefined: inside the root, or not known (no path, a variable left in it)
 // A place outside the root that is routine, not another project: Claude Code's own ~/.claude (memory, plans, settings) and
-// scratch space (/tmp, /var/tmp, macOS /private/tmp). Its ↗ stays dim; any other place draws magenta and counts in the controls
+// scratch space (/tmp, /var/tmp, macOS /private/tmp). It draws dim with no ↗; any other place draws ↗ magenta and counts in the controls
 export const routine = (p: string) => /^~\/\.claude(\/|$)/.test(p) || /^\/(private\/)?(var\/)?tmp(\/|$)/.test(p)
 export const outsideOf = (tool: string, a: { path?: string; cmd?: string }, root: string, cwd: string, home?: string): string | undefined => {
   const away = (p?: string) => p && !under(p, root) ? tilde(p, home) : undefined
@@ -1270,6 +1270,7 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
+    if (e.command?.name === 'agentlog') return { drop: 'agentlog: kept out of the conversation' } // not a turn either
     if (!OWN.has(e.origin.kind)) return next(e)
     if (e.turnId) { const r = await next(e); if (!('drop' in r && r.drop)) { pending++; queued.push(wordsOf(e)) } return r }
     const t = Date.now() // the turn's start: its UserPromptSubmit hooks run inside next
@@ -1334,7 +1335,9 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // /agentlog stays out of the conversation: its reply is a toast, and prompt.submit drops its line
   on('command.run', { command: 'agentlog' }, async ($, e) => {
+    const r = await (async () => {
     if (e.args.trim() === 'clear') {
       await mutate(async () => {
         await loadNow($)
@@ -1360,6 +1363,9 @@ export const register: Register = (on, options) => {
     if (up) { await $.ui.close({ id: PANE }); timer?.cancel(); timer = undefined }
     else { await $.ui.open({ id: PANE, title: 'Agent log', focus: true }); startPoll($) }
     return { text: up ? 'agent log hidden' : 'agent log shown' }
+    })()
+    try { $.ui.toast(r.text) } catch {}
+    return {}
   })
 
   on('agent.spawn', async ($, e, next) => {
@@ -1521,7 +1527,7 @@ export const register: Register = (on, options) => {
             ? `asked${x.via?.startsWith('user_') ? ' you' : ''}${x.rule ? ` (rule ${x.rule})` : ''}; ${VIA[x.via ?? ''] ?? (x.via ? `${x.via} decided` : 'the mode or you decided')}`
             : `${x.check === 'allow' ? 'allowed' : 'denied'} by ${x.rule ? `rule ${x.rule}` : 'the mode, a hook or the tool itself'}`)}
           {x.ms != null && kv(x.child ? 'call' : 'took', exact(x.ms))}
-          {x.kind === 'turn' && !x.agent && (m => [splitText(turnOf(x), m) && kv('split', splitText(turnOf(x), m)), m.agents.size > 1 && kv('loops', loops(m.agents))])(turnIn(turnOf(x)))}
+          {x.kind === 'turn' && !x.agent && (m => [(sp => sp && kv('split', sp + (sp.includes('other ') ? ' (other: the engine\'s and plugins\' own work between steps)' : '')))(splitText(turnOf(x), m)), m.agents.size > 1 && kv('loops', loops(m.agents))])(turnIn(turnOf(x)))}
           {/* the wait came before the call ran, so took leaves it out */}
           {x.wait != null && kv('waited', `${exact(x.wait)} for ${x.waitFor ?? 'the decision'}, before it ran`)}
           {x.kind === 'step' && kv('model', `${x.name}${x.effort != null ? ` · effort ${x.effort}` : ''}`)}
@@ -1645,19 +1651,21 @@ export const register: Register = (on, options) => {
     // mark: drawn in the disclosure's cell when there is none (the header's `›` on the agent the log is filtered to).
     // rail: a fold's tree guides (`│ ├ `), drawn dim in place of the indent. No press: plain text, a line with nothing to open.
     // away: the places outside the project root the row reached (awayOf), drawn after the action as ` ↗ ~/path` (the first, cut from
-    // the left so its last folders stay; a fold's ` +N` more), so it survives the cut. Magenta unless every place is routine()
+    // the left so its last folders stay; a fold's ` +N` more), so it survives the cut. Magenta unless every place is routine(); then
+    // dim and without the ↗, so another project and ~/.claude differ without colour
     // link: the row's place on its call's bracket (bracketed), drawn dim in the mark's cell so a bracketed row keeps the column of
     // one without. dim: a routine row, drawn quiet (partsOf's brightness rule)
     type Line = { k: string; act: string; press?: () => void; st?: [string, string?]; who?: string; tail?: string; disc?: [boolean, () => void]; indent?: number; rail?: string; mark?: string; link?: string; dim?: boolean; away?: string[] }
     const pressable = new Set<string>() // this draw's lines that open something: where the row cursor can stop
     const line = ({ k, act, press, st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ', link, dim, away }: Line) => {
       if (press) pressable.add(k)
-      const there = away?.length ? ` ↗ ${lfit(away[0]!, 24)}${away.length > 1 ? ` +${away.length - 1}` : ''}` : ''
+      const usual = !!away?.every(routine)
+      const there = away?.length ? ` ${usual ? '' : '↗ '}${lfit(away[0]!, 24)}${away.length > 1 ? ` +${away.length - 1}` : ''}` : ''
       const room = cols - 2 - rail.length - who.length - tail.length - there.length - END - 1
       return (
         <Box key={k} flexDirection="row" overflow="hidden">
           <Box flexShrink={0} width={2 + rail.length}><Text dimColor>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : link ? <Text dimColor>{link}</Text> : <Text>{mark}</Text>}</Box>
-          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{who ? <Text dimColor>{who}</Text> : null}{press ? <Button key={`b${k}`} label={fit(act, room) + tail} plain dimColor={dim} onPress={press} /> : <Text wrap="truncate-end" dimColor={dim}>{fit(act, room) + tail}</Text>}{there ? <Text color={away!.every(routine) ? undefined : 'magenta'} dimColor={away!.every(routine)}>{there}</Text> : null}</Box>
+          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{who ? <Text dimColor>{who}</Text> : null}{press ? <Button key={`b${k}`} label={fit(act, room) + tail} plain dimColor={dim} onPress={press} /> : <Text wrap="truncate-end" dimColor={dim}>{fit(act, room) + tail}</Text>}{there ? <Text color={usual ? undefined : 'magenta'} dimColor={usual}>{there}</Text> : null}</Box>
           {/* flush right, as the turn header's time: times of any width end on the same column */}
           <Box flexShrink={0} width={END} justifyContent="flex-end"><Text color={st[1]} dimColor={!st[1]}>{fit(st[0], END - 1)}</Text></Box>
         </Box>
@@ -1760,7 +1768,7 @@ export const register: Register = (on, options) => {
       const a = agents.find(y => y.id === x.child)
       if (a?.status === 'running') return [`● ${secs(now - (started.get(a.id) ?? x.t))}`, 'green']
       const ts = runs(x.child), ms = total(ts)
-      return a?.status === 'failed' || ts.some(y => stat(y) === 'failed') ? [`✗ ${secs(ms)}`, 'red'] : a?.status === 'killed' ? [`■ ${secs(ms)}`, 'yellow']
+      return a?.status === 'failed' || ts.some(y => stat(y) === 'failed') ? [`✗ ${secs(ms)}`, 'red'] : a?.status === 'killed' ? [`⚠ ${secs(ms)}`, 'yellow']
         : ts.some(y => stat(y) === 'aborted') ? [`⚠ ${secs(ms)}`, 'yellow'] : [secs(ms)]
     }
     const rows: any[] = []
@@ -1776,7 +1784,7 @@ export const register: Register = (on, options) => {
       return id && main && modelName(id) !== modelName(main) ? `${modelName(id)} · ${action(y)}` : action(y) }
     // who refused a call, named once. A refusing hook on the call's bracket names itself there: nothing. Else after the action,
     // no glyph (`Clean up · you`): the hook (its row not drawn, a view without hooks), the rule, the classifier or you. The ⊘
-    // is the call's cell's alone
+    // rides in the cells: the call's, and a refusing hook's on its bracket
     const byOf = (y: Entry) => {
       if (y.kind !== 'tool' || !REFUSED.has(stat(y))) return ''
       if ((hooksUnder.get(y) ?? []).some(z => REFUSED.has(stat(z)))) return ''
@@ -1821,17 +1829,22 @@ export const register: Register = (on, options) => {
         // Dim unless its cell has a colour: a hook that blocked or broke stays as loud as the call. A row with no use is no
         // call's hook: a model request sits on a bracket only for its server rows (the advisor), and keeps its own name
         const hooked = x.kind !== 'tool' && !!x.use && !!g.link
-        // a refusing hook on its call's bracket: the call's cell carries the ⊘, the hook's its time in the same cyan
-        const c: [string, string?] = hooked && REFUSED.has(stat(x)) ? [secs(x.ms), 'cyan'] : cell(x)
+        // a refusing hook on its call's bracket carries the ⊘ as its call does: the glyph, not the colour, says which hook refused
+        const c = cell(x)
         // Bright is what did something: a row whose cell has a colour (it broke, was refused, ended early or slow) or bright().
         // A row below the level (a turn's hidden rows, opened in place) is dim whatever it did
         const dim = lvl(x) < level || (!c[1] && !bright(x))
+        // the rows share one twig: on a fold's last part (`└ `) only the last row closes the guide, the ones above it carry it on
+        // (`├ `), or a wait above the call ends the line a row early
         p = { target: x, members: [x], nested: [], parts: [],
-          head: (rail, who, press) => [
-            ...(waits(x) ? [waitLine(x, rail, g.wait)] : []),
-            line({ k, act: hooked ? action(x, true) : actOf(x), tail: byOf(x), press, st: c, who, rail, link: g.link, dim, away: awayOf([x]) }),
-            ...server.map(f => f(rail)),
-          ] }
+          head: (rail, who, press) => {
+            const rs = [
+              ...(waits(x) ? [(r: string) => waitLine(x, r, g.wait)] : []),
+              (r: string) => line({ k, act: hooked ? action(x, true) : actOf(x), tail: byOf(x), press, st: c, who, rail: r, link: g.link, dim, away: awayOf([x]) }),
+              ...server,
+            ], mid = rail.endsWith('└ ') ? `${rail.slice(0, -2)}├ ` : rail
+            return rs.map((f, i) => f(i < rs.length - 1 ? mid : rail))
+          } }
       }
       memo.set(g, p)
       return p
@@ -1883,12 +1896,15 @@ export const register: Register = (on, options) => {
     if (inFlight.length && busy && cur !== turnNo) { if (cur !== undefined) rows.push(<Text key={`gap${rows.length}`}> </Text>); rows.push(header(turnNo, `turn${turnNo}`)); cur = turnNo }
     for (const [k, l] of inFlight) rows.push(line({ k: `now${k}`, act: nowAct(l), st: [`● ${secs(now - l.t)}`, 'green'], who: l.loop ? whoOf(l.loop) : '' }))
     // the keys page (i): what each mark means, then what each key does, one per line
-    const MARKS = ['✗ red: broke', '⊘ cyan: refused, by a hook, a rule, the classifier or you', '⚠ ■ yellow: ended early or slow (■: a hook stopped the session)', '↩ blue: a hook\'s feedback to the model',
-      '● green: running now', '↗ magenta: a place in another project; dim: ~/.claude or /tmp', '+ a hook added context', '· a hook changed nothing', '∅ found nothing', '≈ estimated',
-      'bright: a row that did something; dim: routine, or below the level', '▸ ▾ open, close an Agent fold or a turn\'s hidden rows']
+    const MARKS = ['✗ red: broke', '⊘ cyan: refused, by a hook, a rule, the classifier or you', '⚠ yellow: ended early (interrupted, cut off, an agent killed)',
+      '■ yellow: a hook stopped the session', '◷ yellow: a slow hook', '↩ blue: a hook\'s feedback to the model', '● green: running now', '✓ an agent finished',
+      '↗ magenta: a place in another project; a dim path with no ↗: ~/.claude or /tmp', '+ a hook added context', '· a hook changed nothing', '∅ found nothing', '≈ estimated',
+      '╭ │ ├ ╰ a call bracketed with its hooks: those above it ran before it, those below after', '› the agent the log is filtered to',
+      'bright: a row that did something; dim: routine, or below the level', '▸ ▾ open, close an Agent fold or a turn\'s hidden rows',
+      'other, in a turn\'s split: the engine\'s and plugins\' own work between steps']
     const KEYS: [string, string][] = [['a m h u', 'views: all, what the model did, the harness, outside the root'], ['l', 'level: info or notice (/agentlog level sets debug and error)'],
       ['o', 'open or close every Agent fold'], ['s', 'the setup page'], ['i', 'this page'], ['j k', 'the row cursor down, up; in the inspector, the next or previous row'], ['↓ ↑', 'the row cursor too'],
-      ['enter', 'open the row under the cursor'], ['e', 'the newest row'], ['ctrl+↑ ↓', 'the previous or next prompt'], ['b', 'back'], ['n p', 'in the inspector: the next or previous row'],
+      ['enter', 'open the row under the cursor'], ['e', 'the newest row'], ['^↑ ^↓', 'ctrl+↑ ↓: the previous or next prompt'], ['b', 'back'], ['n p', 'in the inspector: the next or previous row'],
       ['f', 'in an Agent row\'s inspector: only its agent\'s rows']]
     // `no agent entries for scout at notice or above · /agentlog level debug: every row · a: all views · main: clear the filter`; only the filters set
     const empty = () => {
@@ -1905,14 +1921,16 @@ export const register: Register = (on, options) => {
       if (to === undefined) follow = true; else { win = to; follow = false } // the draw clamps win and decides follow again
       $.ui.invalidate('ui.render')
     }
-    const vbtn = (v: View, k: string) => <Button key={`v${v}`} label={v} hotkey={k} plain dimColor={view !== v} onPress={() => setView(v)} />
+    // Bright in the controls means active, nothing else: the view shown, the page open, the loop filtered to. The active view also
+    // carries a `•` after its name, so it reads without colour; the others a space in its place, so a view switch keeps every label's width
+    const vbtn = (v: View, k: string) => <Button key={`v${v}`} label={`${v}${view === v ? '•' : ' '}`} hotkey={k} plain dimColor={view !== v} onPress={() => setView(v)} />
     // one width whatever the level (`level info  `), as `fold  ` is: a label that changed width could repack the controls
     const LVW = Math.max(...LEVELS.map(l => l.length)) + 6
-    const lbtn = <Button key="lvl" label={`level ${LEVELS[level]}`.padEnd(LVW)} hotkey="l" plain onPress={nextLevel} />
+    const lbtn = <Button key="lvl" label={`level ${LEVELS[level]}`.padEnd(LVW)} hotkey="l" plain dimColor onPress={nextLevel} />
     const kbtn = <Button key="legend" label="keys" hotkey="i" plain dimColor={page !== 'keys'} onPress={() => openPage('keys')} />
-    // `turn ↑↓`: ctrl+↑ and ctrl+↓ press these from the prompt or the pane. They are the engine's Global chords for the diff panel's file
+    // `^↑↓ turn`: ctrl+↑ and ctrl+↓ press these from the prompt or the pane (`^`: ctrl, apart from the cursor's plain ↓ ↑). They are the engine's Global chords for the diff panel's file
     // list (app:diffFileListUp/Down, also meta+↑↓), which a Button's `action` takes while that panel is closed; open, the panel keeps them
-    const tbtn = <Box key="turns" flexDirection="row"><Text dimColor>turn </Text><Button key="tprev" label="↑" plain dimColor action="app:diffFileListUp" onPress={() => toTurn(-1)} /><Button key="tnext" label="↓" plain dimColor action="app:diffFileListDown" onPress={() => toTurn(1)} /></Box>
+    const tbtn = <Box key="turns" flexDirection="row"><Text dimColor>^</Text><Button key="tprev" label="↑" plain dimColor action="app:diffFileListUp" onPress={() => toTurn(-1)} /><Button key="tnext" label="↓" plain dimColor action="app:diffFileListDown" onPress={() => toTurn(1)} /><Text dimColor> turn</Text></Box>
     // `j: ↓  k: ↑`, the row cursor. Drawn in the header, so the inspector and the pages draw them too: in the inspector they step
     // to its next and previous row (nav), as n and p do; on a page they do nothing, so no move waits to fire on back
     const cbtn = (d: 1 | -1) => <Button key={d > 0 ? 'cdown' : 'cup'} label={d > 0 ? '↓' : '↑'} hotkey={d > 0 ? 'j' : 'k'} plain dimColor onPress={() => {
@@ -1924,7 +1942,7 @@ export const register: Register = (on, options) => {
     // top keeps its line. Always drawn, one width (`fold` padded): a label that changed width could change how the controls
     // pack, and with it the header's height, moving the anchored row
     const folds = foldsOf(top), shut = folds.some(id => !expanded.has(id))
-    const obtn = <Button key="folds" label={shut || !folds.length ? 'unfold' : 'fold  '} hotkey="o" plain dimColor={!folds.length} onPress={() => {
+    const obtn = <Button key="folds" label={shut || !folds.length ? 'unfold' : 'fold  '} hotkey="o" plain dimColor onPress={() => {
       for (const id of folds) if (shut) expanded.add(id); else expanded.delete(id)
       const at = rows.slice(0, win + 1).findLastIndex(r => tops.has(String(r.props?.key)))
       if (at >= 0) anchor = { k: String(rows[at].props.key), off: at - win }
@@ -1955,7 +1973,8 @@ export const register: Register = (on, options) => {
     const plugins = setup.plugins.size || enabled.length
     const bgN = setup.bg?.tasks.length ?? 0, cronN = setup.bg?.crons.length ?? 0
     // the row itself says only what needs the eye: the model, and a rate limit once it nears (80%); the rest is on the page
-    const setupText = [setup.model && `${modelName(setup.model)}${setup.effort != null ? ` ${setup.effort}` : ''}`, peak && peak.percentUsed >= 80 && `limit ${Math.round(peak.percentUsed)}%`].filter(Boolean).join(' · ') || 'setup'
+    // led by `setup`, so the button says what it opens: `s: setup Opus 5.5 · limit 85%`
+    const setupText = ['setup', [setup.model && `${modelName(setup.model)}${setup.effort != null ? ` ${setup.effort}` : ''}`, peak && peak.percentUsed >= 80 && `limit ${Math.round(peak.percentUsed)}%`].filter(Boolean).join(' · ')].filter(Boolean).join(' ')
     // a page in place of the log; its own key pressed on it again, back to the log
     const openPage = (p: NonNullable<typeof page>) => {
       if (page === p && !inspect) return back()
@@ -2029,14 +2048,14 @@ export const register: Register = (on, options) => {
     // The controls never clip: views, level, folds, keys, the prompt jumps, then what broke first (`✗ 1 API error +1`), the calls
     // into another project and the setup, packed into as many rows as the width needs. Every button is drawn because a hotkey
     // only presses a drawn Button. Counted, not wrapped by flex: the window needs the header's exact height. plain + hotkey draws
-    // `a: all`, label + 3 cells; Button takes no bold, so the views not active are drawn dim instead
+    // `a: all•`, label + 3 cells (a view's label is its name and the `•` cell); Button takes no bold, so the views not active are drawn dim instead
     const VIEW_KEYS: Partial<Record<View, string>> = { all: 'a', model: 'm', harness: 'h', outside: 'u' }
-    const items: [number, any][] = SHOWN.map((v): [number, any] => [v.length + 3, vbtn(v, VIEW_KEYS[v]!)])
-    const broke = problems.length ? `✗ ${problems[0]}${problems.length > 1 ? ` +${problems.length - 1}` : ''}` : '', away = elsewhere ? `↗ ${elsewhere} outside root` : ''
-    const bare: [number, any][] = [...items, [LVW + 3, lbtn], [9, obtn], [7, kbtn], [7, tbtn], [4, cbtn(1)], [4, cbtn(-1)],
+    const items: [number, any][] = SHOWN.map((v): [number, any] => [v.length + 4, vbtn(v, VIEW_KEYS[v]!)])
+    const broke = problems.length ? `✗ ${problems[0]}${problems.length > 1 ? ` +${problems.length - 1}` : ''}` : '', away = elsewhere ? `↗ ${elsewhere} other project` : ''
+    const bare: [number, any][] = [...items, [LVW + 3, lbtn], [9, obtn], [7, kbtn], [8, tbtn], [4, cbtn(1)], [4, cbtn(-1)],
       ...(broke ? [[broke.length, <Text key="broke" color="red">{broke}</Text>] as [number, any]] : []),
       ...(away ? [[away.length, <Text key="away" color="magenta">{away}</Text>] as [number, any]] : []),
-      [setupText.length + 3, <Button key="fsetup" label={setupText} hotkey="s" plain dimColor onPress={() => openPage('setup')} />]]
+      [setupText.length + 3, <Button key="fsetup" label={setupText} hotkey="s" plain dimColor={page !== 'setup'} onPress={() => openPage('setup')} />]]
     const controls = pack(bare.map(([w]) => w), cols - 1).map((row, r) => <Box key={`ctl${r}`} flexDirection="row" columnGap={2} overflow="hidden">{row.map(i => bare[i]![1])}</Box>)
     // the agent tree, only while an agent runs or the log is filtered: a finished agent is filtered to from its Agent row's
     // inspector (f), so a tree of finished agents would only take the log's rows
@@ -2044,8 +2063,8 @@ export const register: Register = (on, options) => {
     const head = [
       ...controls,
       ...(treeOn ? [<Box key="main" flexDirection="row" overflow="hidden" columnGap={2}>
-        <Button key="fmain" label="main" plain onPress={() => pick('main')} />
-        {only ? <Button key="fclear" label={fit(`filter: ${nameOf(only)} ✕`, cols - 8)} plain dimColor onPress={() => pick(only!)} /> : null}
+        <Button key="fmain" label="main" plain dimColor={only !== 'main'} onPress={() => pick('main')} />
+        {only ? <Button key="fclear" label={fit(`filter: ${nameOf(only)} ✕`, cols - 8)} plain onPress={() => pick(only!)} /> : null}
       </Box>, ...tree.slice(0, most).map(agentRow)] : []),
       ...(treeOn && (done || more) ? [<Box key="done" flexDirection="row"><Text>  </Text><Button key="fdone" label={toggle} plain dimColor onPress={() => { showDone = !showDone; $.ui.invalidate('ui.render') }} /></Box>] : []),
       <Text key="rule" dimColor>{'─'.repeat(Math.max(1, cols - 1))}</Text>,
@@ -2092,12 +2111,20 @@ export const register: Register = (on, options) => {
     follow = win >= max0
     if (follow) fresh = 0
     const avail = follow ? avail0 : Math.max(1, avail0 - 1)
-    winMax = Math.max(0, rows.length - avail)
-    winEnd = win + avail - 1
+    // A window that starts mid-turn pins that turn's header on its first line, so the rows on screen keep their `#N`. It costs a
+    // row as the jump row does: following, the window moves down one so the newest row stays; the cursor's row stays in view.
+    // Not on a gap row: the next turn's header is right below it
+    const sticks = (w: number) => heads.some(i => i < w) && !heads.includes(w) && !String(rows[w]?.props?.key).startsWith('gap')
+    if (sticks(win) && (follow || (moved && rowAt(sel!) === win + avail - 1))) win = Math.min(rows.length - 1, win + 1)
+    const stick = sticks(win) ? heads.filter(i => i < win).at(-1)! : undefined
+    const fits = avail - (stick !== undefined ? 1 : 0)
+    winMax = Math.max(0, rows.length - avail + (sticks(rows.length - avail) ? 1 : 0))
+    winEnd = win + fits - 1
     return (
       <Box flexDirection="column">
         {head}
-        {rows.slice(win, win + avail)}
+        {stick !== undefined ? rows[stick] : null}
+        {rows.slice(win, win + fits)}
         {!follow && <Box key="jumprow" flexDirection="row" justifyContent="flex-end"><Button key="jump" label={fresh ? `↓ ${fresh} new event${fresh > 1 ? 's' : ''} (e)` : '↓ newest (e)'} hotkey="e" onPress={jump} /></Box>}
       </Box>
     )
