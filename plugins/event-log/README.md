@@ -20,7 +20,7 @@ Answer `y` to add the marketplace, then pick a scope.
 
 ## Use
 
-The pane opens with every interactive session and shows one line per event, an enter and its exit merged when nothing came between them. Pressing a line opens its full rows, and `b` goes back. `/eventlog` shows or hides the pane, and `/eventlog you|claude|engine|hook|plugin` keeps only the events that one source raised (`all` clears the filter).
+The pane stays closed until `/eventlog` opens it, and shows one line per event, an enter and its exit merged when nothing came between them. Pressing a line opens its full rows, and `b` goes back. `/eventlog` shows or hides the pane, and `/eventlog you|claude|engine|hook|plugin` keeps only the events that one source raised (`all` clears the filter). No `/eventlog` enters the conversation: its line is dropped and its reply is a toast, so the model reads neither.
 
 To check a session's log on disk:
 

@@ -233,10 +233,8 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     try { await $.command.register({ name: 'eventlog', description: 'Toggle the event log pane; "you|claude|engine|hook|plugin" filters it by who raised the event, "all" clears the filter.', argumentHint: '[you|claude|engine|hook|plugin|all]' }) } catch {} // throws on hot reload: no session bound yet
     timer ??= $.clock.every(2000, () => { flush($).catch(() => {}) })
-    // session.start fires again on every reload of this plugin: a log already on disk means a reload (or a resume), and the
-    // pane stays as the person left it
+    // the pane never opens on its own: /eventlog opens it
     await (ready ??= restore($).catch(() => { ready = undefined }))
-    if (e.isInteractive && !base) await openPane($, false).catch(() => {})
     return next(e)
   })
 
@@ -251,8 +249,10 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // /eventlog stays out of the conversation: its reply is a toast, and prompt.submit drops its line
   on('command.run', { command: 'eventlog' }, async ($, e) => {
     const a = e.args.trim()
+    const r = await (async () => {
     if (a) {
       if (a !== 'all' && !(WHO as readonly string[]).includes(a)) return { text: `usage: /eventlog [${WHO.join('|')}|all]` } // a typo must not toggle the pane shut
       filter = a === 'all' ? undefined : a; back = 0; inspect = undefined
@@ -262,7 +262,11 @@ export const register: Register = (on, options) => {
     const up = (await $.ui.panes()).some(p => p.id === PANE)
     if (up) { await $.ui.close({ id: PANE }); shown = false } else await openPane($, true)
     return { text: up ? 'event log hidden' : 'event log shown' }
+    })()
+    try { $.ui.toast(r.text) } catch {}
+    return {}
   })
+  on('prompt.submit', async ($, e, next) => e.command?.name === 'eventlog' ? { drop: 'eventlog: kept out of the conversation' } : next(e))
 
   // the window is the log's own, so the header stays put; the inspector's wrapped text the engine scrolls
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {

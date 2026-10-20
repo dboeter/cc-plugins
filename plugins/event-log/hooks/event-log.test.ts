@@ -172,6 +172,8 @@ test('a reload leaves the pane closed, a filter keeps it closed, and past maxMB 
   on('fs.write', (_$, e: any) => { files[e.path] = e.text; return { value: undefined } })
   on('ui.open', (_$, e) => { opened.push(e); return { value: { isPlaced: true } } as any })
   on('ui.panes', () => ({ value: [] }))
+  const toasts: string[] = []
+  on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
   on('command.register', () => ({ value: undefined }) as any)
   on('tool.call', () => ({ result: 'ok', text: 'done' }) as any)
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
@@ -179,7 +181,10 @@ test('a reload leaves the pane closed, a filter keeps it closed, and past maxMB 
   expect(opened.length).toBe(0)
   const r: any = await $.command.run({ command: 'eventlog', args: 'you' } as any)
   expect(opened.length).toBe(0)
-  expect(String(r?.text)).toMatch(/pane hidden/)
+  expect(r?.text).toBeUndefined() // the reply is a toast, never the conversation's
+  expect(toasts.join()).toMatch(/pane hidden/)
+  const sent: any = await $.prompt.submit({ text: '/eventlog you', command: { name: 'eventlog', args: 'you' }, origin: { kind: 'composer' } } as any)
+  expect(sent?.drop).toBeTruthy() // nor its line
   await $.tool.call({ tool: 'Bash', tool_use_id: 'u2', command: 'x'.repeat(2000), description: 'big' } as any)
   await clock.advance(2000)
   expect(Object.keys(files)).toEqual([]) // over the 0.001 MB cap at the first flush: nothing written
