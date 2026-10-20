@@ -1183,6 +1183,8 @@ export const register: Register = (on, options) => {
     if (run) lastRun = undefined
     const broke = run ? [run.cancelled && `${run.cancelled} cancelled`, run.errors && `${run.errors} failed`].filter(Boolean).join(', ') : ''
     const said = (typeof blocked === 'string' ? blocked : ctx.join('\n')) || broke // the block reason, else the context the hooks added, else what broke
+    // a hook that broke beside others that added context is still a failure: red, and what broke leads the text. A block or stop keeps its own mark
+    const failed = !!broke && !blocked && !r?.preventContinuation
     const cfg = await hooksOf($)
     // the wrapped hooks that ran on this event and call, within its span
     const runs = wraps(cfg, event, target) ? await runsOf($, r => r.event === event && (r.use ?? undefined) === e.tool_use_id && r.t0 >= t0 - SKEW && r.t1 <= Date.now() + SKEW, t0) : []
@@ -1205,7 +1207,7 @@ export const register: Register = (on, options) => {
     if (spokeN?.length) for (const p of typeof blocked === 'string' ? [blocked] : ctx) { const n = speaker(runs, p) ?? hookName(cfg, event, target, p); if (!n.includes(', ')) own[n] = own[n] ? `${own[n]}\n${p}` : p }
     const says = Object.keys(own).length ? Object.fromEntries(Object.entries(own).map(([n, s]) => [n, peek(s) ?? ''])) : undefined
     const exits = name.includes(', ') && runs.some(r => r.exit) ? Object.fromEntries(runs.filter(r => r.exit).map(r => [r.name, r.exit!])) : undefined
-    try { push($, { kind: 'hook', name: name || `${event} hook`, origin: event, detail, outcome, status: broke && !outcome ? 'failed' : undefined, src: 'hook', agent: e.agent_id ?? (e.tool_use_id ? loopOf.get(e.tool_use_id) : undefined), ms, peek: peek(said), use: e.tool_use_id, each, spoke: spokeN, errs, says, exits }) } catch {}
+    try { push($, { kind: 'hook', name: name || `${event} hook`, origin: event, detail, outcome, status: failed ? 'failed' : undefined, src: 'hook', agent: e.agent_id ?? (e.tool_use_id ? loopOf.get(e.tool_use_id) : undefined), ms, peek: peek(failed && said !== broke ? `${broke}\n${said}` : said), use: e.tool_use_id, each, spoke: spokeN, errs, says, exits }) } catch {}
     return r
   })
 

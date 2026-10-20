@@ -1582,6 +1582,20 @@ test('a collector failure count marks the event whose target it names, not anoth
   expect((await flushed($, 'HN', db)).some(r => r.kind === 'hook' && r.status === 'failed')).toBe(false)
 })
 
+test('a hook that broke on an event whose other hooks added context still makes the row a failure, and says what broke', async ($, on) => {
+  const db = capture(on, 'HC')
+  on('telemetry.log', () => ({ value: undefined }))
+  on('classic.SessionStart', async () => {
+    await ($ as any).telemetry.log({ to: 'collector', event: 'hook_execution_complete', attributes: { hook_event: 'SessionStart', hook_name: 'SessionStart:startup', num_hooks: '3', num_success: '1', num_non_blocking_error: '2', num_cancelled: '0' } })
+    return { additionalContext: ['preflight: machine DIP-P101'] }
+  })
+  await ($ as any).classic.SessionStart({ hook_event_name: 'SessionStart', source: 'startup' })
+  const row = (await flushed($, 'HC', db)).find(r => r.kind === 'hook')
+  expect(row?.status).toBe('failed')
+  expect(row?.outcome).toMatch(/^context x1/)
+  expect(row?.peek).toMatch(/2 failed/)
+})
+
 test('a store filled by older, larger sessions frees room for this one on the first write', async ($, on) => {
   const db: Record<string, any> = {}
   const CAP = 4 * 1024 * 1024
