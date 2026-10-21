@@ -1,5 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing'
-import { EXAMPLES, envValues, fresh, mask, migrate, restore } from './redact'
+import { EXAMPLES, composeEnvFiles, envValues, fresh, mask, migrate, restore } from './redact'
 
 // Fixtures are split so no literal matches ~/dotagents/scripts/git-hooks/lib/secret-content.ere,
 // which dotagents' pre-push gate runs over every added line (this file came from there), and
@@ -707,4 +707,32 @@ test('a session starts with the secret-shaped values of the env files where it s
   await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
   expect((store.get('vault:s1') as any).ph).toEqual(vault.ph)
   expect(toasts.length).toBe(1)
+})
+
+test('composeEnvFiles reads env_file as a scalar, a flow list, a list and path entries', () => {
+  expect(composeEnvFiles([
+    'services:', '  web:', '    env_file: ./web.env', '  api:', '    env_file: ["a.env", b.env]',
+    '  db:', '    env_file:', '      - ./db.env  # local', '      - path: "./opt.env"', '        required: false',
+    '    image: postgres', '  cache:', '    env_file:', '    - cache.env', '    ports: ["6379"]',
+  ].join('\n'))).toEqual(['./web.env', 'a.env', 'b.env', './db.env', './opt.env', 'cache.env'])
+})
+
+test('the equivalents seed too: .envrc, .dev.vars, *.env, a compose file\'s env_file; templates do not', async ($, on) => {
+  const K = (n: number) => 'k3y' + 'Z'.repeat(6) + n
+  const { store, files } = world(on, {}, {
+    '/p/.envrc': `use flake\nexport A_KEY=${K(1)}\nexport B=$(pass show b-key)`,
+    '/p/.dev.vars': `C_KEY=${K(2)}`,
+    '/p/.flaskenv': `D_KEY=${K(3)}`,
+    '/p/prod.env': `E_KEY=${K(4)}`,
+    '/p/example.env': `X_KEY=${K(7)}`,
+    '/p/compose.yaml': 'services:\n  web:\n    env_file:\n      - ./config/web.env\n      - config/web.env.example',
+    '/p/config/web.env': `F_KEY=${K(5)}`,
+    '/p/config/web.env.example': `Y_KEY=${K(8)}`,
+  })
+  listed(on, files)
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
+  const vault = store.get('vault:s1') as any
+  expect(Object.values(vault.ph).sort()).toEqual([K(1), K(2), K(3), K(4), K(5)])
+  expect(vault.by[ph('F_KEY')]).toBe('config/web.env: F_KEY')
 })

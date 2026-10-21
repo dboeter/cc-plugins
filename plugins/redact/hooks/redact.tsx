@@ -488,29 +488,66 @@ const prune = async ($: EngineInterface) => {
   }
 }
 
-// The env files at the top of the folder a session starts in: `.env` and every `.env.*` but a
-// template's (`.env.example`, its values are `changeme`). Not `.envrc`, whose lines are shell.
-const ENV_FILE = /^\.env(?:\.(?!(?:example|sample|template|dist)$)[^\\/]+)?$/i
+// The env files at the top of the folder a session starts in: `.env`, `.env.*` and `*.env`
+// (dotenv, Docker), `.envrc` (direnv: its `export KEY=value` lines read, the rest of its shell
+// passes), `.dev.vars` and `.dev.vars.*` (wrangler), `.flaskenv`; and the files a compose file's
+// `env_file:` names. Never a template's (`.env.example`, `example.env`): its values are `changeme`.
+const ENV_FILE = /^(?:\.env(?:\..+)?|[^.].*\.env|\.envrc|\.dev\.vars(?:\..+)?|\.flaskenv)$/i
+const TEMPLATE = /(?:^|\.)(?:example|sample|template|dist)(?:\.|$)/i
+const COMPOSE = /^(?:docker-)?compose(?:\.[\w-]+)?\.ya?ml$/i
+// The paths a compose file's `env_file:` names, as a scalar after it or a list below it (`- a.env`,
+// `- path: a.env`), quotes stripped. Read as lines, not as YAML: a key indented less ends the list.
+export const composeEnvFiles = (text: string) => {
+  const out: string[] = []
+  const lines = text.split(/\r?\n/)
+  const unquote = (s: string) => s.replace(/^(['"])(.*)\1$/, '$2')
+  lines.forEach((l, i) => {
+    const r = /^(\s*)env_file:[ \t]*([^#]*?)\s*(?:#.*)?$/.exec(l)
+    if (!r) return
+    const [, indent, rest] = r as unknown as [string, string, string]
+    if (rest.startsWith('[')) return void out.push(...rest.slice(1, rest.lastIndexOf(']')).split(',').map(s => unquote(s.trim())).filter(Boolean))
+    if (rest) return void out.push(unquote(rest))
+    for (const below of lines.slice(i + 1)) {
+      if (!below.trim() || /^\s*#/.test(below)) continue
+      const at = below.search(/\S/)
+      if (at < indent.length || (at === indent.length && !below.trimStart().startsWith('-'))) break
+      const p = /^\s*(?:-\s+(?!path:)([^\s#:]+|'[^']+'|"[^"]+")|(?:-\s+)?path:\s*([^\s#]+|'[^']+'|"[^"]+"))\s*(?:#.*)?$/.exec(below)
+      if (p) out.push(unquote(p[1] ?? p[2]!))
+    }
+  })
+  return out
+}
 // `KEY=value`, `export` before it allowed; a quoted value runs to its closing quote, an unquoted
 // one to a ` #` comment (`a#b` is one value). A value with a line break in its quotes is skipped,
 // not half read.
 const ENV_LINE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'#](?:.*?\S)?)?)(?:\s+#.*)?\s*$/
-// a value that only names another (`${OTHER}`, `$OTHER`) holds no secret of its own
-const REF = /^\$\{?\w+\}?$/
+// a value that only names another (`${OTHER}`, `$OTHER`) or runs a command (`$(cat key)`, an
+// `.envrc`'s) holds no secret of its own
+const REF = /^\$\{?\w+\}?$|^\$\(|^`/
 export const envValues = (text: string) => text.split(/\r?\n/).flatMap(l => {
   const r = ENV_LINE.exec(l)
   const value = r && (r[2] ?? r[3] ?? r[4] ?? '')
   return r && value ? [{ key: r[1]!, value }] : []
 })
-// Puts each secret-shaped value of the env files at `dir` in the vault, under its key as label
+// Puts each secret-shaped value of the env files at `dir` (and those its compose files name) in the vault, under its key as label
 // (`⟦GITHUB_TOKEN_n⟧`, ENV where the key is no label), so it is masked wherever it comes back
 // with no rule on. Only a `strong` value: `PORT=3000` or `DEBUG=true`, vaulted, would mask
 // every 3000 and true all session. A value the vault holds keeps its placeholder. The number added.
 const seed = async ($: EngineInterface, h: Held, dir: string) => {
   const before = h.byValue.size
-  const names = (await $.fs.list(dir)).filter(f => f.kind !== 'dir' && ENV_FILE.test(f.name)).map(f => f.name).sort()
+  const base = dir.replace(/[\\/]+$/, '')
+  const entries = (await $.fs.list(dir)).filter(f => f.kind !== 'dir').map(f => f.name).sort()
+  const named: string[] = []
+  for (const name of entries.filter(n => COMPOSE.test(n))) {
+    const text = await $.fs.read(`${base}/${name}`).then(String, () => '')
+    named.push(...composeEnvFiles(text).map(p => p.replace(/^\.[\\/]+/, '')))
+  }
+  // once each, as listed or as a compose file names it (relative to the folder, or absolute)
+  const names = [...new Set([...entries.filter(n => ENV_FILE.test(n)), ...named])]
+    .filter(n => !TEMPLATE.test(n.replace(/^.*[\\/]/, '')))
   for (const name of names) {
-    const text = await $.fs.read(`${dir.replace(/[\\/]+$/, '')}/${name}`).then(String, () => '')
+    const path = /^(?:[\\/]|[A-Za-z]:)/.test(name) ? name : `${base}/${name}`
+    const text = await $.fs.read(path).then(String, () => '')
     for (const { key, value } of envValues(text)) {
       if (value.includes(OPEN) || REF.test(value) || !strong(value)) continue
       const label = key.toUpperCase().replace(/[.-]/g, '_')
@@ -921,7 +958,7 @@ export const register: Register = (on, options) => {
             <Box flexDirection="column">
               {section('sec-escape', 'Placeholders & escaping')}
               <Text dimColor>{'  once matched    a value keeps its placeholder all session and masks as a whole word'}</Text>
-              <Text dimColor>{'  env files       a session starts with the secret-shaped values of .env and .env.* where it starts'}</Text>
+              <Text dimColor>{'  env files       a session starts with the secret-shaped values of the env files where it starts'}</Text>
               <Text dimColor>{'  unknown         a placeholder not in this session\'s vault refuses the tool call'}</Text>
               <Text dimColor>{`  ${ESC}LABEL_n⟧     ! after ${OPEN} writes the literal placeholder without restoring it`}</Text>
             </Box>
