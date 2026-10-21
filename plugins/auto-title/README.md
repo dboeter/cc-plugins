@@ -3,6 +3,7 @@
 Names the current Claude Code session from your first prompt, so the session list shows what each one was about.
 
 - **When**: on the first prompt you type after a fresh start, `/clear`, or `/compact`. Slash commands and resumed sessions don't count.
+- **When the start signal is missed**: a `/clear` can restart the plugin before it hears the clear. The first prompt it sees then still gets a title if the conversation has no earlier typed prompt.
 - **After `/compact`**: a session that already has a title keeps it; only an untitled one is named.
 - **How**: Haiku condenses the prompt to a title of at most 5 words and 40 characters, then hands it back as the hook's `sessionTitle`. Unlike `/rename`, that tells the model nothing: no "The user named this session" note enters the conversation.
 

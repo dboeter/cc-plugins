@@ -1,4 +1,4 @@
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
 // Hard caps, enforced again on the reply since the model may ignore them.
 const MAX_WORDS = 5
@@ -34,11 +34,21 @@ const askHaiku = async (
   return title ? { title } : { reason: 'blank' }
 }
 
+// A prompt the user typed, as opposed to a tool result, a slash command
+// (`<command-name>…`) or an injected system reminder (`<system-reminder>…`).
+const isTypedPrompt = (m: SessionMessage) =>
+  m.role === 'user' && !m.toolResults?.length && m.text !== '' && !/^\s*</.test(m.text)
+
 export const register: Register = on => {
   // Set by a fresh start, /clear or /compact; cleared by the first user prompt.
   // Module state: a hot reload resets it, so a reload alone never renames.
   let isAwaitingFirstPrompt = false
   let isAfterCompact = false
+  // A /clear can restart the plugin host so that SessionStart reaches neither
+  // the old instance nor this one. So the first prompt this instance sees also
+  // counts when the conversation holds no other typed prompt; a hot reload or
+  // resume has earlier prompts, so it still never renames.
+  let hasCheckedHistory = false
 
   on('classic.SessionStart', ($, e, next) => {
     if (e.source === 'startup' || e.source === 'clear' || e.source === 'compact') {
@@ -52,9 +62,16 @@ export const register: Register = on => {
     const result = await next(e)
     // Slash commands and machine-injected turns don't count as the first prompt.
     const isUserPrompt = e.source === undefined || e.source === 'user'
-    if (!isAwaitingFirstPrompt || !isUserPrompt || e.prompt.trimStart().startsWith('/')) {
-      return result
+    if (!isUserPrompt || e.prompt.trimStart().startsWith('/')) return result
+    if (!isAwaitingFirstPrompt && !hasCheckedHistory) {
+      hasCheckedHistory = true
+      // Skips the current prompt by text: the history may already hold it.
+      const prompt = e.prompt.trim()
+      const messages = await $.session.messages()
+      isAwaitingFirstPrompt = !messages.some(m => isTypedPrompt(m) && m.text.trim() !== prompt)
     }
+    if (!isAwaitingFirstPrompt) return result
+    hasCheckedHistory = true
     isAwaitingFirstPrompt = false
     // /compact keeps the same conversation, so a title it already has (set by
     // hand or by an earlier first prompt) still fits; only an untitled one is named.

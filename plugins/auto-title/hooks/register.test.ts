@@ -2,11 +2,12 @@ import { test, expect } from 'claude-code/testing'
 
 type Reply = { isAnswered: true; text: string } | { isAnswered: false; reason: string }
 
-const stub = (on: any, text: string | Reply, modelError?: string) => {
+const stub = (on: any, text: string | Reply, modelError?: string, history: object[] = [{ role: 'user', text: 'earlier prompt', toolUses: [] }]) => {
   const reply: Reply = typeof text === 'string' ? { isAnswered: true, text } : text
   const seen = { haiku: 0, renamed: 0, toasts: [] as string[] }
   on('classic.SessionStart', () => ({}))
   on('classic.UserPromptSubmit', () => ({}))
+  on('session.messages', () => ({ value: history }))
   on('model.complete', () => {
     seen.haiku++
     if (modelError) throw new Error(modelError)
@@ -90,4 +91,22 @@ test('a failing model call toasts and lets the prompt through', async ($, on) =>
   expect(r.sessionTitle).toBe(undefined)
   expect(seen.toasts.length).toBe(1)
   expect(seen.toasts[0]!.startsWith('auto-title: no title')).toBe(true)
+})
+
+const CLEAR_ROW = { role: 'user', text: '<command-name>/clear</command-name>', toolUses: [] }
+
+test('titles the first prompt when a /clear restart left no SessionStart, once', async ($, on) => {
+  const seen = stub(on, 'Title', undefined, [CLEAR_ROW, { role: 'user', text: 'hello', toolUses: [] }])
+  const first = await $.classic.UserPromptSubmit({ prompt: 'hello' })
+  expect(first.sessionTitle).toBe('Title')
+  const second = await $.classic.UserPromptSubmit({ prompt: 'more' })
+  expect(second.sessionTitle).toBe(undefined)
+  expect(seen.haiku).toBe(1)
+})
+
+test('without SessionStart, a conversation with earlier prompts is not renamed', async ($, on) => {
+  const seen = stub(on, 'Title')
+  const r = await $.classic.UserPromptSubmit({ prompt: 'hello' })
+  expect(r.sessionTitle).toBe(undefined)
+  expect(seen.haiku).toBe(0)
 })
