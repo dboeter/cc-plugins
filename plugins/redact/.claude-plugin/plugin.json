@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "redact",
   "version": "0.2.0",
-  "description": "Lets Claude use your API keys, tokens, passwords and other secrets without the model seeing them: what your rules match is swapped for stable placeholders (API_KEY_1) in everything sent to the model, kept in a local vault, and restored in tool calls and your terminal. No rule is on until you turn one on: it starts with two examples (vendor tokens, email addresses), off. Rules live in ~/.claude/redact-rules.json, each with its own pattern, replacement label and on/off switch; manage them with /redact. Fails closed.",
+  "description": "Lets Claude use your API keys, tokens, passwords and other secrets without the model seeing them: what your rules match is swapped for stable placeholders (API_KEY_1) in everything sent to the model, kept in a local vault, and restored in tool calls and your terminal. No rule is on until you turn one on: it starts with two examples (vendor tokens, email addresses), off. A session starts with the secret-shaped values of the .env and .env.* files where it starts already masked. Rules live in ~/.claude/redact-rules.json, each with its own pattern, replacement label and on/off switch; manage them with /redact. Fails closed.",
   "author": {
     "name": "dboeter",
     "email": "daan.boeter@hotmail.com"

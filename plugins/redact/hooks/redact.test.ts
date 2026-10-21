@@ -1,5 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing'
-import { EXAMPLES, fresh, mask, migrate, restore } from './redact'
+import { EXAMPLES, envValues, fresh, mask, migrate, restore } from './redact'
 
 // Fixtures are split so no literal matches ~/dotagents/scripts/git-hooks/lib/secret-content.ere,
 // which dotagents' pre-push gate runs over every added line (this file came from there), and
@@ -675,4 +675,36 @@ test('a short value with a line break shows its size alone, none of its characte
   const m = await mount($)
   expect(await m.find({ text: /\(2 lines, 7 chars\)/ })).toBeDefined()
   expect(await m.find({ text: /cd12/ })).toBeUndefined()
+})
+
+test('envValues reads KEY=value lines: export, quotes and comments', () => {
+  expect(envValues([
+    '# a comment', '', 'export A=one', 'B="two # kept"', "C='three'", 'D=four # gone', 'E=a#b', 'F=', 'G="open',
+  ].join('\n'))).toEqual([
+    { key: 'A', value: 'one' }, { key: 'B', value: 'two # kept' }, { key: 'C', value: 'three' },
+    { key: 'D', value: 'four' }, { key: 'E', value: 'a#b' },
+  ])
+})
+
+// fs.list over the world's files: the entries right under a folder
+const listed = (on: any, files: Map<string, string>) =>
+  on('fs.list', (_$: any, e: any) => ({ value: [...files.keys()].filter(p => p.startsWith(e.path + '/') && !p.slice(e.path.length + 1).includes('/'))
+    .map(p => ({ name: p.slice(e.path.length + 1), kind: 'file', size: 0, mtimeMs: 0, isLink: false })) }))
+
+test('a session starts with the secret-shaped values of the env files where it starts in the vault, masked with no rule on', async ($, on) => {
+  const env = ['GITHUB_TOKEN=' + GH, 'PORT=3000', 'DEBUG=true', 'NODE_ENV=development', 'OTHER=${GITHUB_TOKEN}', 'DB_PASS' + `WORD="${ACME}"`].join('\n')
+  const { store, files, entered } = world(on, {}, { '/p/.env': env, '/p/.env.example': `GITHUB_TOKEN=${ANT}`, '/p/sub/.env': `X=${ANT}` })
+  listed(on, files)
+  const toasts = toasted(on)
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
+  const vault = store.get('vault:s1') as any
+  expect(vault.ph).toEqual({ [ph('GITHUB_TOKEN')]: GH, [ph('DB_PASS' + 'WORD')]: ACME })
+  expect(vault.by[ph('GITHUB_TOKEN')]).toBe('.env: GITHUB_TOKEN')
+  expect(toasts).toEqual(['redact: 2 values from the env files here masked (/redact show)'])
+  expect(await entered($, `use ${GH} on port 3000, debug true`)).toBe(`use ${ph('GITHUB_TOKEN')} on port 3000, debug true`)
+  // a second start (a --resume) keeps the placeholders and says nothing
+  await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
+  expect((store.get('vault:s1') as any).ph).toEqual(vault.ph)
+  expect(toasts.length).toBe(1)
 })

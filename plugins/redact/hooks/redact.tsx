@@ -488,6 +488,38 @@ const prune = async ($: EngineInterface) => {
   }
 }
 
+// The env files at the top of the folder a session starts in: `.env` and every `.env.*` but a
+// template's (`.env.example`, its values are `changeme`). Not `.envrc`, whose lines are shell.
+const ENV_FILE = /^\.env(?:\.(?!(?:example|sample|template|dist)$)[^\\/]+)?$/i
+// `KEY=value`, `export` before it allowed; a quoted value runs to its closing quote, an unquoted
+// one to a ` #` comment (`a#b` is one value). A value with a line break in its quotes is skipped,
+// not half read.
+const ENV_LINE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'#](?:.*?\S)?)?)(?:\s+#.*)?\s*$/
+// a value that only names another (`${OTHER}`, `$OTHER`) holds no secret of its own
+const REF = /^\$\{?\w+\}?$/
+export const envValues = (text: string) => text.split(/\r?\n/).flatMap(l => {
+  const r = ENV_LINE.exec(l)
+  const value = r && (r[2] ?? r[3] ?? r[4] ?? '')
+  return r && value ? [{ key: r[1]!, value }] : []
+})
+// Puts each secret-shaped value of the env files at `dir` in the vault, under its key as label
+// (`⟦GITHUB_TOKEN_n⟧`, ENV where the key is no label), so it is masked wherever it comes back
+// with no rule on. Only a `strong` value: `PORT=3000` or `DEBUG=true`, vaulted, would mask
+// every 3000 and true all session. A value the vault holds keeps its placeholder. The number added.
+const seed = async ($: EngineInterface, h: Held, dir: string) => {
+  const before = h.byValue.size
+  const names = (await $.fs.list(dir)).filter(f => f.kind !== 'dir' && ENV_FILE.test(f.name)).map(f => f.name).sort()
+  for (const name of names) {
+    const text = await $.fs.read(`${dir.replace(/[\\/]+$/, '')}/${name}`).then(String, () => '')
+    for (const { key, value } of envValues(text)) {
+      if (value.includes(OPEN) || REF.test(value) || !strong(value)) continue
+      const label = key.toUpperCase().replace(/[.-]/g, '_')
+      mint(h, value, LABEL.test(label) ? label : 'ENV', `${name}: ${key}`)
+    }
+  }
+  return h.byValue.size - before
+}
+
 // Tamper guard: what decides this plugin's masking, kept out of the model's reach. The patterns
 // file, read or written (/redact show lists it); the store file of vaults (Bash is checked whole,
 // so reading it is refused too); and its enabledPlugins and pluginConfigs entries in a settings
@@ -563,6 +595,14 @@ export const register: Register = (on, options) => {
     try { await prune($) } catch (err) { $.ui.log(`redact: old vaults not pruned: ${(err as Error)?.message ?? err}`, { to: 'debug' }) }
     try { await sync($, kept); badge($, kept, await hold($, kept)) } // a --resume starts with a vault
     catch (err) { $.ui.log(`redact: vault not loaded: ${(err as Error)?.message ?? err}`, { to: 'debug' }) }
+    // the project's env values, masked from the first request on
+    try {
+      const h = await hold($, kept)
+      const n = await seed($, h, e.cwd)
+      await keep($, kept, h)
+      badge($, kept, h)
+      if (n) told($, `redact: ${n} value${n > 1 ? 's' : ''} from the env files here masked (/redact show)`)
+    } catch (err) { $.ui.log(`redact: env files not read: ${(err as Error)?.message ?? err}`, { to: 'debug' }) }
     return next(e)
   })
 
@@ -881,6 +921,7 @@ export const register: Register = (on, options) => {
             <Box flexDirection="column">
               {section('sec-escape', 'Placeholders & escaping')}
               <Text dimColor>{'  once matched    a value keeps its placeholder all session and masks as a whole word'}</Text>
+              <Text dimColor>{'  env files       a session starts with the secret-shaped values of .env and .env.* where it starts'}</Text>
               <Text dimColor>{'  unknown         a placeholder not in this session\'s vault refuses the tool call'}</Text>
               <Text dimColor>{`  ${ESC}LABEL_n⟧     ! after ${OPEN} writes the literal placeholder without restoring it`}</Text>
             </Box>
