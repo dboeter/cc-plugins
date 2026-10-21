@@ -136,7 +136,7 @@ const world = (on: any, entries: Record<string, unknown> = {}, given: Record<str
   on('fs.exists', (_$: any, e: any) => ({ value: files.has(e.path) }))
   on('fs.read', (_$: any, e: any) => { if (!files.has(e.path)) throw new Error(`ENOENT ${e.path}`); return { value: files.get(e.path) } })
   on('fs.write', (_$: any, e: any) => { files.set(e.path, e.text); return { value: undefined } })
-  on('fs.stat', (_$: any, e: any) => ({ value: { kind: 'file', size: 0, mtimeMs: 0, isLink: e.path in links, realPath: links[e.path] ?? e.path } }))
+  on('fs.stat', (_$: any, e: any) => ({ value: { kind: 'file', size: files.get(e.path)?.length ?? 0, mtimeMs: 0, isLink: e.path in links, realPath: links[e.path] ?? e.path } }))
   on('prompt.submit', (_$: any, e: any) => { last = e.text; return { text: e.text } })
   const entered = async ($: any, text: string) => { await $.prompt.submit({ text, origin: { kind: 'composer' } }); return last }
   return { store, files, entered }
@@ -735,4 +735,18 @@ test('the equivalents seed too: .envrc, .dev.vars, *.env, a compose file\'s env_
   const vault = store.get('vault:s1') as any
   expect(Object.values(vault.ph).sort()).toEqual([K(1), K(2), K(3), K(4), K(5)])
   expect(vault.by[ph('F_KEY')]).toBe('config/web.env: F_KEY')
+})
+
+test('an env file changed during the session is read again before the next prompt; one unchanged is not', async ($, on) => {
+  const { store, files, entered } = world(on, {}, { '/p/.env': `A_KEY=${ACME}` })
+  listed(on, files)
+  on('session.cwd', () => ({ value: '/p' }))
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
+  // same size and time: taken as unchanged, so not read
+  files.set('/p/.env', `A_KEY=${'x'.repeat(ACME.length - 1)}1`)
+  expect(await entered($, 'hi')).toBe('hi')
+  expect(Object.keys((store.get('vault:s1') as any).ph)).toEqual([ph('A_KEY')])
+  files.set('/p/.env', `A_KEY=${ACME}\nB_KEY=${GH}`)
+  expect(await entered($, `use ${GH}`)).toBe(`use ${ph('B_KEY')}`)
 })

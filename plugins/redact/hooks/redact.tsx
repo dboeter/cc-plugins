@@ -282,7 +282,7 @@ export const migrate = (t: string) => {
 type Tab = 'session' | 'rules' | 'help'
 const TABS: Record<string, Tab> = { '': 'session', show: 'session', session: 'session', rules: 'rules', patterns: 'rules', test: 'rules', guide: 'help', help: 'help' }
 type Kept = { rules: unknown[]; compiled: Pattern[]; broken?: string; last?: string; file?: Promise<string>; seeded?: boolean; note: string; extra: number
-  vault?: { id: string; held: Promise<Held> }; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; opened?: boolean; tab: Tab; sample: string }
+  vault?: { id: string; held: Promise<Held> }; env?: { id: string; seen: Seen }; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; opened?: boolean; tab: Tab; sample: string }
 // CLAUDE_CONFIG_DIR, else ~/.claude; USERPROFILE is Windows' HOME
 const place = ($: EngineInterface, k: Kept) => k.file ??= (async () => {
   const dir = await $.env.get('CLAUDE_CONFIG_DIR') || `${await $.env.get('HOME') || await $.env.get('USERPROFILE') || '~'}/.claude`
@@ -533,28 +533,55 @@ export const envValues = (text: string) => text.split(/\r?\n/).flatMap(l => {
 // (`⟦GITHUB_TOKEN_n⟧`, ENV where the key is no label), so it is masked wherever it comes back
 // with no rule on. Only a `strong` value: `PORT=3000` or `DEBUG=true`, vaulted, would mask
 // every 3000 and true all session. A value the vault holds keeps its placeholder. The number added.
-const seed = async ($: EngineInterface, h: Held, dir: string) => {
+// Run again before every prompt with the session's `seen`: a file is read only when its time or
+// size changed since, and only then are its values put in, so a value forgotten in the pane stays
+// out until its file changes.
+type Seen = Map<string, { sig: string; got: any }>
+const reread = async <T,>($: EngineInterface, seen: Seen, path: string, parse: (t: string) => T) => {
+  const st = await $.fs.stat(path).catch(() => undefined)
+  const sig = st ? `${st.mtimeMs}:${st.size}` : 'none'
+  const was = seen.get(path)
+  if (was?.sig === sig) return { got: was.got as T, changed: false }
+  const got = parse(st ? await $.fs.read(path).then(String, () => '') : '')
+  seen.set(path, { sig, got })
+  return { got, changed: true }
+}
+const seed = async ($: EngineInterface, h: Held, dir: string, seen: Seen) => {
   const before = h.byValue.size
   const base = dir.replace(/[\\/]+$/, '')
   const entries = (await $.fs.list(dir)).filter(f => f.kind !== 'dir').map(f => f.name).sort()
   const named: string[] = []
   for (const name of entries.filter(n => COMPOSE.test(n))) {
-    const text = await $.fs.read(`${base}/${name}`).then(String, () => '')
-    named.push(...composeEnvFiles(text).map(p => p.replace(/^\.[\\/]+/, '')))
+    const { got } = await reread($, seen, `${base}/${name}`, composeEnvFiles)
+    named.push(...got.map(p => p.replace(/^\.[\\/]+/, '')))
   }
   // once each, as listed or as a compose file names it (relative to the folder, or absolute)
   const names = [...new Set([...entries.filter(n => ENV_FILE.test(n)), ...named])]
     .filter(n => !TEMPLATE.test(n.replace(/^.*[\\/]/, '')))
   for (const name of names) {
     const path = /^(?:[\\/]|[A-Za-z]:)/.test(name) ? name : `${base}/${name}`
-    const text = await $.fs.read(path).then(String, () => '')
-    for (const { key, value } of envValues(text)) {
+    const { got, changed } = await reread($, seen, path, envValues)
+    if (!changed) continue
+    for (const { key, value } of got) {
       if (value.includes(OPEN) || REF.test(value) || !strong(value)) continue
       const label = key.toUpperCase().replace(/[.-]/g, '_')
       mint(h, value, LABEL.test(label) ? label : 'ENV', `${name}: ${key}`)
     }
   }
   return h.byValue.size - before
+}
+// Seeds this session's vault from the env files at `dir`, the session's folder when absent; a new
+// session id (a /clear) reads every file again. A failure is logged, never thrown: the prompt it
+// runs before still goes.
+const seedHere = async ($: EngineInterface, k: Kept, dir?: string) => {
+  try {
+    const h = await hold($, k)
+    if (k.env?.id !== h.id) k.env = { id: h.id, seen: new Map() }
+    const n = await seed($, h, dir ?? await $.session.cwd(), k.env.seen)
+    await keep($, k, h)
+    badge($, k, h)
+    if (n) told($, `redact: ${n} value${n > 1 ? 's' : ''} from the env files here masked (/redact show)`)
+  } catch (err) { $.ui.log(`redact: env files not read: ${(err as Error)?.message ?? err}`, { to: 'debug' }) }
 }
 
 // Tamper guard: what decides this plugin's masking, kept out of the model's reach. The patterns
@@ -633,13 +660,7 @@ export const register: Register = (on, options) => {
     try { await sync($, kept); badge($, kept, await hold($, kept)) } // a --resume starts with a vault
     catch (err) { $.ui.log(`redact: vault not loaded: ${(err as Error)?.message ?? err}`, { to: 'debug' }) }
     // the project's env values, masked from the first request on
-    try {
-      const h = await hold($, kept)
-      const n = await seed($, h, e.cwd)
-      await keep($, kept, h)
-      badge($, kept, h)
-      if (n) told($, `redact: ${n} value${n > 1 ? 's' : ''} from the env files here masked (/redact show)`)
-    } catch (err) { $.ui.log(`redact: env files not read: ${(err as Error)?.message ?? err}`, { to: 'debug' }) }
+    await seedHere($, kept, e.cwd)
     return next(e)
   })
 
@@ -663,6 +684,8 @@ export const register: Register = (on, options) => {
       kept.opened = false
       return { drop: 'redact: kept out of the conversation' }
     }
+    // an env file changed since the last prompt masks from this one on
+    await seedHere($, kept)
     if (e.command) return next(e)
     const { m, done } = await masker($, kept, fromSettings)
     const text = m(e.text)
