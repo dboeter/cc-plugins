@@ -282,7 +282,7 @@ export const migrate = (t: string) => {
 type Tab = 'session' | 'rules' | 'help'
 const TABS: Record<string, Tab> = { '': 'session', show: 'session', session: 'session', rules: 'rules', patterns: 'rules', test: 'rules', guide: 'help', help: 'help' }
 type Kept = { rules: unknown[]; compiled: Pattern[]; broken?: string; last?: string; file?: Promise<string>; seeded?: boolean; note: string; extra: number
-  vault?: { id: string; held: Promise<Held> }; env?: { id: string; seen: Seen }; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; opened?: boolean; tab: Tab; sample: string }
+  vault?: { id: string; held: Promise<Held> }; env?: { id: string; seen: Seen }; envOn?: boolean; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; opened?: boolean; tab: Tab; sample: string }
 // CLAUDE_CONFIG_DIR, else ~/.claude; USERPROFILE is Windows' HOME
 const place = ($: EngineInterface, k: Kept) => k.file ??= (async () => {
   const dir = await $.env.get('CLAUDE_CONFIG_DIR') || `${await $.env.get('HOME') || await $.env.get('USERPROFILE') || '~'}/.claude`
@@ -321,21 +321,22 @@ const take = (k: Kept, t: string) => {
   if (!Array.isArray(rules)) { k.broken = 'is no JSON object with a rules list'; return }
   k.broken = undefined
   k.rules = rules
+  k.envOn = JSON.parse(t).envFiles !== false
   k.compiled = compile(rules, YOURS)
 }
 const sync = async ($: EngineInterface, k: Kept) => {
   const t = await text($, k, await place($, k))
   if (t !== undefined) take(k, t)
 }
-// Writes the file's rules as `f` changes them, its other keys kept; a file that did not read or
-// parse is left alone, never written over. Undefined when saved, else why not.
-const save = async ($: EngineInterface, k: Kept, f: (rules: unknown[]) => unknown[]) => {
+// Writes the file's rules as `f` changes them, and the keys in `top`, its other keys kept; a file
+// that did not read or parse is left alone, never written over. Undefined when saved, else why not.
+const save = async ($: EngineInterface, k: Kept, f: (rules: unknown[]) => unknown[], top: object = {}) => {
   const path = await place($, k)
   const t = await text($, k, path)
   if (t === undefined) return `not saved: ${FILE} did not read`
   take(k, t)
   if (k.broken) return `not saved: ${FILE} ${k.broken}; fix it by hand`
-  const next = JSON.stringify({ ...JSON.parse(t), rules: f(k.rules) }, null, 2) + '\n'
+  const next = JSON.stringify({ ...JSON.parse(t), ...top, rules: f(k.rules) }, null, 2) + '\n'
   try { await $.fs.write(path, next) } catch (err) { return `not saved: ${(err as Error)?.message ?? err}` }
   take(k, next)
   $.ui.invalidate('ui.render')
@@ -364,6 +365,14 @@ const add = async ($: EngineInterface, k: Kept, typed: string) => {
   if (at >= 0) return `already there, as #${at + 1}`
   return await save($, k, rules => [...rules, rule]) ?? `added as #${k.rules.length}: it masks from the next message on`
 }
+// Turns seeding from env files on or off: `envFiles` in the rules file, on when absent. Off keeps
+// what it already put in the vault; on reads the files before the next prompt.
+const envTurn = async ($: EngineInterface, k: Kept, on: boolean) => {
+  await sync($, k)
+  if ((k.envOn !== false) === on) return `env files already ${on ? 'on' : 'off'}`
+  return await save($, k, rules => rules, { envFiles: on })
+    ?? (on ? 'env files on: read from the next prompt on' : 'env files off: what they put in stays masked this session (forget it in /redact show)')
+}
 const remove = async ($: EngineInterface, k: Kept, ref: string) => {
   await sync($, k)
   const i = pick(k, ref)
@@ -374,12 +383,13 @@ const remove = async ($: EngineInterface, k: Kept, ref: string) => {
 // /redact's reply to its arguments, undefined for the pane. It answers in a toast, never as text:
 // a command's output row is one the model reads, and none of /redact is its business
 // (prompt.submit drops the line itself).
-const USAGE = 'show | rules | guide | test [text] | add <rule> | remove <n|name> | on <n|name> | off <n|name>'
+const USAGE = 'show | rules | guide | test [text] | add <rule> | remove <n|name> | on <n|name> | off <n|name> | env on|off'
 const answer = async ($: EngineInterface, k: Kept, fromSettings: Pattern[], args: string) => {
   const [, verb = '', rest = ''] = /^\s*(\S*)\s*([\s\S]*?)\s*$/.exec(args) ?? []
   if (verb === 'add') return add($, k, rest)
   if (verb === 'off' || verb === 'on') return turn($, k, rest, verb === 'on')
   if (verb === 'remove') return remove($, k, rest)
+  if (verb === 'env' && (rest === 'on' || rest === 'off')) return envTurn($, k, rest === 'on')
   if (verb === 'test' && rest) {
     await sync($, k)
     k.tab = 'rules'; k.note = ''; k.sample = rest
@@ -575,6 +585,8 @@ const seed = async ($: EngineInterface, h: Held, dir: string, seen: Seen) => {
 // runs before still goes.
 const seedHere = async ($: EngineInterface, k: Kept, dir?: string) => {
   try {
+    await sync($, k)
+    if (k.envOn === false) return
     const h = await hold($, k)
     if (k.env?.id !== h.id) k.env = { id: h.id, seen: new Map() }
     const n = await seed($, h, dir ?? await $.session.cwd(), k.env.seen)
@@ -959,6 +971,13 @@ export const register: Register = (on, options) => {
               })}
             </Box>
             <Box flexDirection="column">
+              {section('sec-env', 'Env files', kept.envOn === false ? 'off' : 'on')}
+              <Box gap={1}>
+                <Box flexShrink={1}><Text dimColor>  secret-shaped values of .env, .envrc, .dev.vars and the like where a session starts, read again when they change</Text></Box>
+                <Box flexShrink={0}><Button key="env" label={kept.envOn === false ? 'turn on' : 'turn off'} plain onPress={async () => redraw(await envTurn($, kept, kept.envOn === false))}><Text color={kept.envOn === false ? undefined : 'green'} dimColor={kept.envOn === false}>{kept.envOn === false ? '○ off' : '● on'}</Text></Button></Box>
+              </Box>
+            </Box>
+            <Box flexDirection="column">
               {section('sec-settings', 'From settings', settings.length ? `${settings.length} set` : 'none')}
               <Text dimColor>  the patterns option in settings.json, always on</Text>
               {settings.length === 0 && <Text dimColor>  none</Text>}
@@ -981,7 +1000,7 @@ export const register: Register = (on, options) => {
             <Box flexDirection="column">
               {section('sec-escape', 'Placeholders & escaping')}
               <Text dimColor>{'  once matched    a value keeps its placeholder all session and masks as a whole word'}</Text>
-              <Text dimColor>{'  env files       a session starts with the secret-shaped values of the env files where it starts'}</Text>
+              <Text dimColor>{'  env files       a session starts with the secret-shaped values of the env files where it starts; /redact env off'}</Text>
               <Text dimColor>{'  unknown         a placeholder not in this session\'s vault refuses the tool call'}</Text>
               <Text dimColor>{`  ${ESC}LABEL_n⟧     ! after ${OPEN} writes the literal placeholder without restoring it`}</Text>
             </Box>

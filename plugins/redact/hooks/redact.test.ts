@@ -737,6 +737,29 @@ test('the equivalents seed too: .envrc, .dev.vars, *.env, a compose file\'s env_
   expect(vault.by[ph('F_KEY')]).toBe('config/web.env: F_KEY')
 })
 
+test('envFiles: false in the rules file turns env seeding off; /redact env on turns it back on, the rules kept', async ($, on) => {
+  const { store, files, entered } = world(on, {}, { [RULES]: JSON.stringify({ envFiles: false, rules: ON }), '/p/.env': `A_KEY=${ACME}` })
+  listed(on, files)
+  const toasts = toasted(on)
+  on('session.cwd', () => ({ value: '/p' }))
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
+  expect(await entered($, `id ${ACME}`)).toBe(`id ${ACME}`)
+  expect((store.get('vault:s1') as any)?.ph ?? {}).toEqual({})
+  await $.command.run({ command: 'redact', args: 'env on' } as any)
+  expect(toasts.at(-1)).toBe('redact: env files on: read from the next prompt on')
+  expect(JSON.parse(files.get(RULES)!)).toEqual({ envFiles: true, rules: ON })
+  expect(await entered($, `id ${ACME}`)).toBe(`id ${ph('A_KEY')}`)
+  await $.command.run({ command: 'redact', args: 'env off' } as any)
+  expect(JSON.parse(files.get(RULES)!).envFiles).toBe(false)
+  // the pane's switch
+  const m = await mount($)
+  await m.press({ key: 'tab-rules' })
+  expect(await m.find({ text: /Env files/ })).toBeDefined()
+  await m.press({ key: 'env' })
+  expect(JSON.parse(files.get(RULES)!).envFiles).toBe(true)
+})
+
 test('an env file changed during the session is read again before the next prompt; one unchanged is not', async ($, on) => {
   const { store, files, entered } = world(on, {}, { '/p/.env': `A_KEY=${ACME}` })
   listed(on, files)
