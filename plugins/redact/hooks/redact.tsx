@@ -30,61 +30,28 @@ const ESC = OPEN + '!'
 const PH_OR_ESC = /⟦(!?)([A-Z][A-Z0-9_]*_\d+⟧)/g
 const LABEL = /^[A-Z][A-Z0-9_]*$/
 
-// Every repeat that can run into a failing match is bounded ({0,64}, {1,512}, {0,8192}):
-// unbounded, a crafted output (one long word full of "token", thousands of `-eyJ` or
-// unterminated BEGIN lines) takes time quadratic in its size, outruns the hook budget and
-// gets the row withheld. The speed test in redact.test.ts pins this.
-const NAME = String.raw`\w{0,64}(?:token|secret|password|passwd|api[_-]?key|private[_-]?key|access[_-]?key|credential)\w{0,64}`
-// An unquoted value ends at whitespace, quotes, code punctuation and a placeholder, so
-// `fn(name=value), y` keeps its `), y` and a query string keeps its `&next=1`.
-const STOP = String.raw`\s'"\`,;&<>()[\]{}⟦⟧`
-const VAL = String.raw`[^${STOP}]+`
-const END = String.raw`(?![^${STOP}])`
-// Unquoted values that read as code and stay: a `$` reference or shell default (`${X:-}`,
-// `${X:-$Y}`), a call, index or generic (`getToken(`, `os.environ[`, `Promise<`), a keyword, type or literal
-// (`await`, `string`, `1000`), a dotted path (`self.token`; a dotted literal password leaks,
-// the price of this one), or the name itself (Python's `f(token=token)`). Anything else is
-// masked: a miss masks. `\k<name>` is the assign rule's NAME group: CODE only works inside it.
-const CODE = String.raw`(?!-?\$|[\w.]+[(\[<]|(?:await|new|string|number|boolean|bool|str|int|bytes|any|unknown|undefined|none|nil|true|false|null|\d+|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+|\k<name>|-)${END})`
+// A rule of the rules file: a JavaScript regex, the label its placeholders take (`replacement`:
+// API_KEY masks as API_KEY_n), whether it is on, and its options (`ignoreCase`, and `min`,
+// `strong`, `prose` as Pattern below has them). `name` is what the pane and the vault call it.
+type Rule = { name?: string; pattern: string; replacement: string; enabled?: boolean; ignoreCase?: boolean; min?: number; strong?: boolean; prose?: boolean }
 
-// The rules redact ships with. They stay in code, so a fix to one reaches everyone: the patterns
-// file holds only the person's own patterns, and `off <id>` for a rule they turned off. Each is
-// written as a line of that file (LABEL [options]: regex), so one reader reads both. The notes
-// describe a match rather than show one: a real-looking token here would trip the pre-push secret
-// scan. Ordered: whole-value shapes first, so the later ones see the placeholder and leave it. A
-// `min` rule guesses from a name or a place, so it masks only a value that long: a short password
-// still masks, a stray `a` or `|` does not, though once vaulted it masks as a word all session. A
-// `strong` rule guesses from context alone (`strong` below).
-const rule = (id: string, name: string, note: string, head: string, src: string) => ({ id, name, note, line: `${head}: ${src}` })
-export const BUILTIN = [
-  // with no END line (output cut short by head or a Read limit), the whole-line base64 body
-  // after BEGIN, raw, `cat -n` numbered or JSON-escaped; a prose line stops it, and a BEGIN
-  // line with no body (a doc naming the format) is left alone
-  rule('private-key', 'Private key blocks, cut-short ones too',
-    'hides the whole -----BEGIN ... PRIVATE KEY----- block; leaves a BEGIN line with no key under it', 'PRIVATE_KEY',
-    /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]{0,8192}?-----END [A-Z ]*PRIVATE KEY-----|(?:(?:\r?\n|\\n)[ \t]*(?:\d+\t)?[A-Za-z0-9+/=]+(?=[\r\n\\]|$))+)/.source),
-  // JS copy of ~/dotagents/scripts/git-hooks/lib/secret-content.ere's vendor shapes (plus hf_, ya29.): keep in sync
-  rule('vendor-token', 'Vendor tokens (sk-, gh*_, github_pat_, AKIA, ASIA, xox*-, AIza, sk_live_, glpat-, npm_, dckr_pat_, SG., hf_, ya29.) and JWTs',
-    'hides the whole token', 'API_KEY',
-    /\b(?:sk-[\w-]{20,}|gh[pousr]_\w{36,}|github_pat_\w{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}|xox[abprs]-[\w-]{10,}|AIza[\w-]{35}|[sr]k_(?:live|test)_[0-9A-Za-z]{24,}|glpat-[\w-]{20,}|npm_[A-Za-z0-9]{36}|dckr_pat_[\w-]{20,}|SG\.[\w-]{20,}\.[\w-]{20,}|hf_[A-Za-z0-9]{30,}|ya29\.[\w-]{20,}|eyJ[\w-]{1,512}\.[\w-]+\.[\w-]+)/.source),
-  // RFC 6750 token chars; strong only, so prose ("the bearer of this letter") stays
-  rule('bearer', 'A token after "Bearer"', 'hides the token after "Authorization: Bearer"; leaves prose like "the bearer of this letter"',
-    'TOKEN strong i', /\b(?<pre>bearer[ \t]+)(?<v>[\w.~+/-]+=*)/.source),
-  rule('url-password', 'Passwords in URLs', 'hides what sits between "user:" and "@" in scheme://user:...@host; leaves a $VAR',
-    'PASSWORD min=4', /(?<pre>:\/\/[^:\/\s@]+:)(?!\$)(?<v>[^\s@\/]+)(?<post>@)/.source),
-  rule('flag', 'Values after --password, --token, --api-key, --secret', 'hides the word after the flag; leaves a $VAR, another flag and a usage line\'s lowercase word',
-    'SECRET min=4 i', String.raw`(?<pre>--(?:password|token|api-key|secret)[ \t]+)(?![$-])(?<v>${VAL})`),
-  // `NAME=v`, `name: v`, `"name": "v"`: a quoted value up to its closing quote (or the line's
-  // end), unless empty or a `$` reference; an unquoted one unless CODE says it is code
-  rule('assigned', 'Values assigned to a name with token, secret, password, api key, private key, access key or credential in it',
-    'hides the value in NAME=..., name: ... and "name": "..."; leaves code ($VAR, getToken(), self.token, null) and "name: more words"',
-    'SECRET min=4 prose i', String.raw`(?<pre>\b(?<name>${NAME})["']?[ \t]*[=:][ \t]*)(?:(?<q>["'])(?!\$)(?<v>(?:(?!\k<q>)[^\n])+)(?<post>\k<q>?)|${CODE}(?<v2>${VAL}))`),
-  // last, so a password in a URL and a value assigned to a secret's name keep
-  // their own label. Starts where a run of address characters does, so a local part past 64 is
-  // left whole rather than cut. Not `git@`, a git host's ssh user; a TLD of letters leaves
-  // `react@18.2.0` alone, `(?![1-9]x\.)` an image's `@2x.png`.
-  rule('email', 'Email addresses', 'hides the whole address; leaves git@host, a version like react@18.2.0 and an image@2x.png',
-    'EMAIL', /(?<![\w.+-])(?!git@)[\w.+-]{1,64}@(?![1-9]x\.)(?:[\w-]{1,63}\.){1,8}[A-Za-z]{2,24}(?![\w-])/.source),
+// The rules a new rules file holds: two examples, both off, so nothing is masked until the person
+// turns one on or adds their own. Copied into the file once; a later version's change to them
+// does not reach it. Their repeats are bounded ({1,64}, {1,512}): unbounded, a crafted output
+// (thousands of `-eyJ`) takes time quadratic in its size, outruns the hook budget and gets the
+// row withheld. The speed test in redact.test.ts pins this. A real-looking token here would trip
+// the pre-push secret scan, so the names describe a match rather than show one.
+export const EXAMPLES: Rule[] = [
+  // JS copy of ~/dotagents/scripts/git-hooks/lib/secret-content.ere's vendor shapes (plus hf_, ya29.)
+  { name: 'Example: vendor tokens (sk-, gh*_, github_pat_, AKIA, ASIA, xox*-, AIza, sk_live_, glpat-, npm_, dckr_pat_, SG., hf_, ya29.) and JWTs',
+    pattern: /\b(?:sk-[\w-]{20,}|gh[pousr]_\w{36,}|github_pat_\w{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}|xox[abprs]-[\w-]{10,}|AIza[\w-]{35}|[sr]k_(?:live|test)_[0-9A-Za-z]{24,}|glpat-[\w-]{20,}|npm_[A-Za-z0-9]{36}|dckr_pat_[\w-]{20,}|SG\.[\w-]{20,}\.[\w-]{20,}|hf_[A-Za-z0-9]{30,}|ya29\.[\w-]{20,}|eyJ[\w-]{1,512}\.[\w-]+\.[\w-]+)/.source,
+    replacement: 'API_KEY', enabled: false },
+  // Starts where a run of address characters does, so a local part past 64 is left whole rather
+  // than cut. Not `git@`, a git host's ssh user; a TLD of letters leaves `react@18.2.0` alone,
+  // `(?![1-9]x\.)` an image's `@2x.png`.
+  { name: 'Example: email addresses',
+    pattern: /(?<![\w.+-])(?!git@)[\w.+-]{1,64}@(?![1-9]x\.)(?:[\w-]{1,63}\.){1,8}[A-Za-z]{2,24}(?![\w-])/.source,
+    replacement: 'EMAIL', enabled: false },
 ]
 
 // A pattern: each match masked whole, or only its `v` (or `v2`) group when it has one, under
@@ -93,33 +60,39 @@ export const BUILTIN = [
 // unquoted value after a colon alone when words follow it (PROSE).
 type Pattern = { re: RegExp; label: string; by?: string; strong?: boolean; min?: number; prose?: boolean }
 type Spec = Omit<Pattern, 're'> & { src: string; flags: string }
-// A line of the patterns file: `off <id>`, `LABEL [options]: regex`, or a bare regex, masked as
-// SECRET. The regex is the rest of the line after the first `: `, as written; a label is capitals,
-// so a regex like `(?<x>a): b` stays whole. Throws why the line does not read: an unknown rule or
-// option, a regex that does not compile.
+// A rule as compiled. Throws why it does not read: no pattern, a replacement no placeholder can
+// carry, an option of the wrong type, a regex that does not compile.
+const spec = (r: any): Spec => {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) throw new Error('not a rule')
+  if (typeof r.pattern !== 'string' || !r.pattern) throw new Error('no pattern')
+  const label = r.replacement ?? 'SECRET'
+  if (typeof label !== 'string' || !LABEL.test(label)) throw new Error('replacement is not capitals, digits and _')
+  if (r.min !== undefined && !(Number.isInteger(r.min) && r.min >= 0)) throw new Error('min is not a whole number')
+  for (const k of ['enabled', 'ignoreCase', 'strong', 'prose']) if (r[k] !== undefined && typeof r[k] !== 'boolean') throw new Error(`${k} is not true or false`)
+  const s: Spec = { src: r.pattern, flags: r.ignoreCase ? 'gdi' : 'gd', label }
+  if (r.min) s.min = r.min
+  if (r.strong) s.strong = true
+  if (r.prose) s.prose = true
+  new RegExp(s.src, s.flags)
+  return s
+}
+// A line in the short form /redact add and the `patterns` option take, as a rule that is on:
+// `LABEL [options]: regex`, or a bare regex, masked as SECRET. The regex is the rest of the line
+// after the first `: `, as written; a label is capitals, so a regex like `(?<x>a): b` stays whole.
+// Throws why the line does not read: an unknown option, or what `spec` throws.
 const RULE = /^([A-Z][A-Z0-9_]*)((?:[ \t]+[\w=-]+)*)[ \t]*:[ \t]+(.*)$/
-const OFF = /^off[ \t]+(\S+)$/
-const read = (line: string): Spec | { off: string } => {
-  const off = OFF.exec(line)?.[1]
-  if (off !== undefined) {
-    if (!BUILTIN.some(r => r.id === off)) throw new Error(`no built-in rule ${off}`)
-    return { off }
-  }
-  // the format before this one put options at the end, after ` #!`: read as part of the regex,
-  // they would mask nothing the person meant
-  if (/\s#!(\s|$)/.test(line)) throw new Error('options go before the regex: LABEL i: regex')
+const read = (line: string): Rule => {
   const [, label = 'SECRET', opts = '', src = line] = RULE.exec(line) ?? []
-  const spec: Spec = { src: src.trim(), flags: 'gd', label }
+  const r: Rule = { pattern: src.trim(), replacement: label, enabled: true }
   for (const o of opts.split(/\s+/).filter(Boolean)) {
     const [k, v] = o.split('=')
-    if (k === 'min' && v && /^\d+$/.test(v)) spec.min = Number(v)
-    else if (o === 'strong' || o === 'prose') spec[o] = true
-    else if (o === 'i') spec.flags += 'i'
+    if (k === 'min' && v && /^\d+$/.test(v)) r.min = Number(v)
+    else if (o === 'strong' || o === 'prose') r[o] = true
+    else if (o === 'i') r.ignoreCase = true
     else throw new Error(`unknown option ${o}`)
   }
-  if (!spec.src) throw new Error('no regex')
-  new RegExp(spec.src, spec.flags)
-  return spec
+  spec(r)
+  return r
 }
 
 // A session's vault: the next number per label and each placeholder's value, as the store keeps
@@ -198,7 +171,7 @@ const between = (s: string, f: (part: string) => string) => s.split(PH_SPLIT).ma
 // once matched is never sent, in whatever shape it comes back. A placeholder-shaped text the
 // vault does not hold (a doc naming the format) reads escaped, so writing it back gives the
 // literal. Masking twice is masking once.
-export const mask = (s: string, h: Held, patterns: readonly Pattern[] = defaults) => {
+export const mask = (s: string, h: Held, patterns: readonly Pattern[]) => {
   const ruled = patterns.reduce((acc, x) => between(acc, part => swap(part, h, x)), s)
   if (!ruled.includes(OPEN) && !h.byValue.size) return ruled
   const known = h.byValue.size ? knownOf(h) : null
@@ -242,20 +215,20 @@ const WITHHELD = 'redact: withheld, as masking it failed. Tell the user; the red
 // is no file write (`gh secret set --body`, `curl -d`) has no shape to tell it apart.
 const WRITES: Record<string, string[]> = { Write: ['content'], Edit: ['old_string', 'new_string'], NotebookEdit: ['new_source'], Bash: ['command'] }
 
-// why a line does not read, or undefined when it does
-const fault = (line: string) => { try { read(line); return undefined } catch (err) { return (err as Error).message } }
-// A pattern line read as the file has it, with the comment line right above it as its name.
-type Line = { line: string; name?: string }
-// the lines that read as patterns, compiled; an `off` line is no pattern
-const compile = (lines: readonly Line[], from: string): Pattern[] => lines.flatMap(l => {
-  if (fault(l.line)) return []
-  const r = read(l.line)
-  if ('off' in r) return []
-  const { src, flags, ...spec } = r
-  return [{ ...spec, re: new RegExp(src, flags), by: `${from}: ${l.name ?? src}` }]
+// why a rule, or a line in the short form, does not read; undefined when it does
+const fault = (r: unknown) => { try { spec(r); return undefined } catch (err) { return (err as Error).message } }
+const lineFault = (line: string) => { try { read(line); return undefined } catch (err) { return (err as Error).message } }
+// A rule with no `enabled` is on: the person wrote it to mask, and a miss sends the value.
+const isOn = (r: any) => r?.enabled !== false
+// the rules that are on and read, compiled
+const compile = (rules: readonly unknown[], from: string): Pattern[] => rules.flatMap(r => {
+  if (fault(r) || !isOn(r)) return []
+  const { src, flags, ...s } = spec(r)
+  return [{ ...s, re: new RegExp(src, flags), by: `${from}: ${(r as Rule).name ?? src}` }]
 })
-// A pattern's name: the first line of the comment right above it, its other lines a note. A
+// A pattern line of the old patterns file, with the comment line right above it as its name. A
 // blank line ends a comment, so the header names nothing.
+type Line = { line: string; name?: string }
 const parse = (text: string): Line[] => {
   let name: string | undefined, inComment = false
   return text.split('\n').flatMap(raw => {
@@ -269,199 +242,153 @@ const parse = (text: string): Line[] => {
 }
 const PANE = 'redact'
 const TITLE = 'Redact rules'
-// The patterns /redact add and the pane keep: a text file of the user's, per user, for every
-// project, next to settings.json, so they edit it by hand. Older versions kept the list in the
-// store under STORED; the first read with no file moves it there.
-const FILE = 'redact-patterns.txt'
-const STORED = 'patterns'
-const YOURS = 'your pattern'
-// the built-in rules, compiled: what `mask` uses on its own, and all of them until the file reads
-export const defaults = BUILTIN.map(r => compile([{ line: r.line, name: r.name }], 'built-in rule')[0]!)
+// The rules /redact and the pane keep: a JSON file of the user's, per user, for every project,
+// next to settings.json, so they can edit it by hand. A new one holds EXAMPLES.
+const FILE = 'redact-rules.json'
+const YOURS = 'rule'
+const json = (rules: readonly unknown[]) => JSON.stringify({ rules }, null, 2) + '\n'
 // each session's vault, under its id, in the store; one untouched this long is dropped
 const VAULT = 'vault:'
 const KEEP_MS = 30 * 24 * 3600 * 1000
-// The file's first lines, written when redact creates it; no placeholder-shaped text in it.
-export const HEADER = `# redact: your own patterns, masked after its built-in rules, in every project. A change
-# applies from your next message on. The model cannot read or change this file. /redact patterns
-# lists the built-in rules with their ids, and tests a sample.
-#
-#   LABEL [options]: regex    each match is masked as LABEL_1, LABEL_2, ...
-#   regex                     the same, as SECRET
-#   off <id>                  turns a built-in rule off
-#
-# options   i        ignore case
-#           min=N    skip a match under N characters, or of lowercase letters only
-#           strong   skip a match under 8 characters, or of one kind (letters, digits, symbols)
-#           prose    skip an unquoted match after a colon when words follow it on the line
-#
-# A group named v (or v2) is all that is masked when it matched: (?<pre>ACME_KEY=)(?<v>\\S+)
-# keeps ACME_KEY= and masks what follows. The comment line right above a pattern names it.
-#
-# ACME_KEY: (?<=ACME_KEY=)\\S+
 
-`
-
-// Files an older version wrote, rewritten once in this format: their header goes, a built-in rule
-// they hold unchanged goes (it runs from code now) with its comment, one deleted or edited is
-// turned off (an edited copy stays, as the person's pattern), and each pattern's options move from
-// after ` #!` to before it. Known by the line that ended their header; the oldest, from before the
-// rules moved into the file, by its header, six lines, and it turns no rule off; so does one with
-// no header whose options sit after ` #!`.
-const LEGACY = ['# ---- built-in rules: edit or delete any; keep this line, or they are added back ----',
-  '# redact: its built-in rules follow. Change or delete any; keep this line, or they are added again.']
-const LEGACY_HERE = '# ---- your patterns: add them below ----'
-const OLDEST = '# redact: your patterns, one JavaScript regex a line, masked on top of the built-in rules,'
-// a pattern of the older format in this one: its label from `label=`, else its first named group
-// other than v and v2, else SECRET; `ignore-case` is `i` now
-const convert = (line: string) => {
-  const [, src = line, opts = ''] = /^(.*)\s#!(\s.*)?$/.exec(line) ?? []
-  const o = opts.split(/\s+/).filter(Boolean)
-  const group = [...src.matchAll(/\(\?<([A-Za-z_]\w*)>/g)].map(m => m[1]!).find(n => n !== 'v' && n !== 'v2')?.toUpperCase()
-  const label = o.find(x => x.startsWith('label='))?.slice(6) || (group && /^[A-Z][A-Z0-9_]*$/.test(group) ? group : 'SECRET')
-  return `${[label, ...o.filter(x => !x.startsWith('label=')).map(x => x === 'ignore-case' ? 'i' : x)].join(' ')}: ${src.trim()}`
-}
-// ⟦ and ⟧ spelled either way, as a build may have written them as \u escapes
-const unesc = (s: string) => s.replace(/\\u27E6/g, '⟦').replace(/\\u27E7/g, '⟧')
+// The patterns file of the version before, which shipped these rules in code and turned one off
+// with an `off <id>` line. Moved into a rules file once, when there is none: each pattern line
+// that reads becomes a rule that is on, named by the comment above it, and an example is on
+// where the old file left its rule on (`was`). `gone` names the other rules it left on, which mask
+// nothing now; `lost` counts the lines that did not read. The old file stays where it is.
+const OLD_FILE = 'redact-patterns.txt'
+const OLD_RULES = ['private-key', 'vendor-token', 'bearer', 'url-password', 'flag', 'assigned', 'email']
+const WAS = ['vendor-token', 'email'] // EXAMPLES' rule in the old file, in their order
+const OFF = /^off[ \t]+(\S+)$/
 export const migrate = (t: string) => {
-  const lines = t.split('\n').map(l => l.trim())
-  const mark = lines.findIndex(l => LEGACY.includes(l))
-  const oldest = mark < 0 && lines[0] === OLDEST
-  // or one with no header that has options in the old place, which this format would skip
-  if (mark < 0 && !oldest && !lines.some(l => !l.startsWith('#') && /\s#!(\s|$)/.test(l))) return undefined
-  const seen = new Set<string>()
-  const out: string[] = []
-  let notes: string[] = [] // the comment above the next pattern, dropped with a built-in rule
-  for (const l of lines.slice(mark >= 0 ? mark + 1 : oldest ? 6 : 0)) {
-    if (l === LEGACY_HERE) continue
-    if (l.startsWith('#')) { notes.push(l); continue }
-    if (!l) { out.push(...notes.splice(0), l); continue }
-    const line = convert(l)
-    const builtin = BUILTIN.find(r => unesc(r.line) === unesc(line))
-    if (builtin) seen.add(builtin.id)
-    else out.push(...notes, line)
-    notes = []
-  }
-  out.push(...notes)
-  const off = mark < 0 ? [] : BUILTIN.filter(r => !seen.has(r.id)).map(r => `off ${r.id}`)
-  const body = [...off, '', ...out].join('\n').replace(/\n{3,}/g, '\n\n').trim()
-  return HEADER + (body ? `${body}\n` : '')
+  const lines = parse(t)
+  const off = new Set(lines.flatMap(l => OFF.exec(l.line)?.[1] ?? []))
+  const left = OLD_RULES.filter(id => !off.has(id))
+  const examples = EXAMPLES.map((r, i) => ({ ...r, enabled: left.includes(WAS[i]!) }))
+  let lost = 0
+  const rules = lines.flatMap(l => {
+    if (OFF.test(l.line)) return []
+    try { return [{ ...l.name ? { name: l.name } : {}, ...read(l.line) }] } catch { lost++; return [] }
+  })
+  return { text: json([...examples, ...rules]), gone: left.filter(id => !WAS.includes(id)), lost }
 }
 
-// The file's patterns as last read, and compiled, and where the file is; one per load. Read
-// again at every masking, so an edit by hand or a pattern another session added masks here too;
-// a failed read keeps the last list. The vault being loaded, and the queue its saves wait in;
-// whether the terminal draws placeholders (`raw`), the settings patterns that did not compile,
-// and the status line last set. These helpers sit at the top of the file because the engine only
-// follows `$` into such functions.
-type Tab = 'session' | 'patterns' | 'help'
-const TABS: Record<string, Tab> = { '': 'session', show: 'session', session: 'session', patterns: 'patterns', test: 'patterns', guide: 'help', help: 'help' }
-// stored: the file's pattern lines, an `off` line naming no rule among them; off: the rules it turns off
-type Kept = { stored: string[]; names: (string | undefined)[]; off: Set<string>; compiled: Pattern[]; last?: string; file?: Promise<string>; seeded?: boolean; note: string
+// The file's rules as last read, and compiled, and where the file is; one per load. Read again at
+// every masking, so an edit by hand or a rule another session added masks here too; a text that
+// does not parse keeps the last rules (`broken` says why). The vault being loaded, and the queue
+// its saves wait in; whether the terminal draws placeholders (`raw`), the settings patterns that
+// did not compile and how many did (`extra`), and the status line last set. These helpers sit at
+// the top of the file because the engine only follows `$` into such functions.
+type Tab = 'session' | 'rules' | 'help'
+const TABS: Record<string, Tab> = { '': 'session', show: 'session', session: 'session', rules: 'rules', patterns: 'rules', test: 'rules', guide: 'help', help: 'help' }
+type Kept = { rules: unknown[]; compiled: Pattern[]; broken?: string; last?: string; file?: Promise<string>; seeded?: boolean; note: string; extra: number
   vault?: { id: string; held: Promise<Held> }; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; opened?: boolean; tab: Tab; sample: string }
 // CLAUDE_CONFIG_DIR, else ~/.claude; USERPROFILE is Windows' HOME
 const place = ($: EngineInterface, k: Kept) => k.file ??= (async () => {
   const dir = await $.env.get('CLAUDE_CONFIG_DIR') || `${await $.env.get('HOME') || await $.env.get('USERPROFILE') || '~'}/.claude`
   return `${dir.replace(/[\\/]+$/, '')}/${FILE}`
 })()
-// The file's text, undefined when it is there but did not read. None at all reads as the header
-// (and a list an older version kept in the store, below it), and one an older version wrote in
-// this format (`migrate`), written back once per load: a write that fails still masks with it.
+// The file's text, undefined when it, or the old patterns file it would be made from, is there
+// but did not read. None at all is made once per load, from the old patterns file when there is
+// one (`migrate`, and a toast of what changed), else from the examples: a write that fails still
+// masks with it.
 const text = async ($: EngineInterface, k: Kept, path: string) => {
-  const there = await $.fs.exists(path).catch(() => true)
-  const t = there ? await $.fs.read(path).then(String, () => undefined) : ''
-  if (t === undefined) return t
-  let next = there ? migrate(t) : undefined, moved = false
-  if (!there) {
-    const old = await $.store.get(STORED).catch(() => undefined)
-    const lines = Array.isArray(old) ? old.filter(s => typeof s === 'string') : []
-    moved = lines.length > 0
-    next = HEADER + lines.map(s => `${convert(s)}\n`).join('')
-  }
-  if (next === undefined) return t
+  if (await $.fs.exists(path).catch(() => true)) return $.fs.read(path).then(String, () => undefined)
+  const old = path.replace(/[^\\/]+$/, OLD_FILE)
+  const was = await $.fs.exists(old).catch(() => true) ? await $.fs.read(old).then(String, () => null) : undefined
+  if (was === null) return undefined
+  const moved = was === undefined ? undefined : migrate(was)
+  const next = moved?.text ?? json(EXAMPLES)
   if (!k.seeded) {
     k.seeded = true
     await $.fs.write(path, next).then(
-      () => { if (moved) return $.store.delete(STORED).catch(() => {}) }, // left, it is never read again: the file is there
+      () => {
+        if (!moved) return
+        const gone = moved.gone.length ? ` ${moved.gone.join(', ')} ${moved.gone.length > 1 ? 'were' : 'was'} on and ${moved.gone.length > 1 ? 'mask' : 'masks'} nothing now.` : ''
+        const lost = moved.lost ? ` ${moved.lost} line${moved.lost > 1 ? 's' : ''} that did not read stayed behind.` : ''
+        told($, `redact: your patterns moved from ${OLD_FILE} to ${FILE}; redact ships no built-in rules now.${gone}${lost} /redact rules lists what is on.`)
+      },
       err => $.ui.log(`redact: ${FILE} not written: ${(err as Error)?.message ?? err}`, { to: 'debug' }))
   }
   return next
 }
-// the file's patterns from its text, compiled again only when the text changed: the built-in
-// rules it leaves on, then its own
+// the rules from the file's text, compiled again only when the text changed
 const take = (k: Kept, t: string) => {
   if (t === k.last) return
   k.last = t
-  const lines = parse(t)
-  const off = (l: Line) => !fault(l.line) && OFF.exec(l.line)?.[1]
-  k.off = new Set(lines.flatMap(l => off(l) || []))
-  const own = lines.filter(l => !off(l))
-  k.stored = own.map(l => l.line)
-  k.names = own.map(l => l.name)
-  k.compiled = [...defaults.filter((_, i) => !k.off.has(BUILTIN[i]!.id)), ...compile(own, YOURS)]
+  let rules: unknown
+  try { rules = JSON.parse(t)?.rules } catch {}
+  if (!Array.isArray(rules)) { k.broken = 'is no JSON object with a rules list'; return }
+  k.broken = undefined
+  k.rules = rules
+  k.compiled = compile(rules, YOURS)
 }
 const sync = async ($: EngineInterface, k: Kept) => {
   const t = await text($, k, await place($, k))
   if (t !== undefined) take(k, t)
 }
-// Writes the file's lines as `f` changes them, comments and all; a file that did not read is
-// left alone, never written over.
-const save = async ($: EngineInterface, k: Kept, f: (lines: string[]) => string[]) => {
+// Writes the file's rules as `f` changes them, its other keys kept; a file that did not read or
+// parse is left alone, never written over. Undefined when saved, else why not.
+const save = async ($: EngineInterface, k: Kept, f: (rules: unknown[]) => unknown[]) => {
   const path = await place($, k)
   const t = await text($, k, path)
-  if (t === undefined) throw new Error(`${FILE} did not read`)
-  const next = f(t.replace(/\n$/, '').split('\n')).join('\n') + '\n'
-  await $.fs.write(path, next)
+  if (t === undefined) return `not saved: ${FILE} did not read`
+  take(k, t)
+  if (k.broken) return `not saved: ${FILE} ${k.broken}; fix it by hand`
+  const next = JSON.stringify({ ...JSON.parse(t), rules: f(k.rules) }, null, 2) + '\n'
+  try { await $.fs.write(path, next) } catch (err) { return `not saved: ${(err as Error)?.message ?? err}` }
   take(k, next)
   $.ui.invalidate('ui.render')
+  return undefined
 }
-// turns a built-in rule off (an `off <id>` line) or back on (that line dropped)
-const turn = async ($: EngineInterface, k: Kept, id: string, on: boolean) => {
+// a rule by its number, its name or its pattern; -1 when none is
+const pick = (k: Kept, ref: string) => /^\d+$/.test(ref) && k.rules[Number(ref) - 1] !== undefined ? Number(ref) - 1
+  : ref ? k.rules.findIndex((r: any) => r?.name === ref || r?.pattern === ref) : -1
+// No reply names a rule by more than its number: a reply to a typed command can reach the model.
+const NONE = 'no such rule: give its number or name (/redact rules lists them)'
+// turns a rule on or off
+const turn = async ($: EngineInterface, k: Kept, ref: string, on: boolean) => {
   await sync($, k)
-  if (!BUILTIN.some(r => r.id === id)) return `no such rule: ${id || '(none given)'}; the rules are ${BUILTIN.map(r => r.id).join(', ')}`
-  if (k.off.has(id) !== on) return `already ${on ? 'on' : 'off'}: ${id}`
-  await save($, k, lines => on ? lines.filter(l => OFF.exec(l.trim())?.[1] !== id) : [...lines, `off ${id}`])
-  return `${id} ${on ? 'on' : 'off'}: from the next message on`
+  const i = pick(k, ref)
+  if (i < 0) return NONE
+  if (isOn(k.rules[i]) === on) return `already ${on ? 'on' : 'off'}: #${i + 1}`
+  return await save($, k, rules => rules.map((r, j) => j === i ? { ...r as object, enabled: on } : r))
+    ?? `#${i + 1} ${on ? 'on' : 'off'}: from the next message on`
 }
-// a typed pattern as the file holds it: one starting with # takes a label, as such a line is a comment
-const asLine = (typed: string) => typed.startsWith('#') ? `SECRET: ${typed}` : typed
 const add = async ($: EngineInterface, k: Kept, typed: string) => {
   await sync($, k)
   if (!typed) return 'nothing added: give a regex'
-  const line = asLine(typed)
-  const f = fault(line)
-  if (f) return `not added: ${f}`
-  const off = OFF.exec(line)?.[1]
-  if (off) return turn($, k, off, false)
-  if (k.stored.includes(line)) return `already there, as #${k.stored.indexOf(line) + 1}`
-  await save($, k, lines => [...lines, line])
-  return `added as #${k.stored.length}: it masks from the next message on`
+  let rule: Rule
+  try { rule = read(typed) } catch (err) { return `not added: ${(err as Error).message}` }
+  const at = k.rules.findIndex((r: any) => r?.pattern === rule.pattern && (r?.replacement ?? 'SECRET') === rule.replacement)
+  if (at >= 0) return `already there, as #${at + 1}`
+  return await save($, k, rules => [...rules, rule]) ?? `added as #${k.rules.length}: it masks from the next message on`
 }
-const remove = async ($: EngineInterface, k: Kept, line: string | undefined) => {
-  const i = line === undefined ? -1 : k.stored.indexOf(line)
-  if (i < 0) return 'no such pattern'
-  await save($, k, lines => { const at = lines.findIndex(l => l.trim() === line); return lines.filter((_, j) => j !== at) })
-  return `removed #${i + 1}` // not the pattern: a reply to a typed command can reach the model
+const remove = async ($: EngineInterface, k: Kept, ref: string) => {
+  await sync($, k)
+  const i = pick(k, ref)
+  if (i < 0) return NONE
+  return await save($, k, rules => rules.filter((_, j) => j !== i)) ?? `removed #${i + 1}`
 }
 
 // /redact's reply to its arguments, undefined for the pane. It answers in a toast, never as text:
 // a command's output row is one the model reads, and none of /redact is its business
 // (prompt.submit drops the line itself).
-const USAGE = 'show | patterns | guide | test [text] | add <pattern> | remove <n|pattern> | off <rule> | on <rule>'
+const USAGE = 'show | rules | guide | test [text] | add <rule> | remove <n|name> | on <n|name> | off <n|name>'
 const answer = async ($: EngineInterface, k: Kept, fromSettings: Pattern[], args: string) => {
   const [, verb = '', rest = ''] = /^\s*(\S*)\s*([\s\S]*?)\s*$/.exec(args) ?? []
   if (verb === 'add') return add($, k, rest)
   if (verb === 'off' || verb === 'on') return turn($, k, rest, verb === 'on')
-  // by its number, or by the pattern itself; a number in range is read as the number
-  if (verb === 'remove') { await sync($, k); return remove($, k, /^\d+$/.test(rest) && k.stored[Number(rest) - 1] !== undefined ? k.stored[Number(rest) - 1] : asLine(rest)) }
+  if (verb === 'remove') return remove($, k, rest)
   if (verb === 'test' && rest) {
     await sync($, k)
-    k.tab = 'patterns'; k.note = ''; k.sample = rest
+    k.tab = 'rules'; k.note = ''; k.sample = rest
     await $.ui.open({ id: PANE, title: TITLE, focus: true }); k.opened = true
     $.ui.invalidate('ui.render')
     const trial = fresh()
     const out = mask(rest, trial, [...k.compiled, ...fromSettings])
     const hits = masked(trial)
-    return hits.length ? `→ ${out} (${hits.map(x => `${x.p} by ${x.by}`).join(', ')})` : 'no pattern matched'
+    return hits.length ? `→ ${out} (${hits.map(x => `${x.p} by ${x.by}`).join(', ')})` : k.compiled.length + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on'
   }
   const tab = !rest ? TABS[verb] : undefined
   if (tab) { k.tab = tab; k.note = ''; await $.ui.open({ id: PANE, title: TITLE, focus: true }); k.opened = true; return undefined }
@@ -494,7 +421,10 @@ const told = ($: EngineInterface, text: string) => { try { $.ui.toast(text) } ca
 // though the terminal draws the real values back. Set only when it changes.
 const badge = ($: EngineInterface, k: Kept, h: Held) => {
   const n = Object.keys(h.v.ph).length
-  const line = [`redact: ${n} masked`, ...k.skipped.length ? [`skipped pattern ${k.skipped.join(', ')} (/redact show)`] : [],
+  // with no rule on, a count alone would read as protected: nothing new is masked
+  const line = [`redact: ${n} masked`, ...k.compiled.length + k.extra ? [] : ['no rules on'],
+    ...k.broken ? [`${FILE} ${k.broken}, last rules kept (/redact rules)`] : [],
+    ...k.skipped.length ? [`skipped pattern ${k.skipped.join(', ')} (/redact show)`] : [],
     ...k.raw ? ['drawn as the model reads it'] : []].join(' · ')
   if (line === k.shown) return
   k.shown = line
@@ -541,8 +471,7 @@ const keep = ($: EngineInterface, k: Kept, h: Held) => {
     catch (err) { h.dirty = true; throw err }
   })
 }
-// One hook's masking: the session's vault with the file's patterns (the built-in rules among
-// them), then the settings'.
+// One hook's masking: the session's vault with the file's rules that are on, then the settings'.
 const masker = async ($: EngineInterface, k: Kept, fixed: readonly Pattern[]) => {
   await sync($, k)
   const h = await hold($, k)
@@ -567,16 +496,16 @@ const prune = async ($: EngineInterface) => {
 // `claude plugin disable` get past it.
 // its file, a glob over the folder, or the folder itself (`rm -rf …/store`)
 const STORE = /plugins[\\/]+store(?:[\\/]+(?:redact|[^\s'"]*[*?[])|[\\/]*(?=[\s'";|&)]|$))/i
-// Bash and the patterns file: its name (FILE), a glob at the top of a `.claude` folder
+// Bash and the rules file: its name (FILE), a glob at the top of a `.claude` folder
 // (`cat ~/.claude/*`), or a recursive reader or copier naming that folder. A bare `ls ~/.claude`
 // passes, and so does the word claude (`grep -rn claude .`, `~/dotagents/claude/*`). A
 // CLAUDE_CONFIG_DIR not named .claude gets the name rule only.
-const PATTERNS_SH = /redact-patterns\.txt|(?:^|[\s'"=~\\/])\.claude[\\/]+[^\s'"\\/]*[*?[]|\b(?:grep|rg|ag|ack|find|tar|zip|rsync|cp|scp)\b[^|;&\n]*(?:^|[\s'"=~\\/])\.claude[\\/]*(?=[\s'";|&)]|$)/i
+const RULES_SH = /redact-rules\.json|(?:^|[\s'"=~\\/])\.claude[\\/]+[^\s'"\\/]*[*?[]|\b(?:grep|rg|ag|ack|find|tar|zip|rsync|cp|scp)\b[^|;&\n]*(?:^|[\s'"=~\\/])\.claude[\\/]*(?=[\s'";|&)]|$)/i
 // where a path lands, `/`-separated and lowercased (a case alias on Windows and macOS), else as
 // spelled; a Grep with no path searches the working directory
 const land = async ($: EngineInterface, p: string) =>
   ((await $.fs.stat(p, { resolve: true }).catch(() => undefined))?.realPath ?? p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
-// a file tool's path that lands on the patterns file, or a Grep over a folder that holds it
+// a file tool's path that lands on the rules file, or a Grep over a folder that holds it
 const reaches = async ($: EngineInterface, e: any, file: string) => {
   const p = e.tool === 'Grep' ? String(e.path ?? '.') : e.file_path ?? e.notebook_path ?? e.path
   if (typeof p !== 'string' || !p) return false
@@ -598,7 +527,7 @@ const ours = (text: string) => {
   } catch { return undefined }
 }
 const tamper = async ($: EngineInterface, e: any, file: string) => {
-  if (e.tool === 'Bash') return STORE.test(e.command) || PATTERNS_SH.test(e.command) || (SETTINGS_SH.test(e.command) && /redact/i.test(e.command))
+  if (e.tool === 'Bash') return STORE.test(e.command) || RULES_SH.test(e.command) || (SETTINGS_SH.test(e.command) && /redact/i.test(e.command))
   if (await reaches($, e, file)) return true
   if (!WRITES[e.tool]) return false
   const path = String(e.file_path ?? e.notebook_path ?? '')
@@ -612,28 +541,27 @@ const tamper = async ($: EngineInterface, e: any, file: string) => {
 }
 
 export const register: Register = (on, options) => {
-  // The `patterns` option, lines in the patterns file's format, masked after the built-in rules
-  // and the file's; an `off` line there turns nothing off.
+  // The `patterns` option, lines in /redact add's short form, masked after the file's rules.
   // One that does not compile is skipped, the rest stay on. They run in each hook's budget: a slow
   // one gets the text withheld by the `.catch`es below, never passed on, so bounding its repeats
   // is the user's call.
   // an unset option reads as '', a line no pattern holds
   const settings = (typeof options.patterns === 'string' ? [options.patterns] : Array.isArray(options.patterns) ? options.patterns : [])
     .map(l => String(l).trim()).filter(Boolean)
-  const fromSettings = compile(settings.map(line => ({ line })), 'pattern from settings')
-  const skipped = settings.flatMap((src, i) => fault(src) ? [`#${i + 1}`] : [])
+  const fromSettings = compile(settings.flatMap(line => lineFault(line) ? [] : [read(line)]), 'pattern from settings')
+  const skipped = settings.flatMap((src, i) => lineFault(src) ? [`#${i + 1}`] : [])
   // note: the pane's answer to its last add, remove or forget
-  const kept: Kept = { stored: [], names: [], off: new Set(), compiled: defaults, note: '', saving: Promise.resolve(), raw: false, skipped, revealed: new Set(), tab: 'session', sample: '' }
+  const kept: Kept = { rules: [], compiled: [], note: '', extra: fromSettings.length, saving: Promise.resolve(), raw: false, skipped, revealed: new Set(), tab: 'session', sample: '' }
   // The tamper guard is off while redact is being developed (it refuses the work on its own
   // files); the tests turn it on with this undeclared option. Default it back to on before release.
   const guarded = options.guard === true
   const failed = (where: string, kind: string) => `redact could not mask ${where} (${kind})`
 
   on('session.start', async ($, e, next) => {
-    try { await $.command.register({ name: 'redact', description: 'Show the redact pane, test or manage patterns, turn built-in rules off or on, and forget held values.', argumentHint: USAGE }) }
+    try { await $.command.register({ name: 'redact', description: 'Show the redact pane, test, add or remove rules, turn them on or off, and forget held values.', argumentHint: USAGE }) }
     catch (err) { $.ui.log(`redact: /redact not registered: ${(err as Error)?.message ?? err}`, { to: 'debug' }) } // throws on hot reload (no session bound yet)
     try { await prune($) } catch (err) { $.ui.log(`redact: old vaults not pruned: ${(err as Error)?.message ?? err}`, { to: 'debug' }) }
-    try { badge($, kept, await hold($, kept)) } // a --resume starts with a vault
+    try { await sync($, kept); badge($, kept, await hold($, kept)) } // a --resume starts with a vault
     catch (err) { $.ui.log(`redact: vault not loaded: ${(err as Error)?.message ?? err}`, { to: 'debug' }) }
     return next(e)
   })
@@ -665,7 +593,7 @@ export const register: Register = (on, options) => {
     return next(text === e.text ? e : { ...e, text })
   }).catch((_, _e, next) => ({ drop: `${failed('this prompt', next.error.kind)}, so it was not sent.` }))
 
-  // /redact's own arguments are a regex for the patterns file, not text for the model.
+  // /redact's own arguments are a rule for the rules file, not text for the model.
   on('command.run', async ($, e, next) => {
     if (e.command === 'redact' || !e.args) return next(e)
     const { m, done } = await masker($, kept, fromSettings)
@@ -756,7 +684,7 @@ export const register: Register = (on, options) => {
       return { deny: `${names} ${isNo} this session's redact vault holds, so its real value cannot be put back. Use the placeholders exactly as they appear in the conversation, or ask the user. To write one as literal text (a doc, a report), put ! after its opening bracket: ${escaped}.` }
     }
     if (guarded && await tamper($, input, await place($, kept))) {
-      return { deny: `this call would reach the redact plugin's own config (its patterns file, its store of vaults, or its entries in a settings file), which decides what gets masked. Ask the user to make that change: they edit the file themselves, or use /redact show.` }
+      return { deny: `this call would reach the redact plugin's own config (its rules file, its store of vaults, or its entries in a settings file), which decides what gets masked. Ask the user to make that change: they edit the file themselves, or use /redact show.` }
     }
     return next(input)
   }).catch(async (_, e, next) => ({
@@ -793,7 +721,7 @@ export const register: Register = (on, options) => {
     await sync($, kept)
     const file = await place($, kept)
     const vault = masked(await hold($, kept))
-    const { stored, names, note, tab, sample } = kept
+    const { rules, note, tab, sample } = kept
     const { Box, Text, Button } = $.ui.resolve(e)
     const w = Math.max(1, e.props.bodyColumns ?? 80)
     const len = (s: string) => [...s].length
@@ -835,10 +763,10 @@ export const register: Register = (on, options) => {
     const reveal = (p: string) => { kept.revealed.has(p) ? kept.revealed.delete(p) : kept.revealed.add(p); $.ui.invalidate('ui.render') }
     // a long pattern is cut in the middle, so its row keeps the remove button on a narrow terminal
     const pattern = (text: string) => <Box flexShrink={1}><Text wrap="truncate-middle">{text}</Text></Box>
-    const skip = (src: string) => { const f = fault(src); return f ? <Text color="red"> skipped: {f}</Text> : null }
-    const broken = stored.filter(fault).length + settings.filter(fault).length
-    const label = (line: string) => { try { const r = read(line); return 'off' in r ? null : <Text dimColor> as {r.label}</Text> } catch { return null } }
-    const lit = BUILTIN.filter(r => !kept.off.has(r.id)).length
+    const skip = (f: string | undefined) => f ? <Text color="red"> skipped: {f}</Text> : null
+    const broken = rules.filter(fault).length + settings.filter(lineFault).length + (kept.broken ? 1 : 0)
+    const label = (r: unknown) => fault(r) ? null : <Text dimColor> as {spec(r).label}</Text>
+    const lit = kept.compiled.length
     const trial = fresh()
     const preview = sample ? mask(sample, trial, [...kept.compiled, ...fromSettings]) : ''
     const hits = sample ? masked(trial) : []
@@ -855,7 +783,7 @@ export const register: Register = (on, options) => {
           <Box flexWrap="wrap" columnGap={2} justifyContent="space-between">
             <Box flexWrap="wrap" columnGap={2}>
               {tabBtn('session', `This session (${vault.length})`, 's')}
-              {tabBtn('patterns', `Patterns (${lit + stored.length + settings.length})`, 'p')}
+              {tabBtn('rules', `Rules (${lit + fromSettings.length} on)`, 'r')}
               {tabBtn('help', 'Guide', 'h')}
               {broken > 0 && <Text color="red">✗ {broken} skipped</Text>}
             </Box>
@@ -866,7 +794,7 @@ export const register: Register = (on, options) => {
               </Box>
             )}
           </Box>
-          {note && <Text color={/^(not added|nothing added|already|no such)/.test(note) ? 'warning' : undefined} dimColor={!/^(not added|nothing added|already|no such)/.test(note)}>{note}</Text>}
+          {note && <Text color={/^(not added|not saved|nothing added|already|no such)/.test(note) ? 'warning' : undefined} dimColor={!/^(not added|not saved|nothing added|already|no such)/.test(note)}>{note}</Text>}
         </Box>
         {tab === 'session' && (
           <Box flexDirection="column">
@@ -889,7 +817,7 @@ export const register: Register = (on, options) => {
             ))}
           </Box>
         )}
-        {tab === 'patterns' && (
+        {tab === 'rules' && (
           <Box flexDirection="column" gap={1}>
             <Box flexDirection="column">
               <Box gap={1}>
@@ -901,61 +829,54 @@ export const register: Register = (on, options) => {
                 <Box flexDirection="column">
                   <Text>  → {preview}</Text>
                   {hits.length === 0
-                    ? <Text dimColor>    no pattern matched</Text>
+                    ? <Text dimColor>    {lit + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on'}</Text>
                     : hits.map(x => <Text key={x.p} dimColor>    {x.p} {shown(x.p, x.v)} · masked by {x.by}</Text>)}
                 </Box>
               )}
             </Box>
             <Box flexDirection="column">
-              {section('sec-builtin', 'Built-in', `${lit} of ${BUILTIN.length} on`)}
-              <Text dimColor>  shipped with redact and updated with it; off writes off &lt;id&gt; to your file</Text>
-              {BUILTIN.map((r, i) => {
-                const off = kept.off.has(r.id)
+              {section('sec-rules', 'Rules', `${lit} of ${rules.length} on`)}
+              <Text dimColor>  in {file}, for every project; edit it by hand or here</Text>
+              {kept.broken && <Text color="red">  {FILE} {kept.broken}: masking with the last rules read until it is fixed by hand</Text>}
+              {addField}
+              {rules.length === 0 && <Text dimColor>  none yet</Text>}
+              {rules.map((r: any, i) => {
+                const src = typeof r?.pattern === 'string' ? r.pattern : JSON.stringify(r)
+                const name = typeof r?.name === 'string' && r.name ? r.name : undefined
+                const f = fault(r), enabled = isOn(r)
                 return (
-                  <Box key={`builtin-${r.id}`} flexDirection="column">
+                  <Box key={`rule-${i}`} flexDirection="column">
+                    {/* a named rule gets its name on its own line and the regex dimmed below it:
+                        on one line, a long regex buried the name */}
                     <Box gap={1}>
-                      <Box flexShrink={1}><Text wrap="truncate-end" dimColor={off}>  {r.name}</Text><Text dimColor> {r.id} · as {defaults[i]!.label}</Text></Box>
-                      <Box flexShrink={0}><Button key={`turn-${r.id}`} label={off ? 'turn on' : 'turn off'} plain onPress={async () => redraw(await turn($, kept, r.id, off))}><Text color={off ? undefined : 'green'} dimColor={off}>{off ? '○ off' : '● on'}</Text></Button></Box>
+                      <Box flexShrink={1}>{pattern(`  ${i + 1}. ${name ?? src}`)}{label(r)}{skip(f)}</Box>
+                      <Box flexShrink={0}><Button key={`turn-${i}`} label={enabled ? 'turn off' : 'turn on'} plain onPress={async () => redraw(await turn($, kept, `${i + 1}`, !enabled))}><Text color={enabled && !f ? 'green' : undefined} dimColor={!enabled || !!f}>{enabled ? '● on' : '○ off'}</Text></Button></Box>
+                      <Box flexShrink={0}><Button key={`remove-${i}`} label="remove" plain onPress={async () => redraw(await remove($, kept, `${i + 1}`))}><Text color="red">✗</Text></Button></Box>
                     </Box>
-                    <Text dimColor wrap="truncate-end">{`     ${r.note}`}</Text>
+                    {name && <Text dimColor wrap="truncate-middle">{`     ${src}`}</Text>}
                   </Box>
                 )
               })}
             </Box>
             <Box flexDirection="column">
-              {section('sec-yours', 'Yours', `${stored.length} in ${FILE}`)}
-              <Text dimColor>  in {file}, for every project; edit it by hand or here</Text>
-              {addField}
-              {stored.length === 0 && <Text dimColor>  none yet</Text>}
-              {stored.map((src, i) => (
-                <Box key={`yours-${i}`} flexDirection="column">
-                  {/* a named pattern gets its name on its own line and the regex dimmed below it:
-                      on one line, a long regex buried the name */}
-                  <Box gap={1}>
-                    <Box flexShrink={1}>{pattern(`  ${i + 1}. ${names[i] ?? src}`)}{label(src)}{skip(src)}</Box>
-                    <Box flexShrink={0}><Button key={`remove-${i}`} label="remove" plain onPress={async () => redraw(await remove($, kept, src))}><Text color="red">✗</Text></Button></Box>
-                  </Box>
-                  {names[i] && <Text dimColor wrap="truncate-middle">{`     ${src}`}</Text>}
-                </Box>
-              ))}
-            </Box>
-            <Box flexDirection="column">
               {section('sec-settings', 'From settings', settings.length ? `${settings.length} set` : 'none')}
-              <Text dimColor>  the patterns option in settings.json</Text>
+              <Text dimColor>  the patterns option in settings.json, always on</Text>
               {settings.length === 0 && <Text dimColor>  none</Text>}
-              {settings.map((src, i) => <Box key={`set-${i}`}>{pattern(`  ${src}`)}{label(src)}{skip(src)}</Box>)}
+              {settings.map((src, i) => <Box key={`set-${i}`}>{pattern(`  ${src}`)}{lineFault(src) ? null : label(read(src))}{skip(lineFault(src))}</Box>)}
             </Box>
           </Box>
         )}
         {tab === 'help' && (
           <Box flexDirection="column" gap={1}>
             <Box flexDirection="column">
-              {section('sec-format', 'Pattern format', FILE)}
-              <Text dimColor>{'  LABEL: regex    masks each match as LABEL_n; a bare regex masks as SECRET'}</Text>
-              <Text dimColor>{'  LABEL i: regex  options between label and colon: i min=N strong prose'}</Text>
+              {section('sec-format', 'Rule format', FILE)}
+              <Text dimColor>{'  pattern         a JavaScript regex; each match is masked whole'}</Text>
+              <Text dimColor>{'  replacement     the placeholder\'s label, capitals, digits and _: API_KEY masks as API_KEY_n'}</Text>
+              <Text dimColor>{'  enabled         false turns a rule off; the two examples start off'}</Text>
+              <Text dimColor>{'  name            what the pane and the vault call it'}</Text>
+              <Text dimColor>{'  options         ignoreCase, strong, prose: true; min: N'}</Text>
               <Text dimColor>{'  (?<v>...)       masks only group v (or v2), keeping prefix and suffix around it'}</Text>
-              <Text dimColor>{'  off <id>        turns a built-in rule off; the ids are under Patterns'}</Text>
-              <Text dimColor>{'  # Name          the comment line right above a pattern names it'}</Text>
+              <Text dimColor>{'  /redact add     LABEL [i min=N strong prose]: regex, or a bare regex as SECRET'}</Text>
             </Box>
             <Box flexDirection="column">
               {section('sec-escape', 'Placeholders & escaping')}

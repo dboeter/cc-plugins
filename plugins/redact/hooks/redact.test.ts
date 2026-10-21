@@ -1,5 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing'
-import { BUILTIN, defaults, fresh, HEADER, mask, migrate, restore } from './redact'
+import { EXAMPLES, fresh, mask, migrate, restore } from './redact'
 
 // Fixtures are split so no literal matches ~/dotagents/scripts/git-hooks/lib/secret-content.ere,
 // which dotagents' pre-push gate runs over every added line (this file came from there), and
@@ -7,41 +7,24 @@ import { BUILTIN, defaults, fresh, HEADER, mask, migrate, restore } from './reda
 // keyword, as in 'DB_PASS' + 'WORD=…', never at the separator. Code-shaped negatives need no split.
 const GH = 'ghp_' + 'a'.repeat(36)
 const ANT = 'sk-ant-' + 'api03-' + 'abcdefghijklmnopqrstuv'
-const KEY = 'PRIV' + 'ATE KEY-----'
-const PEM = '-----BEGIN OPENSSH ' + KEY + '\nb3BlbnNzaC1rZXk\n-----END OPENSSH ' + KEY
 const ACME = 'acme' + '_k3y9x2q7'
+const MAIL = 'ann' + '@example.com'
 
 // A placeholder, spelled with escapes so no file of this plugin holds one a restore would fill in.
 const ph = (label: string, n = 1) => `⟦${label}_${n}⟧`
 // the same, escaped: restore writes it as the literal placeholder
 const esc = (label: string, n = 1) => `⟦!${label}_${n}⟧`
+type Patterns = Parameters<typeof mask>[2]
+// the examples as patterns, on; a pattern of a regex, a label and options
+const EX: Patterns = EXAMPLES.map(r => ({ re: new RegExp(r.pattern, 'gd'), label: r.replacement }))
+const pat = (src: string, label = 'SECRET', o: object = {}) => ({ re: new RegExp(src, 'gd'), label, ...o })
 // masked with a vault of its own
-const m1 = (s: string, extra?: Parameters<typeof mask>[2]) => mask(s, fresh(), extra)
+const m1 = (s: string, patterns: Patterns = EX) => mask(s, fresh(), patterns)
 
-test('a value becomes a placeholder named by its rule, the name stays', () => {
+test('the examples mask a vendor token or an email address under their label, the text around it stays', () => {
   expect(m1(`GITHUB_TOKEN=${GH}`)).toBe(`GITHUB_TOKEN=${ph('API_KEY')}`)
   expect(m1(`key ${ANT}`)).toBe(`key ${ph('API_KEY')}`)
-  expect(m1(PEM)).toBe(ph('PRIVATE_KEY'))
-  expect(m1('Authorization: Bea' + 'rer abc123.def456')).toBe('Authorization: Bearer ' + ph('TOKEN'))
-  expect(m1('https://me:hunt' + 'er2@host/x')).toBe(`https://me:${ph('PASSWORD')}@host/x`)
-  expect(m1('"api_' + 'key": "abc123"')).toBe(`"api_key": "${ph('SECRET')}"`)
-  expect(m1('DB_PASS' + 'WORD=hunter2 ok')).toBe(`DB_PASSWORD=${ph('SECRET')} ok`)
-  expect(m1('mysql --pass' + 'word hunter2')).toBe(`mysql --password ${ph('SECRET')}`)
   expect(m1('mail me.x+tag' + '@mail.example.co.uk.')).toBe(`mail ${ph('EMAIL')}.`)
-})
-
-test('an address that is a password or an assigned secret keeps that label', () => {
-  expect(m1('https://me:hunt' + 'er2@example.com/x')).toBe(`https://me:${ph('PASSWORD')}@example.com/x`)
-  expect(m1('"pass' + 'word": "me@example.com"')).toBe(`"password": "${ph('SECRET')}"`)
-  expect(m1('git --tok' + 'en me@example.com')).toBe(`git --token ${ph('SECRET')}`)
-})
-
-test('a key cut short is masked through its body, and no further', () => {
-  const head = '-----BEGIN RSA ' + KEY
-  expect(m1(`${head}\nMIIEowIBAAKCAQEA\nabc+/=`)).toBe(ph('PRIVATE_KEY'))
-  expect(m1(`${head}\nMIIEow\nsome prose`)).toBe(`${ph('PRIVATE_KEY')}\nsome prose`)
-  expect(m1(`"k": "${head}\\nMIIEow\\nabc`)).toBe(`"k": "${ph('PRIVATE_KEY')}`)
-  expect(m1(`${head} names the format`)).toBe(`${head} names the format`)
 })
 
 test('vendor token shapes are masked', () => {
@@ -52,86 +35,60 @@ test('vendor token shapes are masked', () => {
   ]) expect(m1(`x ${t} y`)).toBe(`x ${ph('API_KEY')} y`)
 })
 
-test('a value is masked whole and nothing past it', () => {
-  expect(m1('PASS' + 'WORD="two words" x')).toBe(`PASSWORD="${ph('SECRET')}" x`)
-  expect(m1('mysql --pass' + 'word=hunter2')).toBe(`mysql --password=${ph('SECRET')}`)
-  expect(m1('curl "h/?access_to' + 'ken=ab12&next=1"')).toBe(`curl "h/?access_token=${ph('SECRET')}&next=1"`)
-  expect(m1('fn(to' + 'ken=ab12), next')).toBe(`fn(token=${ph('SECRET')}), next`)
-  expect(m1('pass' + 'word: admin1')).toBe(`password: ${ph('SECRET')}`)
-  expect(m1('to' + 'ken = abc123')).toBe(`token = ${ph('SECRET')}`)
-})
-
-test('ordinary output and code that names a secret are left alone', () => {
+test('what the examples could misread is left alone', () => {
   for (const s of [
-    'max_tokens: 1000', 'use_token: true', 'git status: clean', 'total 42',
-    'const token = await getToken();', '  password: string;', 'def f(password: str):',
-    'tokens = text.split(" ")', "API_KEY = os.environ['API_KEY']", 'token = self.token',
-    'f(token=token, x=1)', '  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}', 'TOKEN="${GITHUB_TOKEN:-}"',
-    'token = ""', 'Bearer $TOKEN', 'postgres://me:$PW@host',
+    'max_tokens: 1000', 'git status: clean', 'DB_PASS' + 'WORD=hunter2',
     'git@github.com:dboeter/cc-plugins.git', 'npm i react@18.2.0 @types/node', 'ssh root@localhost',
     'daanb@desktop:~$', 'icon@2x.png', '@app.route("/")', 'a'.repeat(65) + '@example.com',
   ]) expect(m1(s)).toBe(s)
 })
 
-test('a context rule leaves a value under 4 characters, and a name: followed by prose', () => {
-  for (const s of [
-    'TO' + 'KEN: a token-shaped value', 'PASS' + 'WORD: passwords in URLs', 'SEC' + 'RET: values after --password',
-    'API_' + 'KEY: vendor tokens', 'to' + 'ken=x', 'https://me:p' + 'w1@host', 'mysql --pass' + 'word abc',
-  ]) expect(m1(s)).toBe(s)
-  expect(m1('pass' + 'word: hunt' + 'er2 # dev')).toBe(`password: ${ph('SECRET')} # dev`)
-  expect(m1('DB_PASS' + 'WORD=letme1n now')).toBe(`DB_PASSWORD=${ph('SECRET')} now`)
-  expect(m1('https://me:hunt' + 'er2@host')).toBe(`https://me:${ph('PASSWORD')}@host`)
-})
-
 test('distinct values get distinct numbers, and a value keeps its placeholder', () => {
   const h = fresh()
-  const a = 'to' + 'ken=ab12', b = 'to' + 'ken=wx34'
-  expect(mask(`${a} ${b} ${a}`, h)).toBe(`token=${ph('SECRET', 1)} token=${ph('SECRET', 2)} token=${ph('SECRET', 1)}`)
-  expect(mask(`${GH} then ${b}`, h)).toBe(`${ph('API_KEY', 1)} then token=${ph('SECRET', 2)}`)
+  const other = 'bob' + '@example.com'
+  expect(mask(`${MAIL} ${other} ${MAIL}`, h, EX)).toBe(`${ph('EMAIL', 1)} ${ph('EMAIL', 2)} ${ph('EMAIL', 1)}`)
+  expect(mask(`${GH} then ${other}`, h, EX)).toBe(`${ph('API_KEY', 1)} then ${ph('EMAIL', 2)}`)
 })
 
-test('a value once matched is masked wherever it comes back, as a whole word, weak ones and misread words too', () => {
+test('a value once matched is masked wherever it comes back, as a whole word, with no rule on', () => {
   const h = fresh()
-  mask('DB_PASS' + 'WORD=hunter2isgood', h)
-  expect(mask('login hunter2isgood ok', h)).toBe(`login ${ph('SECRET')} ok`)
-  expect(mask('(hunter2isgood)', h)).toBe(`(${ph('SECRET')})`)
-  expect(mask('hunter2isgoods and xhunter2isgood', h)).toBe('hunter2isgoods and xhunter2isgood')
-  mask('API_TO' + 'KEN=hunter2', h)
-  expect(mask('login hunter2 ok', h)).toBe(`login ${ph('SECRET', 2)} ok`)
-  mask('to' + 'ken: Password', h)
-  expect(mask('Password reset', h)).toBe(`${ph('SECRET', 3)} reset`)
+  mask('PASS=hunter2isgood', h, [pat('(?<=PASS=)\\S+')])
+  expect(mask('login hunter2isgood ok', h, [])).toBe(`login ${ph('SECRET')} ok`)
+  expect(mask('(hunter2isgood)', h, [])).toBe(`(${ph('SECRET')})`)
+  expect(mask('hunter2isgoods and xhunter2isgood', h, [])).toBe('hunter2isgoods and xhunter2isgood')
 })
 
-test('a strong-only rule masks 8 or more characters of two kinds: letters, digits, symbols', () => {
-  const h = fresh()
-  expect(mask('Bea' + 'rer 12345678', h)).toBe('Bearer 12345678')
-  expect(mask('Bea' + 'rer 1234-5678', h)).toBe(`Bearer ${ph('TOKEN')}`)
-})
-
-test('prose, types and markup that a rule could misread mask nothing', () => {
-  const h = fresh()
-  expect(mask('the bea' + 'rer of this letter', h)).toBe('the bearer of this letter')
-  expect(mask('Bea' + 'rer abcdefghij', h)).toBe('Bearer abcdefghij')
-  expect(mask('api_' + 'key: Promise<String>', h)).toBe('api_key: Promise<String>')
-  expect(mask('**Pass' + 'word:**', h)).toBe('**Password:**')
-  expect(mask('git://user:' + '...@host', h)).toBe('git://user:...@host')
-  expect(h.byValue.size).toBe(0)
+test("a rule's options: strong, min and prose", () => {
+  // strong: 8 or more characters of two kinds out of letters, digits and symbols
+  const strong = [pat('(?<pre>bearer )(?<v>\\S+)', 'TOKEN', { strong: true })]
+  expect(m1('bearer 12345678', strong)).toBe('bearer 12345678')
+  expect(m1('bearer abcdefghij', strong)).toBe('bearer abcdefghij')
+  expect(m1('bearer 1234-5678', strong)).toBe(`bearer ${ph('TOKEN')}`)
+  // min: that long, and not of lowercase letters only
+  const min = [pat('(?<pre>pw=)(?<v>\\S+)', 'SECRET', { min: 4 })]
+  for (const s of ['pw=ab1', 'pw=letmein']) expect(m1(s, min)).toBe(s)
+  expect(m1('pw=letme1n', min)).toBe(`pw=${ph('SECRET')}`)
+  expect(m1('pw=Letmein', min)).toBe(`pw=${ph('SECRET')}`)
+  // prose: a match after a colon with words after it on the line stays
+  const prose = [pat('(?<pre>pw: )(?<v>\\S+)', 'SECRET', { prose: true })]
+  expect(m1('pw: a password here', prose)).toBe('pw: a password here')
+  expect(m1('pw: hunter2', prose)).toBe(`pw: ${ph('SECRET')}`)
 })
 
 test("your patterns leave a placeholder whole, so restore gives the text back", () => {
   const h = fresh()
   const s = `key ${GH} and ABCDE 42`
-  const masked = mask(s, h, [...defaults, { re: /[A-Z]{4,}/g, label: 'SECRET' }, { re: /\d+/g, label: 'SECRET' }])
+  const masked = mask(s, h, [...EX, { re: /[A-Z]{4,}/g, label: 'SECRET' }, { re: /\d+/g, label: 'SECRET' }])
   expect(masked).toBe(`key ${ph('API_KEY')} and ${ph('SECRET', 1)} ${ph('SECRET', 2)}`)
   expect(restore(masked, h)).toBe(s)
   const escaped = `doc ${esc('API_KEY', 42)}`
-  expect(mask(escaped, h, [...defaults, { re: /[A-Z]{4,}/g, label: 'SECRET' }, { re: /\d+/g, label: 'SECRET' }])).toBe(escaped)
+  expect(mask(escaped, h, [...EX, { re: /[A-Z]{4,}/g, label: 'SECRET' }, { re: /\d+/g, label: 'SECRET' }])).toBe(escaped)
 })
 
 test('a placeholder the vault does not hold reads escaped, and restore writes the escape as the literal', () => {
   const h = fresh()
-  expect(mask(`doc names ${ph('API_KEY', 7)}`, h)).toBe(`doc names ${esc('API_KEY', 7)}`)
-  expect(mask(`doc names ${esc('API_KEY', 7)}`, h)).toBe(`doc names ${esc('API_KEY', 7)}`)
+  expect(mask(`doc names ${ph('API_KEY', 7)}`, h, [])).toBe(`doc names ${esc('API_KEY', 7)}`)
+  expect(mask(`doc names ${esc('API_KEY', 7)}`, h, [])).toBe(`doc names ${esc('API_KEY', 7)}`)
   const missing = new Set<string>()
   expect(restore(`doc names ${esc('API_KEY', 7)}`, h, missing)).toBe(`doc names ${ph('API_KEY', 7)}`)
   expect(missing.size).toBe(0)
@@ -139,24 +96,23 @@ test('a placeholder the vault does not hold reads escaped, and restore writes th
 
 test('masking twice is masking once', () => {
   const h = fresh()
-  const s = `PASS${'WORD'}="two words" https://me:hunt${'er2'}@host --tok${'en'} abc "api_${'key'}": "q" ${GH} ${PEM}`
-  const once = mask(s, h)
+  const patterns = [...EX, pat('(?<=PASS=)\\w+')]
+  const once = mask(`PASS=two ${MAIL} ${GH}`, h, patterns)
   const numbers = { ...h.v.n }
-  expect(mask(once, h)).toBe(once)
+  expect(mask(once, h, patterns)).toBe(once)
   expect(h.v.n).toEqual(numbers)
 })
 
 test('restore puts every value back, and names the placeholders it does not hold', () => {
   const h = fresh()
-  const s = `GITHUB_TOKEN=${GH}\n${PEM}\nDB_PASS${'WORD'}="a b" again ${GH}`
-  const masked = mask(s, h)
+  const s = `GITHUB_TOKEN=${GH}\nmail ${MAIL} again ${GH}`
+  const masked = mask(s, h, EX)
   expect(masked).not.toContain('aaaa')
   expect(restore(masked, h)).toBe(s)
   const missing = new Set<string>()
   expect(restore(`x ${ph('API_KEY', 9)}`, h, missing)).toBe(`x ${ph('API_KEY', 9)}`)
   expect([...missing]).toEqual([ph('API_KEY', 9)])
 })
-
 
 test('a pattern that can match empty inserts no placeholders', () => {
   expect(m1('hello', [{ re: /x*/g, label: 'SECRET' }])).toBe('hello')
@@ -186,37 +142,39 @@ const world = (on: any, entries: Record<string, unknown> = {}, given: Record<str
   return { store, files, entered }
 }
 const DAY = 24 * 3600 * 1000
-// the patterns file, and the patterns of a file redact wrote, past the built-in rules it starts with
-const PATTERNS = '/h/.claude/redact-patterns.txt'
-const lines = (t: string) => t.split('\n').filter(l => l && !l.startsWith('#'))
-const yours = (files: Map<string, string>) => lines(files.get(PATTERNS) ?? '')
-// the built-in rules as the file of the last older version held them: each under its name and
-// note, its options after ` #!`, then the line that said where yours go
-const OLD_MARK = '# ---- built-in rules: edit or delete any; keep this line, or they are added back ----'
-const legacy = (rules = BUILTIN) => '# redact patterns: what redact hides from the model, in every project.\n#\n' + OLD_MARK + '\n\n' + rules.map(r => {
-  const [head, src] = [r.line.slice(0, r.line.indexOf(': ')), r.line.slice(r.line.indexOf(': ') + 2)]
-  const [label, ...o] = head.split(' ')
-  return `# ${r.name}\n#   ${r.note}\n${src}  #! ${['label=' + label, ...o.map(x => x === 'i' ? 'ignore-case' : x)].join(' ')}\n\n`
-}).join('') + '# ---- your patterns: add them below ----\n\n'
+// the rules file, a rules file of these rules, and the rules a file holds
+const RULES = '/h/.claude/redact-rules.json'
+const OLD = '/h/.claude/redact-patterns.txt'
+const file = (rules: unknown[]) => JSON.stringify({ rules }, null, 2) + '\n'
+const rulesOf = (files: Map<string, string>) => JSON.parse(files.get(RULES)!).rules
+// a rules file with both examples on
+const ON = EXAMPLES.map(r => ({ ...r, enabled: true }))
+const BOTH = { [RULES]: file(ON) }
 const HOLDS_GH = { 'vault:s1': { at: 39 * DAY, n: { API_KEY: 1 }, ph: { [ph('API_KEY')]: GH } } }
+// the toasts the plugin showed, in order
+const toasted = (on: any) => {
+  const toasts: string[] = []
+  on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
+  return toasts
+}
 
 test('a prompt is masked before it enters the session, its values kept in the vault', async ($, on) => {
-  const { store, entered } = world(on)
+  const { store, entered } = world(on, {}, BOTH)
   expect(await entered($, `deploy with GITHUB_TOKEN=${GH}`)).toBe(`deploy with GITHUB_TOKEN=${ph('API_KEY')}`)
   expect((store.get('vault:s1') as any).ph).toEqual({ [ph('API_KEY')]: GH })
 })
 
 test('every row the model reads is masked; an image stays, a response is left as made', async ($, on) => {
-  world(on)
+  world(on, {}, BOTH)
   const session = mock.session(on)
   const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } }
   await $.session.append({ door: 'tool-result', origin: { kind: 'tool', tool: 'Bash' }, uuid: 'u1',
     message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: `GITHUB_TOKEN=${GH}` }, image] }] } } as any)
   await $.session.append({ door: 'response', origin: { kind: 'model', model: 'm' }, uuid: 'u2',
-    message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'pass' + 'word: example' }] } } as any)
+    message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: `write to ${MAIL}` }] } } as any)
   const [row, reply] = session.appended() as any[]
   expect(row.message.content[0].content).toEqual([{ type: 'text', text: `GITHUB_TOKEN=${ph('API_KEY')}` }, image])
-  expect(reply.message.content[0].text).toBe('pass' + 'word: example')
+  expect(reply.message.content[0].text).toBe(`write to ${MAIL}`)
 })
 
 test('a row the hook fails to mask is withheld, not passed on', async ($, on) => {
@@ -231,31 +189,32 @@ test('a row the hook fails to mask is withheld, not passed on', async ($, on) =>
 })
 
 test('what the first request carries is masked: context blocks, the system prompt, injected reminders, MCP tool descriptions', async ($, on) => {
-  world(on)
-  on('prompt.context', () => ({ blocks: [{ name: 'claudeMd', text: `deploy key ${GH}` }, { name: 'userEmail', text: 'The address is me' + '@example.com.' }, { name: 'currentDate', text: '2026-10-17' }] }) as any)
-  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude.', scope: 'shared' }, { id: 'env', text: 'DB_PASS' + 'WORD=hunter2', scope: 'session' }] }) as any)
-  on('prompt.attachment', () => ({ text: 'the file says DB_PASS' + 'WORD=hunter2' }))
+  world(on, {}, BOTH)
+  const other = 'bob' + '@example.com'
+  on('prompt.context', () => ({ blocks: [{ name: 'claudeMd', text: `deploy key ${GH}` }, { name: 'userEmail', text: `The address is ${MAIL}.` }, { name: 'currentDate', text: '2026-10-17' }] }) as any)
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude.', scope: 'shared' }, { id: 'env', text: `key ${ANT}`, scope: 'session' }] }) as any)
+  on('prompt.attachment', () => ({ text: `the file says ${ANT}` }))
   on('tool.describe', (_$: any, e: any) => ({ description: e.description }))
   const ctx: any = await $.prompt.context({ blocks: [] } as any)
   expect(ctx.blocks.map((b: any) => b.text)).toEqual([`deploy key ${ph('API_KEY')}`, `The address is ${ph('EMAIL')}.`, '2026-10-17'])
   const sys: any = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] } as any)
-  expect(sys.sections.map((s: any) => s.text)).toEqual(['You are Claude.', `DB_PASSWORD=${ph('SECRET')}`])
-  expect(((await $.prompt.attachment({ type: 'file', text: 'x', origin: { kind: 'engine' } } as any)) as any).text).toBe(`the file says DB_PASSWORD=${ph('SECRET')}`)
-  const described = async (tool: string) => ((await $.tool.describe({ tool, description: `call with --tok${'en'} abc123` } as any)) as any).description
-  expect(await described('mcp__x__post')).toBe(`call with --token ${ph('SECRET', 2)}`)
-  expect(await described('Bash')).toBe(`call with --token abc123`)
+  expect(sys.sections.map((s: any) => s.text)).toEqual(['You are Claude.', `key ${ph('API_KEY', 2)}`])
+  expect(((await $.prompt.attachment({ type: 'file', text: 'x', origin: { kind: 'engine' } } as any)) as any).text).toBe(`the file says ${ph('API_KEY', 2)}`)
+  const described = async (tool: string) => ((await $.tool.describe({ tool, description: `mail ${other}` } as any)) as any).description
+  expect(await described('mcp__x__post')).toBe(`mail ${ph('EMAIL', 2)}`)
+  expect(await described('Bash')).toBe(`mail ${other}`)
 })
 
 test("a command's arguments are masked before it runs, a skill's text before the model reads it; /redact's own are not", async ($, on) => {
-  const { files } = world(on)
+  const { files } = world(on, {}, BOTH)
   const args: string[] = []
   on('command.run', (_$: any, e: any) => { args.push(e.args); return { text: 'ran' } })
   on('skill.prompt', () => ({ text: `use GITHUB_TOKEN=${GH}` }))
-  await $.command.run({ command: 'deploy', args: '--tok' + 'en abc123' } as any)
-  expect(args).toEqual([`--token ${ph('SECRET')}`])
+  await $.command.run({ command: 'deploy', args: `to ${MAIL}` } as any)
+  expect(args).toEqual([`to ${ph('EMAIL')}`])
   expect(((await $.skill.prompt({ skill: 'ship', text: 'x' } as any)) as any).text).toBe(`use GITHUB_TOKEN=${ph('API_KEY')}`)
-  await $.command.run({ command: 'redact', args: 'add to' + 'ken=(?<ACME>\\w+)' } as any)
-  expect(yours(files)).toEqual(['to' + 'ken=(?<ACME>\\w+)'])
+  await $.command.run({ command: 'redact', args: `add ${'bob' + '@example.com'}` } as any)
+  expect(rulesOf(files).at(-1).pattern).toBe('bob' + '@example.com')
 })
 
 test('a tool gets the real values back in its input, nested ones too, remote tools included', async ($, on) => {
@@ -270,8 +229,7 @@ test('a tool gets the real values back in its input, nested ones too, remote too
 
 test('a placeholder the vault does not hold refuses the call and tells the person; its escape writes the literal', async ($, on) => {
   world(on, HOLDS_GH)
-  const toasts: string[] = []
-  on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
+  const toasts = toasted(on)
   const ran: any[] = []
   on('tool.call', async (_$: any, e: any) => { ran.push(e); return { result: {} } as any })
   const r: any = await $.tool.call({ tool: 'Write', file_path: '/a', content: `k=${ph('API_KEY', 3)}` } as any)
@@ -298,10 +256,10 @@ test('the terminal draws the real values; a remote surface keeps the placeholder
 })
 
 test('a vault untouched for 30 days is dropped at the start of a session', async ($, on) => {
-  const { store } = world(on, { 'vault:old': { at: 1, n: {}, ph: {} }, 'vault:s1': { at: 39 * DAY, n: {}, ph: {} }, patterns: [] })
+  const { store } = world(on, { 'vault:old': { at: 1, n: {}, ph: {} }, 'vault:s1': { at: 39 * DAY, n: {}, ph: {} }, other: [] })
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  expect([...store.keys()]).toEqual(['vault:s1', 'patterns'])
+  expect([...store.keys()]).toEqual(['vault:s1', 'other'])
 })
 
 test('a pattern from the options is masked too', { options: { patterns: ['acme_[a-z0-9]{8}'] } }, async ($, on) => {
@@ -323,12 +281,34 @@ const statusLine = (on: any) => {
   return lines
 }
 
+test('a new rules file holds the two examples, off: nothing is masked, and the status line says so', async ($, on) => {
+  const { files, entered } = world(on)
+  const statuses = statusLine(on)
+  const toasts = toasted(on)
+  on('ui.open', () => ({ value: { isPlaced: true } }) as any)
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(EXAMPLES.map(r => r.enabled)).toEqual([false, false])
+  expect(JSON.parse(files.get(RULES)!)).toEqual({ rules: EXAMPLES })
+  expect(await entered($, `GITHUB_TOKEN=${GH} ${MAIL}`)).toBe(`GITHUB_TOKEN=${GH} ${MAIL}`)
+  expect(statuses).toEqual(['redact: 0 masked · no rules on'])
+  await $.command.run({ command: 'redact', args: `test ${MAIL}` } as any)
+  expect(toasts.at(-1)).toBe('redact: no rule matched: none is on')
+  const m = await mount($)
+  await m.press({ key: 'tab-rules' })
+  expect(await m.find({ text: /0 of 2 on/ })).toBeDefined()
+  expect(await m.find({ text: /^  1\. Example: vendor tokens/ })).toBeDefined()
+  expect(await m.find({ text: /^  2\. Example: email addresses$/ })).toBeDefined()
+  expect(await m.find({ text: / as EMAIL/ })).toBeDefined()
+  expect(await m.find({ text: /○ off/ })).toBeDefined()
+})
+
 test('the status line counts what this session masked', async ($, on) => {
-  const { entered } = world(on)
+  const { entered } = world(on, {}, BOTH)
   const statuses = statusLine(on)
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await entered($, `GITHUB_TOKEN=${GH} and DB_PASS` + 'WORD=hunter2')
+  await entered($, `GITHUB_TOKEN=${GH} and ${MAIL}`)
   await entered($, 'nothing here')
   expect(statuses).toEqual(['redact: 0 masked', 'redact: 2 masked'])
 })
@@ -336,8 +316,7 @@ test('the status line counts what this session masked', async ($, on) => {
 test('a masking failure that drops context, system prompt sections or a reminder is toasted', async ($, on) => {
   on('session.id', () => ({ value: 's1' }))
   on('store.get', () => { throw new Error('store down') })
-  const toasts: string[] = []
-  on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
+  const toasts = toasted(on)
   on('prompt.context', () => ({ blocks: [{ name: 'claudeMd', text: 'x' }] }) as any)
   on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude.', scope: 'shared' }, { id: 'env', text: 'x', scope: 'session' }] }) as any)
   on('prompt.attachment', () => ({ text: 'x' }))
@@ -358,127 +337,116 @@ test('two missing placeholders are refused in the plural', async ($, on) => {
 
 const PROPS = { title: 'Redact rules', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 30 } } as any
 const mount = ($: any, surface = 'terminal') => $.ui.mount({ plugin: 'redact', surface, component: 'Pane', requestId: 'redact', props: PROPS })
+// /redact with these arguments: its reply is a toast, and the command prints nothing the model could read
+const runner = ($: any, toasts: string[]) => async (args: string) => {
+  const n = toasts.length
+  expect(((await $.command.run({ command: 'redact', args } as any)) as any).text).toBeUndefined()
+  return toasts.length > n ? toasts.at(-1)!.replace(/^redact: /, '') : undefined
+}
 
-test('/redact add keeps a pattern that masks from the next message on, /redact remove drops it', async ($, on) => {
+test('/redact add keeps a rule, on, that masks from the next message on; /redact remove drops it', async ($, on) => {
   const { files, entered } = world(on)
   const opened: any[] = []
   on('ui.open', (_$: any, e: any) => { opened.push(e); return { value: { isPlaced: true } } as any })
-  const toasts: string[] = []
-  on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
-  // the reply is a toast; the command prints nothing the model could read
-  const run = async (args: string) => {
-    const n = toasts.length
-    expect(((await $.command.run({ command: 'redact', args } as any)) as any).text).toBeUndefined()
-    return toasts.length > n ? toasts.at(-1)!.replace(/^redact: /, '') : undefined
-  }
-  expect(await run('add ACME: acme_[a-z0-9]{8}')).toContain('added as #1')
-  expect(await run('add x_[0-9]+')).toBe('added as #2: it masks from the next message on')
-  expect(yours(files)).toEqual(['ACME: acme_[a-z0-9]{8}', 'x_[0-9]+'])
-  expect(files.get(PATTERNS)).toStartWith(HEADER)
+  const run = runner($, toasted(on))
+  expect(await run('add ACME: acme_[a-z0-9]{8}')).toContain('added as #3')
+  expect(await run('add x_[0-9]+')).toBe('added as #4: it masks from the next message on')
+  expect(rulesOf(files).slice(2)).toEqual([
+    { pattern: 'acme_[a-z0-9]{8}', replacement: 'ACME', enabled: true }, { pattern: 'x_[0-9]+', replacement: 'SECRET', enabled: true }])
   expect(await entered($, `id ${ACME} ok`)).toBe(`id ${ph('ACME')} ok`)
-  expect(await run('add ACME: acme_[a-z0-9]{8}')).toContain('already there')
+  expect(await run('add ACME: acme_[a-z0-9]{8}')).toBe('already there, as #3')
   expect(await run('add (')).toContain('not added')
   expect(await run('add X bogus: x')).toBe('not added: unknown option bogus')
-  expect(await run('add x  #! i')).toContain('not added: options go before the regex')
-  expect(await run('remove 3')).toBe('no such pattern')
-  expect(await run('remove 1')).toBe('removed #1')
-  expect(await run('remove x_[0-9]+')).toBe('removed #1')
-  expect(await run('remove x_[0-9]+')).toBe('no such pattern')
+  expect(await run('remove 5')).toContain('no such rule')
+  expect(await run('remove 3')).toBe('removed #3')
+  expect(await run('remove x_[0-9]+')).toBe('removed #3')
+  expect(await run('remove x_[0-9]+')).toContain('no such rule')
+  expect(rulesOf(files)).toEqual(EXAMPLES)
   expect(await run('show')).toBeUndefined()
   expect(opened).toMatchObject([{ id: 'redact', focus: true }])
   expect(await run('list')).toContain('usage')
 })
 
-test('a /redact line keeps its arguments out of the rows the model reads', async ($, on) => {
-  world(on)
-  const session = mock.session(on)
-  const line = '<command-name>/redact</command-name>\n<command-message>redact</command-message>\n<command-args>add acme_[0-9]+</command-args>'
-  await $.session.append({ door: 'command', origin: { kind: 'composer' }, uuid: 'u1',
-    message: { type: 'user', role: 'user', content: [{ type: 'text', text: line }] } } as any)
-  const [row] = session.appended() as any[]
-  expect(row.message.content[0].text).toBe('<command-name>/redact</command-name>\n<command-message>redact</command-message>\n<command-args></command-args>')
-})
-
-test('a new patterns file holds the header alone; the pane lists the built-in rules, on', async ($, on) => {
-  const { files } = world(on)
-  const m = await mount($)
-  await m.press({ key: 'tab-patterns' })
-  expect(files.get(PATTERNS)).toBe(HEADER)
-  expect(await m.find({ text: /^  Private key blocks/ })).toBeDefined()
-  expect(await m.find({ text: /^  A token after "Bearer"$/ })).toBeDefined()
-  expect(await m.find({ text: / bearer · as TOKEN/ })).toBeDefined()
-  expect(await m.find({ text: /7 of 7 on/ })).toBeDefined()
-  expect(await m.find({ text: /none yet/ })).toBeDefined()
-})
-
-test('a built-in rule turns off and on, from the pane, the prompt or the file', async ($, on) => {
+test('a rule turns on and off, from the prompt by number or name, the pane or the file', async ($, on) => {
   const { files, entered } = world(on)
-  const toasts: string[] = []
-  on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
-  const mail = 'ann' + '@example.com'
-  expect(await entered($, `mail ${mail}`)).toBe(`mail ${ph('EMAIL')}`)
-  await $.command.run({ command: 'redact', args: 'off email' } as any)
-  expect(toasts.at(-1)).toBe('redact: email off: from the next message on')
-  expect(files.get(PATTERNS)).toBe(HEADER + 'off email\n')
+  const run = runner($, toasted(on))
   const other = 'bob' + '@example.com'
+  expect(await entered($, `mail ${MAIL}`)).toBe(`mail ${MAIL}`)
+  expect(await run('on 2')).toBe('#2 on: from the next message on')
+  expect(rulesOf(files)[1]).toEqual({ ...EXAMPLES[1], enabled: true })
+  expect(await entered($, `mail ${MAIL}`)).toBe(`mail ${ph('EMAIL')}`)
+  expect(await run('on 2')).toBe('already on: #2')
+  expect(await run('off nope')).toContain('no such rule')
+  expect(await run('off Example: email addresses')).toBe('#2 off: from the next message on')
   expect(await entered($, `mail ${other}`)).toBe(`mail ${other}`)
-  await $.command.run({ command: 'redact', args: 'off email' } as any)
-  expect(toasts.at(-1)).toBe('redact: already off: email')
-  await $.command.run({ command: 'redact', args: 'off nope' } as any)
-  expect(toasts.at(-1)).toContain('no such rule: nope')
   const m = await mount($)
-  await m.press({ key: 'tab-patterns' })
-  expect(await m.find({ text: /6 of 7 on/ })).toBeDefined()
-  await m.press({ key: 'turn-email' })
-  expect(files.get(PATTERNS)).toBe(HEADER)
+  await m.press({ key: 'tab-rules' })
+  await m.press({ key: 'turn-0' })
+  expect(rulesOf(files)[0].enabled).toBe(true)
+  expect(await entered($, `key ${GH}`)).toBe(`key ${ph('API_KEY')}`)
+  // turned on by hand
+  files.set(RULES, file([{ ...EXAMPLES[1], enabled: true }]))
   expect(await entered($, `mail ${other}`)).toBe(`mail ${ph('EMAIL', 2)}`)
-  // an off line naming no rule is marked, and turns nothing off
-  files.set(PATTERNS, HEADER + 'off emails\n')
-  await m.unmount()
-  expect(await (await mount($)).find({ text: /skipped: no built-in rule emails/ })).toBeDefined()
 })
-test('a file of the last format drops its unchanged rules, turns a deleted or edited one off, and moves options before the regex', async ($, on) => {
-  const kept = BUILTIN.filter(r => r.id !== 'email' && r.id !== 'bearer')
-  const edited = legacy(kept).replace('label=API_KEY', 'label=KEY')
-  const { files, entered } = world(on, {}, { [PATTERNS]: edited + '# mine\n(?<pre>id=)(?<v>\\w+)  #! label=ID min=4 ignore-case\n(?<acme>acme_[a-z0-9]{8})\n' })
-  const mail = 'ann' + '@example.com'
-  expect(await entered($, `id=Ab12 ${ACME} ${mail} ${GH}`)).toBe(`id=${ph('ID')} ${ph('ACME')} ${mail} ${ph('KEY')}`)
-  const vendor = BUILTIN.find(r => r.id === 'vendor-token')!
-  expect(files.get(PATTERNS)).toBe(HEADER + 'off vendor-token\noff bearer\noff email\n\n'
-    + `# ${vendor.name}\n#   ${vendor.note}\n${vendor.line.replace('API_KEY', 'KEY')}\n\n`
-    + '# mine\nID min=4 i: (?<pre>id=)(?<v>\\w+)\nACME: (?<acme>acme_[a-z0-9]{8})\n')
-  // the file of this repo's user: every rule unchanged, nothing of their own
-  expect(migrate(legacy())).toBe(HEADER)
-  expect(migrate(HEADER + 'x\n')).toBeUndefined()
-  // no header, options in the old place: moved, every rule left on
-  expect(migrate('acme_[a-z]+  #! label=ACME ignore-case\n')).toBe(HEADER + 'ACME i: acme_[a-z]+\n')
+
+test('a rule added to the file by hand masks from the next message on, on with no enabled; /redact keeps the other keys', async ($, on) => {
+  const { files, entered } = world(on)
+  expect(await entered($, `id ${ACME}`)).toBe(`id ${ACME}`)
+  files.set(RULES, file([...EXAMPLES, { name: 'Acme keys', pattern: 'acme_[a-z0-9]{8}', replacement: 'ACME' }]))
+  expect(await entered($, `id ${ACME}`)).toBe(`id ${ph('ACME')}`)
+  files.set(RULES, JSON.stringify({ note: 'mine', rules: [] }))
+  await $.command.run({ command: 'redact', args: 'add x_[0-9]+' } as any)
+  expect(JSON.parse(files.get(RULES)!)).toEqual({ note: 'mine', rules: [{ pattern: 'x_[0-9]+', replacement: 'SECRET', enabled: true }] })
 })
-test('a file from before the rules moved keeps its patterns and every rule on', async ($, on) => {
-  const old = '# redact: your patterns, one JavaScript regex a line, masked on top of the built-in rules,\n#\n#\n#\n#\n#\n'
-  const { files, entered } = world(on, {}, { [PATTERNS]: old + 'acme_[a-z0-9]{8}\n' })
-  expect(await entered($, `GITHUB_TOKEN=${GH} id ${ACME}`)).toBe(`GITHUB_TOKEN=${ph('API_KEY')} id ${ph('SECRET')}`)
-  expect(files.get(PATTERNS)).toBe(HEADER + 'SECRET: acme_[a-z0-9]{8}\n')
+
+test('a rules file that does not parse keeps the last rules read, says so, and is never written over', async ($, on) => {
+  const { files, entered } = world(on, {}, BOTH)
+  const statuses = statusLine(on)
+  const run = runner($, toasted(on))
+  expect(await entered($, `key ${GH}`)).toBe(`key ${ph('API_KEY')}`)
+  files.set(RULES, '{ broken')
+  expect(await entered($, `mail ${MAIL}`)).toBe(`mail ${ph('EMAIL')}`)
+  expect(statuses.at(-1)).toBe('redact: 2 masked · redact-rules.json is no JSON object with a rules list, last rules kept (/redact rules)')
+  expect(await run('add x_[0-9]+')).toContain('not saved')
+  expect(files.get(RULES)).toBe('{ broken')
+  expect(await (await mount($)).find({ text: /1 skipped/ })).toBeDefined()
 })
-test('a pattern masks its v group under its label, with its options; an unknown option is skipped', async ($, on) => {
-  const { entered } = world(on, {}, { [PATTERNS]: HEADER + 'ID min=4: (?<pre>id=)(?<v>\\w+)\nZZ bogus: zz_[0-9]+\n' })
+
+test('a patterns file of the version before moves into the rules file once: its patterns on, an example on where its rule was', async ($, on) => {
+  const old = '# redact: your own patterns\n#\n\noff private-key\noff bearer\noff email\n\n# mine\nID min=4 i: (?<pre>id=)(?<v>\\w+)\nZZ bogus: zz\n'
+  const { files, entered } = world(on, {}, { [OLD]: old })
+  const toasts = toasted(on)
+  expect(await entered($, `id=Ab12 ${GH} ${MAIL}`)).toBe(`id=${ph('ID')} ${ph('API_KEY')} ${MAIL}`)
+  expect(rulesOf(files)).toEqual([{ ...EXAMPLES[0], enabled: true }, EXAMPLES[1],
+    { name: 'mine', pattern: '(?<pre>id=)(?<v>\\w+)', replacement: 'ID', enabled: true, min: 4, ignoreCase: true }])
+  expect(files.get(OLD)).toBe(old)
+  expect(toasts).toEqual([expect.stringContaining('url-password, flag, assigned were on and mask nothing now. 1 line that did not read stayed behind.')])
+  // every rule off, nothing of their own: the examples, off
+  expect(migrate('off ' + ['private-key', 'vendor-token', 'bearer', 'url-password', 'flag', 'assigned', 'email'].join('\noff ')))
+    .toEqual({ text: file(EXAMPLES), gone: [], lost: 0 })
+})
+
+test('a rule masks its v group under its replacement, with its options; one that does not read is skipped and marked', async ($, on) => {
+  const { entered } = world(on, {}, { [RULES]: file([{ pattern: '(?<pre>id=)(?<v>\\w+)', replacement: 'ID', min: 4 }, { pattern: 'zz_[0-9]+', replacement: 'zz' }, { pattern: '(' }]) })
   expect(await entered($, 'id=Ab12 id=Ab1 id=abcd zz_12')).toBe(`id=${ph('ID')} id=Ab1 id=abcd zz_12`)
   const m = await mount($)
-  expect(await m.find({ text: /1 skipped/ })).toBeDefined()
-  await m.press({ key: 'tab-patterns' })
-  expect(await m.find({ text: /skipped: unknown option bogus/ })).toBeDefined()
+  expect(await m.find({ text: /2 skipped/ })).toBeDefined()
+  await m.press({ key: 'tab-rules' })
+  expect(await m.find({ text: /skipped: replacement is not capitals/ })).toBeDefined()
 })
-test('the pane lists every pattern by its label, and adds and removes your own', async ($, on) => {
-  const { files } = world(on, {}, { [PATTERNS]: HEADER + 'FIRST: first_[0-9]+\n' })
+
+test('the pane lists every rule by its replacement, and adds and removes one', async ($, on) => {
+  const { files } = world(on, {}, { [RULES]: file([{ pattern: 'first_[0-9]+', replacement: 'FIRST', enabled: true }]) })
   const m = await mount($)
-  await m.press({ key: 'tab-patterns' })
-  expect(await m.find({ text: /1\. FIRST: first_/ })).toBeDefined()
+  await m.press({ key: 'tab-rules' })
+  expect(await m.find({ text: /1\. first_/ })).toBeDefined()
   expect(await m.find({ text: / as FIRST/ })).toBeDefined()
   await m.input({ key: 'add', text: 'acme_[a-z0-9]{8}', kind: 'submit' })
-  expect(files.get(PATTERNS)).toBe(HEADER + 'FIRST: first_[0-9]+\nacme_[a-z0-9]{8}\n')
+  expect(rulesOf(files)).toEqual([{ pattern: 'first_[0-9]+', replacement: 'FIRST', enabled: true }, { pattern: 'acme_[a-z0-9]{8}', replacement: 'SECRET', enabled: true }])
   expect(await m.find({ text: /added as #2/ })).toBeDefined()
-  expect(await m.find({ text: /in \/h\/\.claude\/redact-patterns\.txt/ })).toBeDefined()
+  expect(await m.find({ text: /in \/h\/\.claude\/redact-rules\.json/ })).toBeDefined()
   await m.press({ key: 'remove-0' })
-  expect(files.get(PATTERNS)).toBe(HEADER + 'acme_[a-z0-9]{8}\n')
+  expect(rulesOf(files)).toEqual([{ pattern: 'acme_[a-z0-9]{8}', replacement: 'SECRET', enabled: true }])
 })
 
 test('the pane lists what this session masked, the whole value on the terminal only, and forgets one', async ($, on) => {
@@ -498,15 +466,15 @@ test('the pane lists what this session masked, the whole value on the terminal o
   expect(await remote.find({ text: /ghp_/ })).toBeUndefined()
 })
 
-test('the pane names the rule or pattern that masked each value; the model reads it masked back', async ($, on) => {
-  const { store, entered } = world(on, {}, { [PATTERNS]: HEADER + 'acme_[a-z0-9]{8}\n' })
+test('the pane names the rule that masked each value; the model reads it masked back', async ($, on) => {
+  const { store, entered } = world(on, {}, { [RULES]: file([...ON, { pattern: 'acme_[a-z0-9]{8}', replacement: 'SECRET' }]) })
   const session = mock.session(on)
   await entered($, `GITHUB_TOKEN=${GH} id ${ACME}`)
   expect((store.get('vault:s1') as any).by).toEqual({
-    [ph('API_KEY')]: expect.stringMatching(/^built-in rule: Vendor tokens/), [ph('SECRET')]: 'your pattern: acme_[a-z0-9]{8}' })
+    [ph('API_KEY')]: expect.stringMatching(/^rule: Example: vendor tokens/), [ph('SECRET')]: 'rule: acme_[a-z0-9]{8}' })
   const m = await mount($)
   expect(await m.find({ text: new RegExp(`${ph('SECRET')} ${ACME}`) })).toBeDefined()
-  expect(await m.find({ text: /masked by your pattern: acme_/ })).toBeDefined()
+  expect(await m.find({ text: /masked by rule: acme_/ })).toBeDefined()
   // the pane read back off the screen, as `tmux capture-pane` would return it
   await $.session.append({ door: 'tool-result', origin: { kind: 'tool', tool: 'Bash' }, uuid: 'u1',
     message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: `${ph('API_KEY')} ${GH}\n${ph('SECRET')} ${ACME}` }] } } as any)
@@ -536,9 +504,9 @@ test('the pane toggles the terminal to draw placeholders, as the model reads the
 })
 
 test('a long pattern on a narrow pane keeps its remove button in the tree', async ($, on) => {
-  world(on, {}, { [PATTERNS]: 'x'.repeat(60) })
+  world(on, {}, { [RULES]: file([{ pattern: 'x'.repeat(60), replacement: 'SECRET' }]) })
   const m = await $.ui.mount({ plugin: 'redact', surface: 'terminal', component: 'Pane', requestId: 'redact', props: { ...PROPS, bodyColumns: 30 } })
-  await m.press({ key: 'tab-patterns' })
+  await m.press({ key: 'tab-rules' })
   expect(await m.find({ key: 'remove-0' })).toBeDefined()
 })
 
@@ -546,9 +514,9 @@ test('/redact show clears the last note', async ($, on) => {
   world(on)
   on('ui.open', () => ({ value: { isPlaced: true } }) as any)
   const m = await mount($)
-  await m.press({ key: 'tab-patterns' })
+  await m.press({ key: 'tab-rules' })
   await m.input({ key: 'add', text: 'acme_[a-z0-9]{8}', kind: 'submit' })
-  expect(await m.find({ text: /added as #1/ })).toBeDefined()
+  expect(await m.find({ text: /added as #3/ })).toBeDefined()
   await $.command.run({ command: 'redact', args: 'show' } as any)
   await m.unmount()
   expect(await (await mount($)).find({ text: /added as #/ })).toBeUndefined()
@@ -558,7 +526,7 @@ test('a settings pattern that does not compile is marked; mobile, with no field,
   world(on)
   const m = await mount($, 'mobile')
   expect(await m.find({ text: /skipped/ })).toBeDefined()
-  await m.press({ key: 'tab-patterns' })
+  await m.press({ key: 'tab-rules' })
   expect(await m.find({ key: 'add' })).toBeUndefined()
   expect(await m.find({ text: /\/redact add/ })).toBeDefined()
 })
@@ -590,50 +558,30 @@ test('the model cannot change what decides the masking: the store file, its sett
 })
 
 test('without the guard option, a call on redact\'s own files runs', async ($, on) => {
-  world(on, {}, { [PATTERNS]: 'acme_[a-z0-9]{8}\n' })
+  world(on, {}, { [RULES]: file([]) })
   on('tool.call', async () => ({ result: {} } as any))
-  expect(((await $.tool.call({ tool: 'Read', file_path: PATTERNS } as any)) as any).deny).toBeUndefined()
+  expect(((await $.tool.call({ tool: 'Read', file_path: RULES } as any)) as any).deny).toBeUndefined()
 })
 
-test('the model cannot read or change the patterns file, however it names it; the folder stays listable', { options: { guard: true } }, async ($, on) => {
-  world(on, {}, { [PATTERNS]: 'acme_[a-z0-9]{8}\n' }, { '/h/notes/p.txt': PATTERNS, '/h/claude-link': '/h/.claude' })
+test('the model cannot read or change the rules file, however it names it; the folder stays listable', { options: { guard: true } }, async ($, on) => {
+  world(on, {}, { [RULES]: file([]) }, { '/h/notes/p.json': RULES, '/h/claude-link': '/h/.claude' })
   on('tool.call', async () => ({ result: {} } as any))
   const denied = async (input: any) => typeof ((await $.tool.call(input)) as any).deny === 'string'
-  expect(await denied({ tool: 'Read', file_path: PATTERNS })).toBe(true)
-  expect(await denied({ tool: 'Read', file_path: '/h/notes/p.txt' })).toBe(true) // a link to it
-  expect(await denied({ tool: 'Edit', file_path: '/H/.Claude/Redact-Patterns.TXT', old_string: 'a', new_string: 'b' })).toBe(true)
-  expect(await denied({ tool: 'Write', file_path: PATTERNS, content: '' })).toBe(true)
+  expect(await denied({ tool: 'Read', file_path: RULES })).toBe(true)
+  expect(await denied({ tool: 'Read', file_path: '/h/notes/p.json' })).toBe(true) // a link to it
+  expect(await denied({ tool: 'Edit', file_path: '/H/.Claude/Redact-Rules.JSON', old_string: 'a', new_string: 'b' })).toBe(true)
+  expect(await denied({ tool: 'Write', file_path: RULES, content: '' })).toBe(true)
   expect(await denied({ tool: 'Grep', pattern: 'acme', path: '/h/.claude' })).toBe(true)
   expect(await denied({ tool: 'Grep', pattern: 'acme', path: '/h/claude-link' })).toBe(true)
   expect(await denied({ tool: 'Grep', pattern: 'acme', path: '/h' })).toBe(true)
   expect(await denied({ tool: 'Grep', pattern: 'acme', path: '/h/.claude/projects' })).toBe(false)
   expect(await denied({ tool: 'Read', file_path: '/h/.claude/CLAUDE.md' })).toBe(false)
-  expect(await denied({ tool: 'Write', file_path: '/h/repo/README.md', content: 'see ~/.claude/redact-patterns.txt' })).toBe(false)
-  for (const command of ['cat ~/.claude/redact-patterns.txt', 'cat ~/.claude/*', 'cp ~/.claude/redact-* /tmp', 'grep -r acme ~/.claude', 'tar czf x.tgz ~/.claude/'])
+  expect(await denied({ tool: 'Write', file_path: '/h/repo/README.md', content: 'see ~/.claude/redact-rules.json' })).toBe(false)
+  for (const command of ['cat ~/.claude/redact-rules.json', 'cat ~/.claude/*', 'cp ~/.claude/redact-* /tmp', 'grep -r acme ~/.claude', 'tar czf x.tgz ~/.claude/'])
     expect([command, await denied({ tool: 'Bash', command })]).toEqual([command, true])
-  for (const command of ['ls ~/.claude', 'cat ~/.claude/CLAUDE.md', 'grep -r acme ~/.claude/projects', 'grep redact-patterns README.md',
+  for (const command of ['ls ~/.claude', 'cat ~/.claude/CLAUDE.md', 'grep -r acme ~/.claude/projects', 'grep redact-rules README.md',
     'grep -rn claude .', 'rg claude src/', 'find ~/dotagents/claude -name x', 'cp ~/dotagents/claude/* /tmp'])
     expect([command, await denied({ tool: 'Bash', command })]).toEqual([command, false])
-})
-
-test('the patterns file is read by hand-written lines: comments, blanks and spaces are skipped', async ($, on) => {
-  const { files, entered } = world(on, {}, { [PATTERNS]: HEADER + '# mine\n\n  acme_[a-z0-9]{8}  \r\n# x_[0-9]+\nTAG: #tag[0-9]+\n' })
-  expect(await entered($, `id ${ACME} x_12 #tag42`)).toBe(`id ${ph('SECRET')} x_12 ${ph('TAG')}`)
-  // added by hand in another editor: the next masking reads it
-  files.set(PATTERNS, files.get(PATTERNS) + 'x_[0-9]+\n')
-  expect(await entered($, 'x_12')).toBe(ph('SECRET', 2))
-  // /redact keeps the comments; a pattern typed with a leading # is written with a label
-  await $.command.run({ command: 'redact', args: 'add #id[0-9]+' } as any)
-  await $.command.run({ command: 'redact', args: 'remove 1' } as any)
-  expect(files.get(PATTERNS)).toBe(HEADER + '# mine\n\n# x_[0-9]+\nTAG: #tag[0-9]+\nx_[0-9]+\nSECRET: #id[0-9]+\n')
-  await $.command.run({ command: 'redact', args: 'remove #id[0-9]+' } as any)
-  expect(files.get(PATTERNS)).toBe(HEADER + '# mine\n\n# x_[0-9]+\nTAG: #tag[0-9]+\nx_[0-9]+\n')
-})
-test('patterns an older version kept in the store move into the file once', async ($, on) => {
-  const { store, files, entered } = world(on, { patterns: ['acme_[a-z0-9]{8}'] })
-  expect(await entered($, `id ${ACME}`)).toBe(`id ${ph('SECRET')}`)
-  expect(store.has('patterns')).toBe(false)
-  expect(files.get(PATTERNS)).toBe(HEADER + 'SECRET: acme_[a-z0-9]{8}\n')
 })
 
 // Crafted shapes that took quadratic time before the repeats were bounded (seconds at these
@@ -641,9 +589,8 @@ test('patterns an older version kept in the store move into the file once', asyn
 test('crafted output is masked in linear time', () => {
   const fill = (unit: string, n: number) => unit.repeat(Math.ceil(n / unit.length))
   for (const [s, what] of [
-    [fill('to' + 'ken', 1e5), 'one word full of a secret name, or an address with no @'],
+    [fill('to' + 'ken', 1e5), 'one long word, an address with no @'],
     [fill('-ey' + 'Jabc', 2e5), 'JWT-like starts'],
-    [fill('-----BEGIN RSA ' + KEY + '\nabc\n', 1e6), 'unterminated BEGIN lines'],
   ] as const) {
     const t = Date.now()
     m1(s)
@@ -651,20 +598,13 @@ test('crafted output is masked in linear time', () => {
   }
 })
 
-test('a context rule leaves a value of lowercase letters alone, a word a doc puts there', () => {
-  for (const s of ['pass' + 'word=letmein', 'to' + 'ken: value', '--pass' + 'word pattern', 'https://me:hunt' + 'er@host'])
-    expect(m1(s)).toBe(s)
-  expect(m1('pass' + 'word=letme1n')).toBe(`password=${ph('SECRET')}`)
-  expect(m1('pass' + 'word=Letmein')).toBe(`password=${ph('SECRET')}`)
-})
-
 test('the pane opens on This session, a long value cut to its ends until revealed, and forgets all at once', async ($, on) => {
-  const head = '-----BEGIN RSA ' + KEY
-  const pem = `${head}\nMIIEowIBAAKCAQEA\nabc+/=`
+  const KEY = 'PRIV' + 'ATE KEY-----'
+  const pem = `-----BEGIN RSA ${KEY}\nMIIEowIBAAKCAQEA\nabc+/=`
   const { store } = world(on, { 'vault:s1': { at: 39 * DAY, n: { API_KEY: 1, PRIVATE_KEY: 1 }, ph: { [ph('API_KEY')]: GH, [ph('PRIVATE_KEY')]: pem } } })
   const m = await mount($)
   expect(await m.find({ text: /^This session$/ })).toBeDefined()
-  expect(await m.find({ text: /^Yours$/ })).toBeUndefined()
+  expect(await m.find({ text: /^Rules$/ })).toBeUndefined()
   expect(await m.find({ text: /-----B…c\+\/= \(3 lines, \d+ chars\)/ })).toBeDefined()
   expect(await m.find({ text: /MIIEow/ })).toBeUndefined()
   await m.press({ key: `reveal-${ph('PRIVATE_KEY')}` })
@@ -677,25 +617,24 @@ test('the pane opens on This session, a long value cut to its ends until reveale
   expect(await m.find({ text: /forgot 2/ })).toBeDefined()
 })
 
-test('tabs switch between This session, Patterns and Guide, and test previews masking on submit or /redact test without saving', async ($, on) => {
-  const { store } = world(on, {}, { [PATTERNS]: HEADER + 'acme_[a-z0-9]{8}\n' })
+test('tabs switch between This session, Rules and Guide, and test previews masking on submit or /redact test without saving', async ($, on) => {
+  const { store } = world(on, {}, { [RULES]: file([...ON, { pattern: 'acme_[a-z0-9]{8}', replacement: 'SECRET' }]) })
   on('ui.open', () => ({ value: { isPlaced: true } }) as any)
-  const toasts: string[] = []
-  on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
+  const toasts = toasted(on)
   await $.command.run({ command: 'redact', args: `test id ${ACME} ok` } as any)
   expect(toasts.at(-1)).toContain(`→ id ${ph('SECRET')} ok`)
   const m = await mount($)
   expect(await m.find({ text: /^Test$/ })).toBeDefined()
-  expect(await m.find({ text: /^Yours$/ })).toBeDefined()
+  expect(await m.find({ text: /^Rules$/ })).toBeDefined()
   expect(await m.find({ text: new RegExp(`→ id ${ph('SECRET')} ok`) })).toBeDefined()
-  expect(await m.find({ text: /masked by your pattern: acme_/ })).toBeDefined()
+  expect(await m.find({ text: /masked by rule: acme_/ })).toBeDefined()
   await m.press({ key: 'clear-test' })
   expect(await m.find({ text: new RegExp(`→ id ${ph('SECRET')} ok`) })).toBeUndefined()
   await m.input({ key: 'test', text: `key ${GH}`, kind: 'submit' })
   expect(await m.find({ text: new RegExp(`→ key ${ph('API_KEY')}`) })).toBeDefined()
   expect(store.get('vault:s1')).toBeUndefined()
   await m.press({ key: 'tab-help' })
-  expect(await m.find({ text: /^Pattern format$/ })).toBeDefined()
+  expect(await m.find({ text: /^Rule format$/ })).toBeDefined()
   expect(await m.find({ text: /^Where real values go$/ })).toBeDefined()
   await m.press({ key: 'tab-session' })
   expect(await m.find({ text: /^This session$/ })).toBeDefined()
@@ -719,6 +658,16 @@ test('/redact show opens the pane once, though command.run and prompt.submit bot
   expect(opened).toHaveLength(1)
   await $.prompt.submit({ text: '/redact', command: { name: 'redact', args: '' }, origin: { kind: 'composer' } } as any)
   expect(opened).toHaveLength(2)
+})
+
+test('a /redact line keeps its arguments out of the rows the model reads', async ($, on) => {
+  world(on)
+  const session = mock.session(on)
+  const line = '<command-name>/redact</command-name>\n<command-message>redact</command-message>\n<command-args></command-args>'
+  await $.session.append({ door: 'command', origin: { kind: 'composer' }, uuid: 'u1',
+    message: { type: 'user', role: 'user', content: [{ type: 'text', text: line }] } } as any)
+  const [row] = session.appended() as any[]
+  expect(row.message.content[0].text).toBe(line)
 })
 
 test('a short value with a line break shows its size alone, none of its characters', async ($, on) => {

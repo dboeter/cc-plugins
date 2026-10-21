@@ -10,7 +10,7 @@ Add the entries of [`hardening/user-settings.json`](hardening/user-settings.json
 | --- | --- |
 | `Read(~/.claude/plugins/store/redact_*)` | Reading or changing the store file with the file tools, and with the Bash file commands Claude Code recognizes (`cat`, `sed`, `tee`, `>`). A Read deny also blocks Edit and Write on the path. |
 | `Edit(~/.claude/plugins/store/redact_*)` | The same for NotebookEdit, which a Read deny does not cover. |
-| `Read(~/.claude/redact-patterns.txt)`, `Edit(…)` | The same for your patterns file. Your editor is not Claude Code, so editing it by hand still works. With `CLAUDE_CONFIG_DIR` set, name the file in that folder. |
+| `Read(~/.claude/redact-rules.json)`, `Edit(…)` | The same for your rules file. Your editor is not Claude Code, so editing it by hand still works. With `CLAUDE_CONFIG_DIR` set, name the file in that folder. |
 | `Bash(claude plugin disable*)`, `uninstall`, `marketplace remove` | Turning the plugin off from the CLI, which writes your settings itself, out of reach of the file rules. A prefix match: `$(which claude) plugin disable` gets past it. |
 | ask `Edit(~/.claude/settings.json)`, `Edit(**/.claude/settings*.json)` | Any settings edit without you approving it. |
 
