@@ -1,14 +1,17 @@
-import { FRAME_MS, cycle, merge, mix, pixels, rand, ramp, type Pixel, type Run, type Tick } from './runs'
+import { FRAME_MS, cells, cycle, letters, merge, mix, pixels, rand, ramp, type Pixel, type Run, type Tick } from './runs'
 
 export type Word = (word: string, t: Tick) => Run[]
 export type Sprite = (t: Tick) => Run[]
 type Style = Partial<Run>
 
 // A word letter by letter. The callback gives a colour, or a style that can also swap the letter.
+// A swapped-in letter is padded to the cells of the one it replaces, so a wide letter does not shift the row.
 export const paint = (word: string, style: (letter: string, i: number) => Style | string): Run[] =>
-  merge([...word].map((letter, i) => {
+  merge(letters(word).map((letter, i) => {
     const s = style(letter, i)
-    return typeof s === 'string' ? { text: letter, color: s } : { text: letter, ...s }
+    if (typeof s === 'string') return { text: letter, color: s }
+    const text = s.text === undefined ? letter : s.text + ' '.repeat(Math.max(0, cells(letter) - cells(s.text)))
+    return { ...s, text }
   }))
 
 // The slot of `period` frames this frame is in, when it falls in the `length` frames that start at a jittered point of that slot; else undefined.
@@ -23,7 +26,7 @@ export const pulse = (t: Tick, period: number, length: number, salt: number): nu
 // one of `n` things, chosen by the slot a pulse fired in
 const chosen = (t: Tick, slot: number, salt: number, n: number) => Math.floor(rand(t.seed, slot, salt) * n)
 
-const lettersOf = (word: string) => [...word].length
+const lettersOf = (word: string) => letters(word).length
 
 // Words
 
@@ -49,20 +52,21 @@ export const mirrored = (stops: readonly string[]): Word => (word, t) => {
 }
 
 export const typewriter = (ink: string, dim: string): Word => (word, t) => {
-  const len = lettersOf(word)
+  const all = letters(word)
+  const len = all.length
   const typed = Math.min(len, Math.floor(t.elapsedMs / FRAME_MS))
   const isCursorOn = t.elapsedMs < len * FRAME_MS || Math.floor((t.elapsedMs - len * FRAME_MS) / 530) % 2 === 0
   return merge([
-    { text: [...word].slice(0, typed).join(''), color: pulse(t, 44, 2, 1) === undefined ? ink : dim },
+    { text: all.slice(0, typed).join(''), color: pulse(t, 44, 2, 1) === undefined ? ink : dim },
     { text: isCursorOn ? '█' : ' ', color: ink },
-    { text: ' '.repeat(len - typed) },
+    { text: ' '.repeat(cells(all.slice(typed).join(''))) },
   ])
 }
 
 const GLITCH = [...'▓▒░#%&$§¥']
 
 export const hexDecode = (c: { done: string; hex: string; glitch: string }): Word => (word, t) => {
-  const decoded = [...word].flatMap((letter, i) => (letter !== ' ' && t.elapsedMs >= 180 * (i + 1) ? [i] : []))
+  const decoded = letters(word).flatMap((letter, i) => (letter !== ' ' && t.elapsedMs >= 180 * (i + 1) ? [i] : []))
   const slot = pulse(t, 33, 1, 2)
   const glitched = slot === undefined || decoded.length === 0 ? -1 : (decoded[chosen(t, slot, 3, decoded.length)] ?? -1)
   return paint(word, (letter, i) => {
@@ -172,10 +176,11 @@ export const skyline = (c: { heights: readonly number[]; mast: number; wall: str
   return pixels([row(0), row(1)])
 }
 
-// a moon, and a bat that flaps across it and leaves a silhouette where it passes
+// a moon, and a bat that flaps across it and leaves a silhouette where it passes; the bat is the dracula banner's SMALL_BAT
 export const batMoon = (c: { moon: string; shade: string; bat: string; cut: string }): Sprite => t => {
-  const wings = Math.floor(t.frame / 2) % 2 === 0 ? ['#.#', '.#.'] : ['.#.', '#.#']
-  const left = (Math.floor(t.frame / 2) % 13) - 3
+  const wings = Math.floor(t.frame / 2) % 2 === 0 ? ['##.##', '..#..'] : ['..#..', '##.##']
+  // from just off the left edge (x = -5) to just off the right one (x = 9)
+  const left = (Math.floor(t.frame / 2) % 15) - 5
   const row = (y: number): Pixel[] =>
     Array.from({ length: 9 }, (_, x) => {
       const moon = x === 4 ? c.moon : x === 3 || x === 5 ? c.shade : null

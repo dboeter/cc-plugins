@@ -73,6 +73,33 @@ test('retro-terminal: only the cursor at 0 ms, the whole word after 90 ms a lett
   expect(word(90 * 'Spooling'.length)).toBe('Spooling█')
 })
 
+// a custom skin's words can hold anything; a wide letter takes two cells, an emoji can be several code points
+const WIDE_WORDS = ['猫の手', '🦇 Bats', '❤️ Love', '🇳🇱 Dutch', 'Café']
+
+for (const [name, th] of Object.entries(THEMES)) {
+  test(`${name}: a word with wide letters keeps its width`, () => {
+    const problems: string[] = []
+    for (const word of WIDE_WORDS) {
+      const widths = new Set<number>()
+      for (let frame = 0; frame <= 120; frame++) for (const e of [0, 90, 400, 1500, 25 * SECOND]) widths.add(width(th.word(word, tick(name, e, frame))))
+      if (widths.size > 1) problems.push(`${word} was ${[...widths].join(', ')} wide`)
+    }
+    expect(problems).toEqual([])
+  })
+}
+
+test('dracula: a bat 5 pixels wide crosses the moon', () => {
+  // frame 10: wings down, the bat's left edge on column 0, its right wing over the moon's columns 3 and 4
+  const cells = theme('dracula').sprite(tick('dracula', 0, 10)).flatMap(r => [...r.text].map(ch => [ch, r.color ?? null, r.bg ?? null]))
+  expect(cells.slice(0, 5)).toEqual([
+    ['▄', '#6272a4', null],
+    ['▄', '#6272a4', null],
+    ['▀', '#6272a4', null],
+    ['▀', '#8a6ad1', '#282a36'],
+    ['▀', '#bd93f9', '#282a36'],
+  ])
+})
+
 test('dracula: the clock counts down to sunrise', () => {
   const clock = (ms: number) => text(theme('dracula').clock?.(tick('dracula', ms)) ?? [])
   expect([clock(0), clock(7 * 60 * MINUTE)]).toEqual(['sunrise in 6h 12m 00s', 'sunrise'])

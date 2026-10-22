@@ -62,7 +62,17 @@ export function formatDuration(ms: number): string {
 
 export const timer = (ms: number, color: string): Run[] => [{ text: formatDuration(ms), color }]
 
-export const width = (runs: readonly Run[]) => runs.reduce((n, r) => n + [...r.text].length, 0)
+const graphemes = new Intl.Segmenter()
+
+// what a person reads as one letter: an emoji with its modifiers, or a letter with its accents, is one, however many code points it has
+export const letters = (text: string): string[] => Array.from(graphemes.segment(text), s => s.segment)
+
+// East Asian wide and fullwidth letters, and emoji drawn as emoji, take two terminal cells
+const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{20000}-\u{3fffd}]|\p{Emoji_Presentation}|\p{Regional_Indicator}|️/u
+
+export const cells = (text: string): number => letters(text).reduce((n, letter) => n + (WIDE.test(letter) ? 2 : 1), 0)
+
+export const width = (runs: readonly Run[]) => runs.reduce((n, r) => n + cells(r.text), 0)
 
 const same = (a: Run, b: Run) => a.color === b.color && a.bg === b.bg && a.bold === b.bold && a.italic === b.italic
 
