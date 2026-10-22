@@ -10,16 +10,24 @@
 # stdout on the events where plain stdout is context), cut to 80 chars; null when it said nothing.
 # No file extension on purpose: agent-log names a hook by the first `<name>.sh|py|js|…` in its command, which must
 # stay the wrapped script, not this one.
-input=$(cat)
-errf=$(mktemp 2>/dev/null) || { "$@" <<<"$input"; exit; } # nowhere to hold stderr: run it unrecorded
+# stdin as $(cat) gave it, trailing newlines dropped. A builtin read forks nothing but reads a pipe a byte per syscall, so
+# it takes the first 2 KB (most payloads) and cat the rest
+rest=
+IFS= read -r -d '' -n 2048 input && rest=$(cat)
+if [[ $rest ]]; then input+=$rest; else input=${input%"${input##*[!$'\n']}"}; fi
+# a pid-named file in the per-user 0700 runtime dir saves mktemp's fork. -O: the dir is ours, not a shared /tmp. Creating
+# the file here lets an unusable dir fall back to mktemp (a failed 2>"$errf" would skip the hook); true, since a failed
+# redirect on : exits a posix-mode shell
+errf=$XDG_RUNTIME_DIR/hook-timer.$$
+{ [[ -O $XDG_RUNTIME_DIR ]] && true 2>/dev/null >"$errf"; } || errf=$(mktemp 2>/dev/null) || { "$@" <<<"$input"; exit; } # nowhere to hold stderr: run it unrecorded
 t0=${EPOCHREALTIME/./}
 out=$("$@" <<<"$input" 2>"$errf"; r=$?; printf x; exit $r) # the x keeps trailing newlines through $( )
 rc=$?
 t1=${EPOCHREALTIME/./}
 out=${out%x}
 printf '%s' "$out"
-cat "$errf" >&2
-err=$(head -c 4096 "$errf")
+err=
+if [[ -s $errf ]]; then cat "$errf" >&2; err=$(head -c 4096 "$errf"); fi # forks only for a hook that wrote to stderr
 rm -f "$errf"
 # EPOCHREALTIME is bash 5+ (no fork for a clock read); on bash 3.2 (macOS /bin/bash) the hook still runs, unrecorded
 [[ -n $t0 && -n $t1 ]] || exit $rc
@@ -27,7 +35,7 @@ rm -f "$errf"
 # the name agent-log gives the hook (scriptName in agent-log.tsx): first script file named, else the command's basename
 if [[ "$*" =~ ([[:alnum:]_.-]+)\.(sh|py|js|mjs|ts|rb|pl)([^[:alnum:]_]|$) ]]; then name=${BASH_REMATCH[1]}; else name=${1##*/}; fi
 dir="$HOME/.claude/hook-times"
-mkdir -p "$dir" 2>/dev/null
+[[ -d $dir ]] || mkdir -p "$dir" 2>/dev/null
 # shellcheck disable=SC2016  # jq program, not shell
 { IFS= read -r sid && IFS= read -r line; } < <(jq -r --arg name "$name" --argjson t0 "$((t0 / 1000))" --argjson t1 "$((t1 / 1000))" \
   --argjson exit "$rc" --arg out "${out:0:65536}" --arg err "$err" '
