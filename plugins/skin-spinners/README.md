@@ -8,7 +8,9 @@ Gives every skins skin its own spinner row and turn footer. Each skin gets a sma
 /plugin install skin-spinners --marketplace dboeter/cc-plugins
 ```
 
-Answer `y` to add the marketplace, then pick a scope. It needs the skins mod; it declares it as a dependency.
+Answer `y` to add the marketplace, then pick a scope. It needs the skins mod, `skins@hellosverre-mods`, installed first. It names skins as a dependency, but Claude Code installs a dependency from another marketplace only by hand.
+
+skins draws the spinner row and the footer too, and when two mods hook the same row, the one loaded first draws it. Claude Code loads plugins in the order of `enabledPlugins` in `~/.claude/settings.json`, and an install adds its key at the end, below skins. Move `"skin-spinners@dboeter": true` above `"skins@hellosverre-mods": true`, then restart Claude Code. Left below skins, this mod draws no footer, and draws the spinner row only while `/skin shimmer off` is set, because skins then hands the row on.
 
 ## Use
 
