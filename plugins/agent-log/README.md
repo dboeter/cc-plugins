@@ -76,4 +76,6 @@ claude plugin test plugins/agent-log    # tests
 claude plugin validate plugins/agent-log
 ```
 
+`claude plugin test` runs only `*.test.ts`. After changing `bin/hook-timer`, run `plugins/agent-log/hooks/hook-timer.test.sh`: it checks the same stdin, stdout, stderr, exit code and record as the version before the fork-lean rewrite, or as the commit you name.
+
 `hooks/scrub.ts` is a copy of `plugins/shared/scrub.ts`: edit that file and run `plugins/shared/sync.sh`.

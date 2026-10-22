@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# hook-timer.test.sh [ref]: runs bin/hook-timer (or $NEW) and its version at <ref> (default main) on the same fake hooks
-# and payloads, stdin through a pipe as the engine sends it. A case passes when both hand the hook the same stdin and the
-# caller the same stdout, stderr and exit code, append the same records (t0/t1 aside) and leave no temp file behind.
+# hook-timer.test.sh [ref]: runs bin/hook-timer (or $NEW) and its version at <ref> on the same fake hooks and payloads,
+# stdin through a pipe as the engine sends it. A case passes when both hand the hook the same stdin and the caller the
+# same stdout, stderr and exit code, append the same records (t0/t1 aside) and leave no temp file behind. The default
+# ref is the last commit before the fork-lean rewrite: the contract is "what that version did", so a no-arg run still
+# checks it once the rewrite is on main. `claude plugin test` runs only *.test.ts, so this one runs by hand.
 here=$(cd "$(dirname "$0")/.." && pwd)
-ref=${1:-main}
+ref=${1:-6266290}
 tmp=$(mktemp -d) || exit 1
 trap 'rm -rf "$tmp"' EXIT
 mkdir "$tmp/old" "$tmp/new" "$tmp/p" "$tmp/o" "$tmp/h" "$tmp/runs"
