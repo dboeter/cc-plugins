@@ -1,0 +1,55 @@
+# skin-spinners
+
+Gives every skins skin its own spinner row and turn footer. Each skin gets a small sprite that loops, an effect on the spinner word, a themed clock or tag, and, for 11 of them, themed done words in the footer.
+
+## Install
+
+```
+/plugin install skin-spinners --marketplace dboeter/cc-plugins
+```
+
+Answer `y` to add the marketplace, then pick a scope. It needs the skins mod; it declares it as a dependency.
+
+## Use
+
+Nothing to switch on. Pick a skin with `/skin` and the spinner row and the footer under each reply change with it.
+
+| Skin | Sprite | Word | Clock and tag | Footer |
+| --- | --- | --- | --- | --- |
+| retro-terminal | spinning quadrant | typed out, with a blinking cursor | `[mm:ss]` | `READY.` |
+| cyberpunk-neon | a packet along a trace | decoding from hex | `t+0x0c` | yes |
+| space-gray | a moon orbiting, a pulse on the path | signal that drops letters | `T+mm:ss` | yes |
+| tokyo-night | a skyline with lit windows and rain | split-flap board | `ON TIME`, then minutes late, then the last train | yes |
+| dracula | a bat across the moon | a red band | countdown to sunrise | yes |
+| ayu | the sun rising between ripples | warming, with glints | a day bar | yes |
+| gruvbox | a tape reel and its button | scrolling gradient | `m:ss · side A`, then `side B`; a conveyor | yes |
+| kanagawa | waves toward Fuji | a crest | lines that arrive at 20, 40 and 60 s | yes |
+| nord | a lighthouse and snow | a slow wide band | a ship coming in | yes |
+| rose-pine | a breathing pine | breathing colour | clock after 30 s | yes |
+| everforest | three flowers blooming | sunlit gradient | trail distance and climb | yes |
+| catppuccin, night-owl, github, solarized, one-dark, noir, mono | one each | skins' shimmer band (noir: blinds) | the default | skins' own |
+
+These keep skins' own row instead of this mod's:
+
+- the desktop, VS Code and the mobile app (this mod draws the terminal only);
+- a skin set to `off`, `/skin calm`, ascii icons, a light palette;
+- a skin this mod has no theme for. Custom skins keep skins' row, except space-gray, cyberpunk-neon and retro-terminal, which have a theme here and take the custom skin's own spinner and done words as extras.
+
+With `/skin` words set to `claude`, Claude Code's own words are kept and only the look changes.
+
+## What it does on your machine
+
+- **State**: the frame count, the time the latest turn began, and how the last 20 turns ended, in the mod's own state. Nothing is written to disk.
+- **Claude**: nothing is added to the prompt or the context.
+
+## Preview
+
+```
+bun plugins/skin-spinners/preview.ts [--skin a,b] [--mode <mode>] [--at <seconds>] [--speed <n>] [--frames <n>] [--footer]
+```
+
+Draws every theme in 24-bit colour, one row per skin, redrawn every 90 ms until Ctrl-C. `--at` starts at an elapsed time, `--speed` runs the clock faster to see effects that take minutes, `--frames` prints that many frames per skin as lines and exits, `--footer` adds each footer.
+
+## Develop
+
+A theme is an entry of `THEMES` in `hooks/themes.ts`, built from the helpers in `hooks/effects.ts`; no code outside that file branches on a skin's name. `runs.ts`, `effects.ts`, `themes.ts` and `row.ts` import nothing from Claude Code, so the tests and the preview call them directly. `hooks/register.tsx` is the only file that reads skins' state and draws.

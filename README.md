@@ -12,6 +12,7 @@ Claude Code mods. Each one is a folder under `plugins/`, listed in `.claude-plug
 | [event-log](plugins/event-log) | The raw record that goes with agent-log's interpreted view: every event in a session, whoever raised it (you, the model, the engine, hooks, plugins), with its full payload on disk under `~/.claude/event-log/<session>/`, and a peek per event in a live pane. `/eventlog` toggles it, `/eventlog <you\|claude\|engine\|hook\|plugin\|all>` filters by who. |
 | [redact](plugins/redact) | Lets Claude use your API keys, tokens, passwords and other secrets, hiding what your rules match from the model. Matches are swapped for stable placeholders in everything sent to the model, kept in a local vault, and restored in tool calls, remote ones included, and in your terminal. Fails closed. No rule is on by default: rules live in `~/.claude/redact-rules.json`, starting with two examples (vendor tokens, email addresses), off; each has its own pattern, replacement label and on/off switch, managed with `/redact`. Its README says what it does and does not protect against; [HARDENING.md](plugins/redact/HARDENING.md) has permission rules and a managed-settings entry that hold where its own guard can't. |
 | [session-tree](plugins/session-tree) | A pane with every Claude session on this machine as a tree under its repo; pressing one focuses its herdr pane or attaches a background one in a new tab. `/sessiontree` toggles it. |
+| [skin-spinners](plugins/skin-spinners) | Gives every skins skin its own spinner row and turn footer: a small looping sprite, an effect on the spinner word, a themed clock or tag, and themed done words. Needs the skins mod. |
 
 Install one:
 
@@ -32,3 +33,5 @@ tsc -p plugins
 A plugin loads no file outside its own folder, so code two plugins share lives once in `plugins/shared/` and is copied into each by `plugins/shared/sync.sh` (`--check` exits 1 when a copy is stale). Today that is the secret scrub agent-log and event-log use.
 
 After a Claude Code update, replace that file with the new build's: the plugin-authoring skill writes it as `types/claude-code.d.ts` each time the skill loads. A plugin loaded with `--plugin-dir` still gets its own `.claude-plugin/types/` and, without one of its own, a `tsconfig.json`; both are gitignored.
+
+`plugins/types/skins.d.ts` is the skins mod's state contract, copied whole so `tsc -p plugins` can type what skin-spinners reads from skins; replace it with the skins mod's `types/index.d.ts` (keeping its first line) when skins changes its contract.

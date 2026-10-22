@@ -10,6 +10,7 @@
     { "name": "agent-log", "source": "./plugins/agent-log" },
     { "name": "event-log", "source": "./plugins/event-log" },
     { "name": "redact", "source": "./plugins/redact" },
-    { "name": "session-tree", "source": "./plugins/session-tree" }
+    { "name": "session-tree", "source": "./plugins/session-tree" },
+    { "name": "skin-spinners", "source": "./plugins/skin-spinners" }
   ]
 }
