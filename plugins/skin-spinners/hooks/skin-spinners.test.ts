@@ -88,6 +88,18 @@ for (const [name, th] of Object.entries(THEMES)) {
   })
 }
 
+test('retro-terminal: the bytes run out after about 40 minutes', () => {
+  const tag = (ms: number) => text(theme('retro-terminal').tag?.(tick('retro-terminal', ms)) ?? [])
+  expect([tag(0), tag(10 * SECOND), tag(41 * MINUTE)]).toEqual(['38911 BYTES FREE', '38751 BYTES FREE', '?OUT OF MEMORY'])
+})
+
+test('retro-terminal: the send light stays dark while the model answers, the receive light while a request goes out', () => {
+  const lit = (mode: Mode, i: number) =>
+    Array.from({ length: 40 }, (_, frame) => theme('retro-terminal').sprite(tick('retro-terminal', 0, frame, mode)))
+      .some(runs => runs.flatMap(r => [...r.text].map(() => r.color))[i] === '#33ff66')
+  expect([lit('responding', 2), lit('responding', 3), lit('requesting', 2), lit('requesting', 3)]).toEqual([false, true, true, false])
+})
+
 test('dracula: a bat 5 pixels wide crosses the moon', () => {
   // frame 10: wings down, the bat's left edge on column 0, its right wing over the moon's columns 3 and 4
   const cells = theme('dracula').sprite(tick('dracula', 0, 10)).flatMap(r => [...r.text].map(ch => [ch, r.color ?? null, r.bg ?? null]))

@@ -51,14 +51,20 @@ export const mirrored = (stops: readonly string[]): Word => (word, t) => {
   })
 }
 
-export const typewriter = (ink: string, dim: string): Word => (word, t) => {
+// Phosphor: the letter just typed glows and the one before it cools; once the word is typed, the cursor blinks and a refresh beam crosses it about every 3.5 s.
+export const typewriter = (c: { ink: string; dim: string; glow: string }): Word => (word, t) => {
   const all = letters(word)
   const len = all.length
   const typed = Math.min(len, Math.floor(t.elapsedMs / FRAME_MS))
   const isCursorOn = t.elapsedMs < len * FRAME_MS || Math.floor((t.elapsedMs - len * FRAME_MS) / 530) % 2 === 0
+  const hot = typed < len ? typed - 1 : (t.frame % (len + 36)) - 1
+  const isFlicker = pulse(t, 44, 2, 1) !== undefined
   return merge([
-    { text: all.slice(0, typed).join(''), color: pulse(t, 44, 2, 1) === undefined ? ink : dim },
-    { text: isCursorOn ? '█' : ' ', color: ink },
+    ...all.slice(0, typed).map((letter, i): Run => ({
+      text: letter,
+      color: isFlicker ? c.dim : i === hot ? c.glow : i === hot - 1 ? mix(c.glow, c.ink, 0.5) : c.ink,
+    })),
+    { text: isCursorOn ? '█' : ' ', color: c.ink },
     { text: ' '.repeat(cells(all.slice(typed).join(''))) },
   ])
 }
@@ -147,6 +153,16 @@ export const packet = (c: { trace: string; packet: string; flash: string }): Spr
     { text: '─'.repeat(3 - step), color: c.trace },
     { text: '┤', color: c.trace },
   ])
+}
+
+// A modem's lights: carrier and off-hook steady, send and receive flickering by what the turn is doing, and the terminal-ready light
+// pulsing slowly while the model thinks.
+export const modem = (c: { on: string; off: string }): Sprite => t => {
+  const busy = (n: number) => rand(t.seed, t.frame, n) < 0.6
+  const isSending = t.mode === 'requesting' || t.mode === 'tool-input' || t.mode === 'tool-use'
+  const isReceiving = t.mode === 'responding' || t.mode === 'tool-use'
+  const lights = [true, true, isSending && busy(1), isReceiving && busy(2), t.mode !== 'thinking' || Math.floor(t.frame / 6) % 2 === 0]
+  return merge(lights.map((isOn): Run => ({ text: '●', color: isOn ? c.on : c.off })))
 }
 
 // a planet, a path with a pulse on it, and a moon that orbits a body in four phases

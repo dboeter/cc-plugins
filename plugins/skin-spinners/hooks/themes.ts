@@ -1,5 +1,5 @@
 import {
-  batMoon, band, blinds, blinker, breathing, crest, flat, flowers, glint, grove, harbour, hexDecode, mirrored, orbit, packet,
+  batMoon, band, blinds, blinker, breathing, crest, flat, flowers, glint, grove, harbour, hexDecode, mirrored, modem, orbit, packet,
   signal, skyline, spin, splitFlap, sunlit, sunrise, tape, typewriter, waves, type Sprite, type Word,
 } from './effects'
 import { cycle, mix, mmss, merge, pad2, pixels, rand, timer, type Run, type Tick } from './runs'
@@ -43,11 +43,16 @@ const stripe = (j: number, t: Tick) => cycle(STRIPES, j + Math.floor(t.frame / 3
 export const THEMES: Readonly<Record<string, Theme>> = {
   'retro-terminal': {
     muted: '#74b386',
-    sprite: spin('▖▘▝▗', '#33ff66'),
-    word: typewriter('#33ff66', '#74b386'),
+    sprite: modem({ on: '#33ff66', off: '#1f4d2b' }),
+    word: typewriter({ ink: '#33ff66', dim: '#74b386', glow: '#c2f5cc' }),
     words: ['Dialing up', 'Handshaking', 'Spooling', 'Seeking track 0', 'Rewinding tape', 'Defragmenting', 'Paging in', 'Polling'],
     suffix: '',
     clock: t => say(`[${mmss(t.elapsedMs)}]`, '#74b386'),
+    // the C64's start-up line, losing 16 bytes a second
+    tag: t => {
+      const free = 38911 - 16 * Math.floor(t.elapsedMs / 1000)
+      return free > 0 ? say(`${free} BYTES FREE`, '#74b386') : say('?OUT OF MEMORY', '#ff5050')
+    },
     done: { ok: '#66ff99', err: '#ff5050', mark: { text: 'READY.', color: '#33ff66' }, words: ['Loaded', 'Spooled', 'Dialed in', 'Compiled'], aborted: ['BREAK'], error: ['?SYNTAX ERROR'] },
   },
 

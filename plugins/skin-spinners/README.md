@@ -18,7 +18,7 @@ Nothing to switch on. Pick a skin with `/skin` and the spinner row and the foote
 
 | Skin | Sprite | Word | Clock and tag | Footer |
 | --- | --- | --- | --- | --- |
-| retro-terminal | spinning quadrant | typed out, with a blinking cursor | `[mm:ss]` | `READY.` |
+| retro-terminal | modem lights that follow the turn | typed out in glowing phosphor, a blinking cursor, a refresh beam | `[mm:ss]`, then `38911 BYTES FREE` counting down | `READY.` |
 | cyberpunk-neon | a packet along a trace | decoding from hex | `t+0x0c` | yes |
 | space-gray | a moon orbiting, a pulse on the path | signal that drops letters | `T+mm:ss` | yes |
 | tokyo-night | a skyline with lit windows and rain | split-flap board | `ON TIME`, then minutes late, then the last train | yes |
