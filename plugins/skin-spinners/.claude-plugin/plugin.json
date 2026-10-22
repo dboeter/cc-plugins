@@ -1,0 +1,11 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "skin-spinners",
+  "version": "0.1.0",
+  "description": "Gives each skins skin its own animated spinner row and turn footer: a small sprite, an effect on the spinner word, a themed clock and tag, and themed done words.",
+  "author": { "name": "dboeter", "email": "daan.boeter@hotmail.com" },
+  "license": "MIT",
+  "repository": "https://github.com/dboeter/cc-plugins",
+  "types": "./types/index.d.ts",
+  "dependencies": ["skins"]
+}
