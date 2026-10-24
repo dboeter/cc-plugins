@@ -326,7 +326,7 @@ let follow = true // auto-scroll to the newest entry; off once the person scroll
 // drew, where a cursor starts. nav: the inspector's previous and next rows, which j and k step to while it is open
 let sel: string | undefined
 let move = 0
-let winEnd = 0
+let winStart = 0, winEnd = 0 // the rows the last draw showed, for the cursor's start
 let nav: { prev?: Entry; next?: Entry } = {}
 let fresh = 0 // entries logged while not following: the jump button's "N new events"; the render zeroes it once following again
 let chain: Promise<void> = Promise.resolve() // all store mutations run one after another, so no write lands a stale snapshot
@@ -1937,7 +1937,7 @@ export const register: Register = (on, options) => {
     const KEYS: [string, string][] = [['a m h u', 'views: all, what the model did, the harness, outside the root'], ['l', 'level: info or notice (/agentlog level sets debug and error)'],
       ['o', 'open or close every Agent fold'], ['s', 'the setup page'], ['i', 'this page'], ['j k', 'the row cursor down, up; in the inspector, the next or previous row'], ['↓ ↑', 'the row cursor too'],
       ['enter', 'open the row under the cursor'], ['e', 'the newest row'], ['^↑ ^↓', 'ctrl+↑ ↓: the previous or next prompt'], ['b', 'back'], ['n p', 'in the inspector: the next or previous row'],
-      ['f', 'in an Agent row\'s inspector: only its agent\'s rows']]
+      ['f', 'in an Agent row\'s inspector: only its agent\'s rows; elsewhere, clear that filter'], ['tab', 'move the focus over the buttons; enter presses one']]
     // `no agent entries for scout at notice or above · /agentlog level debug: every row · a: all views · main: clear the filter`; only the filters set
     const empty = () => {
       if (!entries.length) return 'no entries yet'
@@ -2097,7 +2097,7 @@ export const register: Register = (on, options) => {
       ...controls,
       ...(treeOn ? [<Box key="main" flexDirection="row" overflow="hidden" columnGap={2}>
         <Button key="fmain" label="main" plain dimColor={only !== 'main'} onPress={() => pick('main')} />
-        {only ? <Button key="fclear" label={fit(`filter: ${nameOf(only)} ✕`, cols - 8)} plain onPress={() => pick(only!)} /> : null}
+        {only ? <Button key="fclear" label={fit(`filter: ${nameOf(only)} ✕`, cols - 8)} hotkey="f" plain onPress={() => pick(only!)} /> : null}
       </Box>, ...tree.slice(0, most).map(agentRow)] : []),
       ...(treeOn && (done || more) ? [<Box key="done" flexDirection="row"><Text>  </Text><Button key="fdone" label={toggle} plain dimColor onPress={() => { showDone = !showDone; $.ui.invalidate('ui.render') }} /></Box>] : []),
       <Text key="rule" dimColor>{'─'.repeat(Math.max(1, cols - 1))}</Text>,
@@ -2110,13 +2110,16 @@ export const register: Register = (on, options) => {
       const at = await Promise.all([$.session.root(), $.session.cwd(), homeOf($)]).catch(() => undefined)
       return <Box flexDirection="column">{head}{setupPage(at)}</Box>
     }
-    // The cursor's move: by `move` rows that open something (pressable), in the log's order, stopping at either end. None yet (or
-    // its row gone: evicted, another view), it starts on the last such row the window drew. The window below keeps it in view
+    // The cursor's move: by `move` rows that open something (pressable), in the log's order, stopping at either end. None yet, or
+    // its row gone (evicted, another view) or out of the window the last draw showed (a ^↑↓, a wheel, a page scroll), it starts
+    // there: j on the window's first such row, k on its last. The window below keeps it in view
     let moved = false
     if (move) {
       const ts = rows.flatMap((r, i) => pressable.has(String(r.props?.key)) ? [[String(r.props.key), i] as const] : [])
-      const i = sel ? ts.findIndex(([k]) => k === sel) : -1
-      const to = i >= 0 ? Math.max(0, Math.min(ts.length - 1, i + move)) : Math.max(0, ts.findLastIndex(([, at]) => at <= winEnd))
+      const i = sel ? ts.findIndex(([k, at]) => k === sel && at >= winStart && at <= winEnd) : -1
+      const first = ts.findIndex(([, at]) => at >= winStart)
+      const to = i >= 0 ? Math.max(0, Math.min(ts.length - 1, i + move))
+        : move > 0 ? (first < 0 ? ts.length - 1 : first) : Math.max(0, ts.findLastIndex(([, at]) => at <= winEnd))
       if (ts[to]) { sel = ts[to][0]; moved = true }
       move = 0
     }
@@ -2141,18 +2144,19 @@ export const register: Register = (on, options) => {
       const k = `b${sel}` // the ring onto its Button once this draw is in, as show does for back: Enter then opens it
       $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: k }).catch(() => {}) })
     }
-    follow = win >= max0
-    if (follow) fresh = 0
-    const avail = follow ? avail0 : Math.max(1, avail0 - 1)
     // A window that starts mid-turn pins that turn's header on its first line, so the rows on screen keep their `#N`. It costs a
-    // row as the jump row does: following, the window moves down one so the newest row stays; the cursor's row stays in view.
+    // row as the jump row does: following, the window moves down one so the newest row stays; the cursor's row stays in view, so
+    // a cursor moved onto the top row of the last page stops the following rather than drop off it.
     // Not on a gap row: the next turn's header is right below it
     const sticks = (w: number) => heads.some(i => i < w) && !heads.includes(w) && !String(rows[w]?.props?.key).startsWith('gap')
+    follow = win >= max0 && !(moved && rowAt(sel!) === win && sticks(win))
+    if (follow) fresh = 0
+    const avail = follow ? avail0 : Math.max(1, avail0 - 1)
     if (sticks(win) && (follow || (moved && rowAt(sel!) === win + avail - 1))) win = Math.min(rows.length - 1, win + 1)
     const stick = sticks(win) ? heads.filter(i => i < win).at(-1)! : undefined
     const winRows = avail - (stick !== undefined ? 1 : 0)
     winMax = Math.max(0, rows.length - avail + (sticks(rows.length - avail) ? 1 : 0))
-    winEnd = win + winRows - 1
+    winStart = win; winEnd = win + winRows - 1
     return (
       <Box flexDirection="column">
         {head}

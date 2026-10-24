@@ -153,6 +153,7 @@ test('a spawned agent\'s rows fold under its Agent row, which shows the agent\'s
   await m.press({ key: (await m.find({ type: 'Button', text: /^general-purpose: probe A$/ }))!.key! })
   expect(await m.find({ text: /^List files A$/ })).toBeDefined()
   expect(await m.find({ text: /^Main work$/ })).toBe(undefined)
+  expect((await m.find({ key: 'fclear' }))?.props.hotkey).toBe('f') // f clears it; in an Agent row's inspector, fonly draws later and wins
   await m.press({ key: 'fclear' })
   expect(await m.find({ text: /^Main work$/ })).toBeDefined()
   await m.press({ key: 'fdone' }) // module state: finished agents folded again for the tests below
@@ -511,6 +512,21 @@ test('ctrl+↑↓ (the turn ↑↓ buttons) put the previous or next prompt\'s t
   await m.press({ key: 'tnext' }) // past the last prompt: the end, following
   expect(await m.find({ text: /^Step 30$/ })).toBeDefined()
   expect(await m.find({ key: 'jump' })).toBe(undefined)
+  // a cursor the window left behind starts over in the window: j after ^↑ stays at #2, not back at Step 30
+  await m.press({ key: 'cup' }) // the cursor on Step 30
+  await m.press({ key: 'tprev' }); await m.press({ key: 'tprev' })
+  await m.press({ key: 'cdown' })
+  expect(await m.find({ text: /^#2$/ })).toBeDefined()
+  expect(await m.find({ text: /^Step 30$/ })).toBe(undefined)
+})
+
+test('with no cursor, j starts on the window\'s first row and k on its last', async ($, on) => {
+  session(on, 'CJ', steps())
+  const m = await pane($, 12, 100) // #1 pinned over Step 23-30
+  await m.press({ key: 'cdown' }) // Step 23, the window's first row
+  await m.press({ key: 'cup' }) // Step 22: above the window, which moves up and stops following
+  expect(await m.find({ text: /^Step 22$/ })).toBeDefined()
+  expect(await m.find({ key: 'jump' })).toBeDefined()
 })
 
 // lookups in hooks/, three by default: `Explore hooks ×3`
