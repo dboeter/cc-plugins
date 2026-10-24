@@ -113,9 +113,10 @@ type HookCfg = Record<string, { matcher: string; name: string; plugin?: boolean;
 let hookCfg: HookCfg | undefined
 let hookFresh = false // hookCfg came from a settings read that worked and no ConfigChange has fired since: else read again
 let enabled: string[] = [] // the plugins settings enable (`name@marketplace`): the setup's plugin list where no plugin_loaded record came
-const scriptName = (h: any): string => {
+export const scriptName = (h: any): string => {
   const cmd = String(h?.command ?? '')
-  return cmd.match(/([\w.-]+)\.(sh|py|js|mjs|ts|rb|pl)\b/)?.[1] ?? cmd.split(/\s+/)[0]?.split('/').pop() ?? String(h?.type ?? 'hook')
+  // a name starts a path segment or word and is no dotfile: `source ~/.vars.sh && ~/hooks/guard.sh` is guard. hook-timer's matches
+  return cmd.match(/(?:^|[\s\/"'=])([\w-][\w.-]*)\.(sh|py|js|mjs|ts|rb|pl)\b/)?.[1] ?? cmd.split(/\s+/)[0]?.split('/').pop() ?? String(h?.type ?? 'hook')
 }
 async function hooksOf($: any): Promise<HookCfg> {
   if (hookCfg && hookFresh) return hookCfg
@@ -134,10 +135,22 @@ async function hooksOf($: any): Promise<HookCfg> {
   hookFresh = ok
   return hookCfg = cfg
 }
+// a matcher as the engine reads it (hooks reference): empty or `*` fits all; only letters, digits, `_`, `-`, spaces, `,` and `|` is
+// a list of exact names (`Edit, Write`); anything else an unanchored regex (`Edit.*` fits NotebookEdit)
 const fits = (matcher: string, target?: string) => {
   if (!matcher || matcher === '*' || target == null) return true
-  try { return new RegExp(`^(?:${matcher})$`).test(target) } catch { return true }
+  if (/^[\w ,|-]+$/.test(matcher)) return matcher.split(/[|,]/).some(m => m.trim() === target)
+  try { return new RegExp(matcher).test(target) } catch { return true }
 }
+// the input field each event's matcher tests (hooks reference); an event not here has no matcher, so every hook on it fits.
+// classic.PreToolUse's envelope is tool.call's: `tool`, not `tool_name`
+const MATCHED_BY: Record<string, string> = {
+  SessionStart: 'source', SessionEnd: 'reason', Setup: 'trigger', Notification: 'notification_type', SubagentStart: 'agent_type',
+  SubagentStop: 'agent_type', PreCompact: 'trigger', PostCompact: 'trigger', PreModelSwitch: 'to_model', PostModelSwitch: 'to_model',
+  ConfigChange: 'source', DirectoryAdded: 'source', StopFailure: 'error', InstructionsLoaded: 'load_reason',
+  UserPromptExpansion: 'command_name', Elicitation: 'mcp_server_name', ElicitationResult: 'mcp_server_name',
+}
+export const targetOf = (e: any, event: string): string | undefined => e.tool ?? e.tool_name ?? (event in MATCHED_BY ? e[MATCHED_BY[event]!] : undefined)
 // hook-timer's runs (~/.claude/hooks/hook-timer, which settings.json puts in front of each hook command): `{name, event, use,
 // t0, t1, exit, say}` per run, one file per session; say is the first line of what the hook handed back. The engine times an
 // event's chain whole and merges its hooks' text, so these are what name a wrapped hook, time it and credit its text to it;
@@ -155,6 +168,11 @@ export const pickRuns = (text: string, keep: (r: any) => boolean, from: number):
   return out
 }
 const SKEW = 100 // ms: the wrapper's clock read sits a process start inside the engine's
+// a hook-timer run of this event's chain (t0..now): a call's by its tool_use_id; others by loop too, so two agents' overlapping
+// SubagentStop chains keep their own. A run recorded before hook-timer wrote `agent` has no such key and still counts
+export const runOf = (e: any, event: string, t0: number, now: number) => (r: any) =>
+  r.event === event && (r.use ?? undefined) === e.tool_use_id && (!!e.tool_use_id || !('agent' in r) || (r.agent ?? undefined) === e.agent_id) &&
+  r.t0 >= t0 - SKEW && r.t1 <= now + SKEW
 const LATE = 30 * 60_000 // ms: how far back a hook's text can have been said: a PreToolUse hook's goes out with the request after its call
 const runsOf = async ($: any, keep: (r: any) => boolean, from: number) => {
   try { return pickRuns(await $.fs.read(`${await $.env.get('HOME')}/.claude/hook-times/${await $.session.id()}.jsonl`), keep, from) } catch { return [] } // no file yet
@@ -162,8 +180,11 @@ const runsOf = async ($: any, keep: (r: any) => boolean, from: number) => {
 const timed = (h: { cmd?: string }) => !!h.cmd?.includes('hook-timer')
 // whether hook-timer wraps any hook this event runs: else there is nothing to read
 const wraps = (cfg: HookCfg, event: string, target?: string) => (cfg[event] ?? []).some(h => timed(h) && fits(h.matcher, target))
-// the hook that handed back a text: the wrapped run whose first line it holds
-export const speaker = (runs: Run[], text: string) => [...runs].reverse().find(r => r.say && text.includes(r.say))?.name
+// the hook that handed back a text: the wrapped run whose first line starts one of its lines, past the engine's framing
+export const speaker = (runs: Run[], text: string) => {
+  const lines = text.split('\n').map(l => l.trim().replace(FRAME, ''))
+  return [...runs].reverse().find(r => r.say?.trim() && lines.some(l => l.startsWith(r.say!.trim())))?.name
+}
 // a classic event's hooks, given its runs: each text (pieces) by its speaker, else by hookName; with nothing said, the wrapped
 // hooks that ran and the unwrapped ones that fit
 export const runNames = (cfg: HookCfg, event: string, target: string | undefined, runs: Run[], pieces: string[]) => {
@@ -190,7 +211,8 @@ export const hookName =(cfg: HookCfg, event: string, target?: string, text?: str
   if (said.length) return said.join(', ')
   // `PostToolUse hook modified <file> after your edit`: the engine's own notice, framed as the event's hook
   const plugin = head.startsWith(`${event} hook `) ? [] : plugins
-  return (plugin.length ? plugin : names(fit).length === 1 ? names(fit) : [`${event} hook`]).join(', ')
+  // several plugins and nothing names one: the event's, not a guess at each
+  return (plugin.length === 1 ? plugin : names(fit).length === 1 ? names(fit) : [`${event} hook`]).join(', ')
 }
 
 // === ROWS ===
@@ -1178,7 +1200,7 @@ export const register: Register = (on, options) => {
     // settings hooks that exited with an error or that the engine cancelled (a timeout), as the collector counted them: a red row,
     // even when the rest of the event changed nothing. Only with OTEL export on
     // classic.PreToolUse's e is the tool.call envelope: `tool`, no `tool_name` or `hook_event_name`
-    const target = e.tool ?? e.tool_name ?? e.source ?? e.trigger ?? e.reason
+    const target = targetOf(e, event)
     const run = lastRun && lastRun.event === event && lastRun.t >= t0 && (!lastRun.name.includes(':') || fits(lastRun.name.slice(lastRun.name.indexOf(':') + 1), target)) ? lastRun : undefined
     if (run) lastRun = undefined
     const broke = run ? [run.cancelled && `${run.cancelled} cancelled`, run.errors && `${run.errors} failed`].filter(Boolean).join(', ') : ''
@@ -1187,7 +1209,7 @@ export const register: Register = (on, options) => {
     const failed = !!broke && !blocked && !r?.preventContinuation
     const cfg = await hooksOf($)
     // the wrapped hooks that ran on this event and call, within its span
-    const runs = wraps(cfg, event, target) ? await runsOf($, r => r.event === event && (r.use ?? undefined) === e.tool_use_id && r.t0 >= t0 - SKEW && r.t1 <= Date.now() + SKEW, t0) : []
+    const runs = wraps(cfg, event, target) ? await runsOf($, runOf(e, event, t0, Date.now()), t0) : []
     // each context entry is one hook's: by the run that said it, else named in its own first line. Context leaves the silent hooks
     // in the name: they ran too, and the row counts them. A block keeps only its blocker, whom the call's ⊘ names (byOf)
     const spoke = runs.length ? runNames(cfg, event, target, runs, typeof blocked === 'string' ? [blocked] : ctx)

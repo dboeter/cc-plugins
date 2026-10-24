@@ -1,6 +1,6 @@
 // Pane tests share the module's state (level, folds, finished agents shown): a test that changes one sets it back before it ends.
 import { test, expect, mock, type TestBody } from 'claude-code/testing'
-import { ASKED, costOf, scrub, ctxOf, harnessOf, hookName, markAgain, modelName, outsideOf, pack, pickRuns, rootOf, routine, runNames, speaker, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
+import { ASKED, costOf, scrub, ctxOf, harnessOf, hookName, markAgain, modelName, outsideOf, pack, pickRuns, rootOf, routine, runNames, runOf, scriptName, speaker, targetOf, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
 
 // the shape hooksOf builds: settings hooks by script name, plugin hooks by plugin. Texts are real rows from the store
 const cfg = {
@@ -34,9 +34,9 @@ test('text is credited to the hook it names', () => {
   expect(hookName(cfg, 'PreToolUse', 'Edit', 'contract-guard: a /sprint implement phase is active')).toBe('contract-guard')
 })
 
-test('text naming no settings hook is a plugin hook\'s', () => {
+test('text naming no settings hook is the one plugin hook\'s, else the event\'s', () => {
   expect(hookName(cfg, 'PreToolUse', 'Bash', '<context_guidance>\n  <tip>\n    When you intend to PROCESS')).toBe('context-mode')
-  expect(hookName(cfg, 'SessionStart', 'resume', '<context_window_protection>\n  <priority_instructions>')).toBe('codex, context-mode') // both plugins hook SessionStart, the text names neither
+  expect(hookName(cfg, 'SessionStart', 'resume', '<context_window_protection>\n  <priority_instructions>')).toBe('SessionStart hook') // both plugins hook SessionStart, the text names neither
 })
 
 // live misattributions: text below the first line quoting other hooks, and a hook's path naming its folder
@@ -44,6 +44,26 @@ test('only the first line names a settings hook', () => {
   expect(hookName(cfg, 'SessionStart', 'resume', 'SessionStart:resume hook success: State carried across the context boundary (session-context hook):\nbranch: main\n M hooks/security/unicode-scan.md')).toBe('session-context')
   expect(hookName(cfg, 'SessionStart', 'resume', 'SessionStart hook additional context: \n<context_window_protection>\n  EXTERNAL=( "herdr-agent-state.sh" )\n  Tell user: "context-mode knowledge base preserved."')).toBe('context-mode')
   expect(hookName(cfg, 'PreToolUse', 'Bash', 'PreToolUse:Bash hook error: [$HOME/.claude/hooks/guard/test-gate.sh]: test-gate: \'unit\' failing')).toBe('test-gate')
+})
+
+test('a matcher fits as the engine reads it: a list of exact names, else an unanchored regex', () => {
+  const cfg = { PostToolUse: [{ matcher: 'Edit, Write', name: 'list' }, { matcher: 'Edit.*', name: 'regex' }, { matcher: 'Bash', name: 'exact' }] }
+  expect(hookName(cfg, 'PostToolUse', 'Write')).toBe('list')
+  expect(hookName(cfg, 'PostToolUse', 'NotebookEdit')).toBe('regex')
+  expect(hookName(cfg, 'PostToolUse', 'BashOutput')).toBe('')
+})
+
+test('each event is matched on its own field: a SubagentStop on the agent type, a Notification on its type', () => {
+  const cfg = { SubagentStop: [{ matcher: 'Explore', name: 'explore-done' }, { matcher: 'Plan', name: 'plan-done' }], Notification: [{ matcher: 'idle_prompt', name: 'idle' }, { matcher: 'permission_prompt', name: 'ask' }] }
+  expect(hookName(cfg, 'SubagentStop', targetOf({ agent_id: 'a1', agent_type: 'Explore' }, 'SubagentStop'))).toBe('explore-done')
+  expect(hookName(cfg, 'Notification', targetOf({ notification_type: 'permission_prompt' }, 'Notification'))).toBe('ask')
+  expect(targetOf({ tool: 'Bash' }, 'PreToolUse')).toBe('Bash')
+  expect(targetOf({ stop_hook_active: false, reason: 'x' }, 'Stop')).toBe(undefined) // Stop takes no matcher
+})
+
+test('a hook is named by its script, not a dotfile the command sources first', () => {
+  expect(scriptName({ command: 'bash -c "source ~/.vars.sh && ~/.claude/hooks/guard.sh"' })).toBe('guard')
+  expect(scriptName({ command: 'node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs' })).toBe('pretooluse')
 })
 
 test('unnamed text: the one candidate, else the event', () => {
@@ -1479,6 +1499,18 @@ test('a wrapped hook is named by its run: text by the run that said it, silence 
   expect(runNames(cfg, 'PreToolUse', 'Bash', runs, ['context-mode: use ctx_execute'])).toBe('context-mode') // no run said it: by its text
   expect(withSilent(cfg, 'PreToolUse', 'Bash', runs, 'context-mode')).toBe('context-mode, guard, test-gate') // context keeps the hooks that said nothing
   expect(speaker(runs, 'nothing like it')).toBe(undefined)
+  const ok = [{ name: 'okay', ms: 1, say: 'ok' }]
+  expect(speaker(ok, 'look at this')).toBe(undefined) // a word inside a line is no hook's first line
+  expect(speaker(ok, 'PostToolUse:Edit hook additional context: ok, formatted')).toBe('okay')
+})
+
+test('overlapping SubagentStop chains of two agents keep their own runs', () => {
+  const r = (agent: string | null, o: object = {}) => ({ name: 'stop-check', event: 'SubagentStop', use: null, agent, t0: 1000, t1: 1100, ...o })
+  const keep = runOf({ agent_id: 'a1' }, 'SubagentStop', 1000, 1200)
+  expect(keep(r('a1'))).toBe(true)
+  expect(keep(r('a2'))).toBe(false)
+  expect(keep({ name: 'old', event: 'SubagentStop', t0: 1000, t1: 1100 })).toBe(true) // written before hook-timer recorded the agent
+  expect(runOf({ tool_use_id: 'u1' }, 'PreToolUse', 1000, 1200)({ event: 'PreToolUse', use: 'u1', agent: 'a1', t0: 1000, t1: 1100 })).toBe(true) // a call's runs go by its id
 })
 
 test('each hook outcome has its mark: + context, · nothing, ■ a stop (yellow, not ✗), ⊘ a block', async ($, on) => {

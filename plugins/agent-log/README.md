@@ -40,7 +40,7 @@ Claude Code times an event's hooks as one chain and merges their text, so withou
 { "type": "command", "command": "hook-timer ~/.claude/hooks/guard.sh" }
 ```
 
-The hook keeps its stdin, stdout, stderr and exit code. hook-timer appends one line per run to `~/.claude/hook-times/<session_id>.jsonl`, which agent-log reads. Plugins' hooks can't be wrapped; they are named from their `hooks.json`, and their text by the name in its first line.
+The hook keeps its stdin, stdout, stderr and exit code. hook-timer appends one line per run to `~/.claude/hook-times/<session_id>.jsonl`, which agent-log reads. Plugins' hooks can't be wrapped; they are named from their `hooks.json`, and their text by the name in its first line. Text that names no hook goes to the event's one plugin hook, or, with several, to `<event> hook`.
 
 ## Install
 

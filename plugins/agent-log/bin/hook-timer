@@ -5,7 +5,8 @@
 # unwrapped; its stdout and stderr reach the engine once it exits, which is when the engine reads them anyway.
 # Writes one JSON line per run to ~/.claude/hook-times/<session_id>.jsonl, which agent-log reads to time each hook and to
 # credit text to the hook that wrote it:
-#   {"name":"guard","event":"PreToolUse","use":"toolu_…","t0":<epoch ms>,"t1":<epoch ms>,"exit":0,"say":"guard: …"}
+#   {"name":"guard","event":"PreToolUse","use":"toolu_…","agent":null,"t0":<epoch ms>,"t1":<epoch ms>,"exit":0,"say":"guard: …"}
+# agent: the subagent's agent_id, null in the main loop
 # say: the first line of what the hook handed back (an exit-2 reason, additionalContext, systemMessage, a block reason, or
 # stdout on the events where plain stdout is context), cut to 80 chars; null when it said nothing.
 # No file extension on purpose: agent-log names a hook by the first `<name>.sh|py|js|…` in its command, which must
@@ -33,7 +34,9 @@ rm -f "$errf"
 [[ -n $t0 && -n $t1 ]] || exit $rc
 
 # the name agent-log gives the hook (scriptName in agent-log.tsx): first script file named, else the command's basename
-if [[ "$*" =~ ([[:alnum:]_.-]+)\.(sh|py|js|mjs|ts|rb|pl)([^[:alnum:]_]|$) ]]; then name=${BASH_REMATCH[1]}; else name=${1##*/}; fi
+# a name starts a path segment or word and is no dotfile: `source ~/.vars.sh && ~/hooks/guard.sh` is guard
+re='(^|[[:space:]/"'"'"'=])([[:alnum:]_-][[:alnum:]_.-]*)\.(sh|py|js|mjs|ts|rb|pl)([^[:alnum:]_]|$)'
+if [[ "$*" =~ $re ]]; then name=${BASH_REMATCH[2]}; else name=${1##*/}; fi
 dir="$HOME/.claude/hook-times"
 [[ -d $dir ]] || mkdir -p "$dir" 2>/dev/null
 # shellcheck disable=SC2016  # jq program, not shell
@@ -48,7 +51,7 @@ dir="$HOME/.claude/hook-times"
      elif (.hook_event_name | IN("SessionStart", "UserPromptSubmit")) then $out
      else null end) as $said
   | (.session_id // ""),
-    ({name: $name, event: .hook_event_name, use: (.tool_use_id // null), t0: $t0, t1: $t1, exit: $exit, say: ($said | if . then line else null end)} | tojson)
+    ({name: $name, event: .hook_event_name, use: (.tool_use_id // null), agent: (.agent_id // null), t0: $t0, t1: $t1, exit: $exit, say: ($said | if . then line else null end)} | tojson)
   ' <<<"$input" 2>/dev/null)
 # one short line per append: concurrent hooks of one event write whole lines
 [[ $sid =~ ^[[:alnum:]-]+$ && -n $line ]] && printf '%s\n' "$line" >>"$dir/$sid.jsonl" 2>/dev/null

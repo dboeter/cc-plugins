@@ -3,7 +3,8 @@
 # stdin through a pipe as the engine sends it. A case passes when both hand the hook the same stdin and the caller the
 # same stdout, stderr and exit code, append the same records (t0/t1 aside) and leave no temp file behind. The default
 # ref is the last commit before the fork-lean rewrite: the contract is "what that version did", so a no-arg run still
-# checks it once the rewrite is on main. `claude plugin test` runs only *.test.ts, so this one runs by hand.
+# checks it once the rewrite is on main. Records are compared without `agent`, which that version did not write; `own` cases
+# check what only this version does. `claude plugin test` runs only *.test.ts, so this one runs by hand.
 here=$(cd "$(dirname "$0")/.." && pwd)
 ref=${1:-6266290}
 tmp=$(mktemp -d) || exit 1
@@ -78,7 +79,7 @@ report() {
   local name=$1; shift
   if (($#)); then printf 'FAIL %s:' "$name"; printf ' [%s]' "$@"; echo; ((fails++)); else echo "PASS $name"; ((pass++)); fi
 }
-recs() { cat "$1"/home/.claude/hook-times/*.jsonl 2>/dev/null | sed -E 's/"t0":[0-9]+,"t1":[0-9]+,/"t0":T,"t1":T,/'; }
+recs() { cat "$1"/home/.claude/hook-times/*.jsonl 2>/dev/null | sed -E 's/"agent":[^,]*,//; s/"t0":[0-9]+,"t1":[0-9]+,/"t0":T,"t1":T,/'; }
 files() { (cd "$1/home" && find . -type f | sort); }
 # bash's own diagnostics name the script and line (and a killed job's pid); the line moves whenever the code does
 norm() { sed -E "s#^$tmp/(old|new)/hook-timer: line [0-9]+: ([0-9]+ +)?#hook-timer: line N: #" "$1"; }
@@ -110,6 +111,16 @@ check() {
   [[ $(recs "$o" | wc -l) -eq $want ]] || why+=("$ref's wrote $(recs "$o" | wc -l) records, want $want")
   [[ $(files "$o") == "$(files "$n")" ]] || why+=("files under HOME")
   clean "$o" old; clean "$n" new
+  report "$name" "${why[@]}"
+}
+
+# own <name> <payload> <jq test> -- <command...>: this version alone; its one record must pass the jq test
+own() {
+  local name=$1 payload=$2 want=$3 d=$tmp/runs/$1.own why=(); shift 4
+  mkdir -p "$d/home" "$d/xdg"; chmod 700 "$d/xdg"
+  env XDG_RUNTIME_DIR="$d/xdg" HOME="$d/home" HT_IN="$d/in" "$tmp/new/hook-timer" "$@" <"$payload" >/dev/null 2>&1
+  [[ $(cat "$d"/home/.claude/hook-times/*.jsonl 2>/dev/null | jq -s "length == 1 and (.[0] | $want)") == true ]] ||
+    why+=("record $(cat "$d"/home/.claude/hook-times/*.jsonl 2>/dev/null)")
   report "$name" "${why[@]}"
 }
 
@@ -193,6 +204,11 @@ check no-clock-stderr-exit-2 0 "$p/pre" HT_ERR="$o/reason" HT_EXIT=2 -- "$h/guar
 check no-clock-stdout-200k-stdin 0 "$p/big" HT_OUT="$o/trailing" -- "$h/guard.sh"
 pre=()
 crowd
+printf '{"session_id":"s-1","hook_event_name":"SubagentStop","agent_id":"agent-1","agent_type":"Explore"}' >"$p/substop"
+: >"$h/.vars.sh"
+own agent-of-subagent "$p/substop" '.agent == "agent-1"' -- "$h/guard.sh"
+own agent-null-in-main "$p/pre" '.agent == null' -- "$h/guard.sh"
+own name-skips-dotfile "$p/pre" '.name == "guard"' -- bash -c ". $h/.vars.sh && $h/guard.sh"
 
 echo "$pass passed, $fails failed"
 ((fails == 0))
