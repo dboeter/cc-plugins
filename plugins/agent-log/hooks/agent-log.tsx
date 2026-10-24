@@ -1938,10 +1938,10 @@ export const register: Register = (on, options) => {
     if (inFlight.length && busy && cur !== turnNo) { if (cur !== undefined) rows.push(<Text key={`gap${rows.length}`}> </Text>); rows.push(header(turnNo, `turn${turnNo}`)); cur = turnNo }
     for (const [k, l] of inFlight) rows.push(line({ k: `now${k}`, act: nowAct(l), st: [`● ${secs(now - l.t)}`, 'green'], who: l.loop ? whoOf(l.loop) : '' }))
     // the keys page (i): what each mark means, then what each key does, one per line
-    const MARKS = ['✗ red: broke', '⊘ cyan: refused, by a hook, a rule, the classifier or you', '⚠ yellow: ended early (interrupted, cut off, an agent killed)',
-      '■ yellow: a hook stopped the session', '◷ yellow: a slow hook', '↩ blue: a hook\'s feedback to the model', '● green: running now', '✓ an agent finished',
+    const MARKS = ['✗ red: broke', '⊘ cyan: refused, by a hook, a rule, the classifier, you or the model', '⚠ yellow: ended early (interrupted, cut off, an agent killed)',
+      '■ yellow: a hook stopped the session', '◷ yellow: a slow hook', '↩ blue: a hook\'s feedback to the model', '● green: running now', '✓ an agent finished', '? an agent in a state agent-log does not know',
       '↗ magenta: a place in another project; a dim path with no ↗: ~/.claude or /tmp', '+ a hook added context', '· a hook changed nothing', '∅ found nothing', '≈ estimated',
-      '╭ │ ├ ╰ a call bracketed with its hooks: those above it ran before it, those below after', '› the agent the log is filtered to',
+      '╭ │ ├ ╰ a call bracketed with its hooks: those above it ran before it, those below after', '│ ├ └ an open Agent fold\'s rows, and the agent tree\'s branches', '› the agent the log is filtered to',
       'bright: a row that did something; dim: routine, or below the level', '▸ ▾ open, close an Agent fold or a turn\'s hidden rows',
       'other, in a turn\'s split: the engine\'s and plugins\' own work between steps']
     const KEYS: [string, string][] = [['a m h u', 'views: all, what the model did, the harness, outside the root'], ['l', 'level: info or notice (/agentlog level sets debug and error)'],
