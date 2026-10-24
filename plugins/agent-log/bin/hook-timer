@@ -8,7 +8,7 @@
 #   {"name":"guard","event":"PreToolUse","use":"toolu_…","agent":null,"t0":<epoch ms>,"t1":<epoch ms>,"exit":0,"say":"guard: …"}
 # agent: the subagent's agent_id, null in the main loop
 # say: the first line of what the hook handed back (an exit-2 reason, additionalContext, systemMessage, a block reason, or
-# stdout on the events where plain stdout is context), cut to 80 chars; null when it said nothing.
+# stdout on the events where plain stdout is context), cut to 80 code points; null when it said nothing.
 # No file extension on purpose: agent-log names a hook by the first `<name>.sh|py|js|…` in its command that starts a word
 # or path segment and is no dotfile (the regex below), which must stay the wrapped script, not this one.
 # stdin as $(cat) gave it, trailing newlines dropped. A builtin read forks nothing but reads a pipe a byte per syscall, so

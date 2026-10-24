@@ -195,7 +195,7 @@ const CUT = 80
 // words (`ok` is not `okay …`) unless the say was cut
 const says = (say: string, l: string) => {
   const s = say.trim()
-  return l.startsWith(s) && ([...say].length >= CUT || !/\w$/.test(s) || !/^\w/.test(l.slice(s.length)))
+  return l.startsWith(s) && ([...say].length >= CUT || !/[\p{L}\p{N}_]$/u.test(s) || !/^[\p{L}\p{N}_]/u.test(l.slice(s.length))) // any script's letters: `ok` is not `oké`
 }
 export const speaker = (runs: Run[], text: string) => {
   const lines = text.split('\n').map(l => l.trim().replace(FRAME, ''))

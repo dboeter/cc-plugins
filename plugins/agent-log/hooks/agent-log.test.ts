@@ -1539,6 +1539,7 @@ test('a wrapped hook is named by its run: text by the run that said it, silence 
   expect(speaker(ok, 'look at this')).toBe(undefined) // a word inside a line is no hook's first line
   expect(speaker(ok, 'PostToolUse:Edit hook additional context: ok, formatted')).toBe('okay')
   expect(speaker(ok, 'okay then')).toBe(undefined) // whole words: ok is not okay
+  expect(speaker(ok, 'oké')).toBe(undefined)
   expect(speaker(ok, 'ok.')).toBe('okay')
   expect(speaker(ok, 'ok')).toBe('okay')
   const cut = 'lint: ' + 'x'.repeat(70) + 'abcd' // hook-timer keeps 80 code points, here mid-word
@@ -1554,19 +1555,22 @@ test('the setup page says whether hook-timer times your settings hooks; plugins\
   expect(hookTimes({ PreToolUse: [plugin] })).toBe('no settings hooks')
 })
 
-// settings whose hooks hooksOf reads afresh: a ConfigChange drops the one read before (module state)
+// settings whose hooks hooksOf reads afresh: a ConfigChange drops the one read before (module state). The function it returns
+// sets that back: a read that fails, as with no settings.read fake, so the next test's hooksOf reads again
 const hooksFrom = async ($: any, on: any, settings: () => object, files: Record<string, () => string> = {}) => {
+  let live = true
   on('classic.*', () => ({}) as any)
   on('env.get', () => ({ value: '/home/u' }))
-  on('settings.read', () => ({ value: settings() }))
+  on('settings.read', () => { if (!live) throw new Error('no settings'); return { value: settings() } })
   on('fs.read', (_$: any, e: any) => ({ value: files[e.path]?.() ?? '{}' })) // no plugin installed
   await $.classic.ConfigChange({ source: 'user_settings' })
+  return async () => { live = false; await $.classic.ConfigChange({ source: 'user_settings' }) }
 }
 
 test('the setup page shows per-hook times off, then on once a settings hook runs through hook-timer', async ($, on) => {
   session(on, 'PH')
   let cmd = '$HOME/.claude/hooks/guard.sh'
-  await hooksFrom($, on, () => ({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: cmd }] }] } }))
+  const reset = await hooksFrom($, on, () => ({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: cmd }] }] } }))
   const m = await pane($, 60, 160)
   await m.press({ key: 'fsetup' })
   expect(await m.find({ text: /^off: no settings hook runs through hook-timer/ })).toBeDefined()
@@ -1576,17 +1580,19 @@ test('the setup page shows per-hook times off, then on once a settings hook runs
   await m.press({ key: 'fsetup' })
   expect(await m.find({ text: 'on for 1 of 1 settings hook' })).toBeDefined()
   await m.press({ key: 'back' })
+  await reset()
 })
 
 test('a SubagentStop row keeps its own agent\'s hook-timer run when another agent\'s chain overlaps it', async ($, on) => {
   const db = capture(on, 'SA')
   const T = '$HOME/.claude/hooks/hook-timer $HOME/.claude/hooks/'
   const run = (name: string, agent: string) => JSON.stringify({ name, event: 'SubagentStop', use: null, agent, t0: Date.now() - 20, t1: Date.now(), exit: 0, say: null })
-  await hooksFrom($, on, () => ({ hooks: { SubagentStop: [{ matcher: 'Explore', hooks: [{ type: 'command', command: `${T}stop-check.sh` }] }, { matcher: 'Plan', hooks: [{ type: 'command', command: `${T}plan-check.sh` }] }] } }),
+  const reset = await hooksFrom($, on, () => ({ hooks: { SubagentStop: [{ matcher: 'Explore', hooks: [{ type: 'command', command: `${T}stop-check.sh` }] }, { matcher: 'Plan', hooks: [{ type: 'command', command: `${T}plan-check.sh` }] }] } }),
     { '/home/u/.claude/hook-times/SA.jsonl': () => [run('plan-check', 'a2'), run('stop-check', 'a1')].join('\n') }) // a2, a Plan agent, stopped meanwhile
   await ($ as any).classic.SubagentStop({ agent_id: 'a1', agent_type: 'Explore', stop_hook_active: false })
   const rows = (await flushed($, 'SA', db)).filter(x => x.origin === 'SubagentStop')
   expect(rows.map(x => x.name)).toEqual(['stop-check'])
+  await reset()
 })
 
 test('overlapping SubagentStop chains of two agents keep their own runs', () => {
