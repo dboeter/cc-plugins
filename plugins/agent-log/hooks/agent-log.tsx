@@ -958,7 +958,7 @@ export const register: Register = (on, options) => {
   const detailOf = (e: any): string =>
     e.tool === 'Bash' ? scrub(e.description ?? '') || noCd(scrub(e.command ?? '')) // the model's own label; else the command minus a leading cd
     : /^(Read|Edit|Write|NotebookEdit|Grep|Glob)$/.test(e.tool) ? e.file_path ?? e.notebook_path ?? e.path ?? ''
-    : e.tool === 'Agent' ? `${e.subagent_type ?? 'general-purpose'}: ${e.description ?? ''}`
+    : e.tool === 'Agent' ? `${e.subagent_type ?? 'general-purpose'}: ${scrub(e.description ?? '')}`
     : e.tool === 'Skill' ? `${e.skill ?? ''}${e.args ? ` ${scrub(e.args)}` : ''}`
     : e.tool === 'WebFetch' ? scrub(e.url ?? '')
     : /^(WebSearch|ToolSearch)$/.test(e.tool) ? scrub(e.query ?? '')
@@ -1244,7 +1244,8 @@ export const register: Register = (on, options) => {
     const by = ev && wraps(cfg, ev, target) ? speaker(await runsOf($, x => x.event === ev && !!x.say, Date.now() - LATE), r.text) : undefined
     const name = e.origin.kind === 'hook' ? by ?? (hookName(cfg, ev, target, r.text) || `${ev} hook`)
       : origin ? `${origin} ${label(e.type)}` : label(e.type)
-    const text = e.type === 'queued_command' ? undefined : peek(r.text) // a queued prompt is the person's own typing
+    // a queued prompt is the person's own typing. session_context carries their email, which scrub keeps (paths and git output stay readable)
+    const text = e.type === 'queued_command' ? undefined : peek(e.type === 'session_context' ? r.text.replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '***') : r.text)
     try { push($, { kind: 'prompt', name, type: e.type, origin, detail: '', outcome: kb(r.text.length), src: e.origin.kind, bytes: r.text.length, agent: e.agentId, peek: text, use: post }, { above: e.origin.kind === 'hook' && e.origin.event === 'PreToolUse' ? target : undefined, after: e.origin.kind === 'hook' && e.origin.event === 'PostToolUse' ? target : undefined }) } catch {}
     return r
   })

@@ -267,6 +267,15 @@ test('email and date log once, as the attachments that carry them, not also as f
   const rows = (await flushed($, 'V', db)).filter(x => x.kind === 'prompt')
   expect(rows.map(x => x.type)).toEqual(['claudeMd', 'session_context', 'date']) // no `email`, no second date
   expect(rows.reduce((n, x) => n + x.bytes, 0)).toBe(mem.length + user.length + date.length) // each text counted once
+  expect(rows.find(x => x.type === 'session_context').peek).toContain('email address is ***.')
+})
+
+test('an Agent row keeps its task with secrets masked', async ($, on) => {
+  const db = capture(on, 'AD')
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'adw', command: 'true', description: 'Warm up' } as any) // the first call on $ loads the plugins
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'ad1', subagent_type: 'scout', description: 'Try API_KEY=abc123def', prompt: 'x' } as any)
+  expect((await flushed($, 'AD', db)).find(x => x.use === 'ad1').detail).toBe('scout: Try API_KEY=***')
 })
 
 // When the plugin chain changes (another plugin loaded, edited or removed), the engine asks a running instance for the whole
