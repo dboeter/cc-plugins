@@ -89,13 +89,16 @@ clean() { # clean <run dir> <label>: no temp file left, every record's t0/t1 a s
     jq -se 'all(.[]; (.t0 | type) == "number" and (.t1 | type) == "number" and .t1 >= .t0)' >/dev/null || why+=("t0/t1 of $2")
 }
 
+# rundir <d>: a run's fresh HOME, XDG_RUNTIME_DIR (0700, as a real one is) and TMPDIR
+rundir() { mkdir -p "$1/home" "$1/xdg" "$1/tmp"; chmod 700 "$1/xdg"; }
+
 # check <name> <records> <payload> [VAR=value...] -- <command...>: both sides run the case with fresh HOME and temp dirs;
 # globals pre (a command in front of hook-timer), xdg (unset, or a value for XDG_RUNTIME_DIR) and runs (0: no hook runs)
 check() {
   local name=$1 want=$2 payload=$3 envs=() s d x why=(); shift 3
   while (($#)) && [[ $1 != -- ]]; do envs+=("$1"); shift; done; shift
   for s in old new; do
-    d=$tmp/runs/$name.$s; mkdir -p "$d/home" "$d/xdg" "$d/tmp"; chmod 700 "$d/xdg"
+    d=$tmp/runs/$name.$s; rundir "$d"
     x=(XDG_RUNTIME_DIR="$d/xdg")
     case $xdg in unset) x=(-u XDG_RUNTIME_DIR) ;; ?*) x=(XDG_RUNTIME_DIR="$xdg") ;; esac
     cat "$payload" | env "${x[@]}" HOME="$d/home" TMPDIR="$d/tmp" HT_IN="$d/in" "${envs[@]}" "${pre[@]}" "$tmp/$s/hook-timer" "$@" >"$d/out" 2>"$d/err"
@@ -117,7 +120,7 @@ check() {
 # own <name> <payload> <jq test> -- <command...>: this version alone; its one record must pass the jq test
 own() {
   local name=$1 payload=$2 want=$3 d=$tmp/runs/$1.own why=(); shift 4
-  mkdir -p "$d/home" "$d/xdg"; chmod 700 "$d/xdg"
+  rundir "$d"
   env XDG_RUNTIME_DIR="$d/xdg" HOME="$d/home" HT_IN="$d/in" "$tmp/new/hook-timer" "$@" <"$payload" >/dev/null 2>&1
   [[ $(cat "$d"/home/.claude/hook-times/*.jsonl 2>/dev/null | jq -s "length == 1 and (.[0] | $want)") == true ]] ||
     why+=("record $(cat "$d"/home/.claude/hook-times/*.jsonl 2>/dev/null)")
@@ -129,7 +132,7 @@ crowd() {
   local s i d f why=() o=$tmp/runs/crowd.old n=$tmp/runs/crowd.new
   for i in $(seq 16); do printf 'out %s\n' "$i" >"$o.out.$i"; printf 'blocked by run %s\n' "$i" >"$o.err.$i"; done
   for s in old new; do
-    d=$tmp/runs/crowd.$s; mkdir -p "$d/home" "$d/xdg" "$d/tmp"; chmod 700 "$d/xdg"
+    d=$tmp/runs/crowd.$s; rundir "$d"
     for i in $(seq 16); do
       { ev s-1 PreToolUse | env XDG_RUNTIME_DIR="$d/xdg" HOME="$d/home" TMPDIR="$d/tmp" HT_IN="$d/in.$i" HT_OUT="$o.out.$i" \
           HT_ERR="$o.err.$i" HT_EXIT=2 HT_SLEEP=0.3 "$tmp/$s/hook-timer" "$h/guard.sh" >"$d/out.$i" 2>"$d/err.$i"; echo $? >"$d/rc.$i"; } &
