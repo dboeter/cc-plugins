@@ -13,7 +13,7 @@ type Src = 'engine' | 'hook' | 'plugin' // who authored injected text: the engin
 // cmd: a Bash call's full scrubbed command, shown in the inspector while the row shows its description. pat: a Grep's or Glob's
 // pattern, scrubbed and cut to 80, which its row reads (`Search "secs\(" in hooks`)
 // check/rule: tool.check's verdict on a tool call and the settings rule that decided it, as written (`Bash(git push:*)`); no rule = a mode, hook or the tool's own check
-// via: who settled the call, as the collector's tool_decision names it (`config`, `hook`, `user_temporary`, `user_reject`); only with OTEL export on
+// via: who settled the call, as the collector's tool_decision names it (`config`, `hook`, `user_temporary`, `user_reject`). The engine raises collector records with export on or off (2.1.310)
 // peek: the first PEEK chars of the injected text, error, or deny/block reason, secret-scrubbed; never the person's typed prompt
 // turn: the number of your prompt the entry followed (`#N` = since your Nth prompt; 0 = before your first, drawn `start`); a subagent's entries carry the same number. Absent on entries from before turns were counted
 // status: a tool call's result as data, so views and folds never parse the `outcome` label; entries from before it derive one (stat).
@@ -27,7 +27,7 @@ type Status = 'ok' | 'failed' | 'denied' | 'blocked' | 'feedback' | 'stopped' | 
 // own key, on a tool row the request that asked for the call. effort as requested; ttft: ms to the first streamed thinking, text
 // or call; think: ms spent thinking; stop: the API's stop reason; tok: [uncached in, cache read, cache write, out]; asked: the
 // tools it called; server: the calls the API ran itself (the advisor) and their ms; thought: its thinking's first line;
-// cost/req: the collector's price and request id for it, when OTEL export is on
+// cost/req: the collector's price and request id for it
 // split: on main's turn row, where its time went as splitOf counts it, kept so evicting the turn's rows does not lose it
 // out: on a tool row, the place outside the session's project root the call reached (outsideOf), `~`-shortened; absent inside it
 // each: on a row of several hooks, each hook's own ms, by name, as hook-timer recorded it (pickRuns); hooks it does not wrap are absent
@@ -287,7 +287,7 @@ let page: 'setup' | 'keys' | undefined // the setup page or the keys page (what 
 let pageBack = false // the inspector opened from the setup page: back returns to the page, not the log
 // The session's setup as the hooks saw it, for the setup button and page, in memory only: the main loop's last model and effort
 // (asked at session.start, then its steps), the permission mode (every classic event carries it), rate limits (session.measure),
-// and from the collector, with OTEL export on: the plugins the engine loaded and the MCP servers it connected
+// and from the collector: the plugins the engine loaded and the MCP servers it connected
 // (records at startup), and per hook event the settings hooks' runs, the silent ones included (hook_execution_complete). bg: the
 // background tasks and crons still in flight when main's last turn ended (Stop): TaskCreated/Completed rows log their lives
 type Setup = { model?: string; effort?: string | number; mode?: string; limits: { kind: string; percentUsed: number; resetsAt?: string }[]
@@ -370,8 +370,8 @@ const VIA: Record<string, string> = { user_temporary: 'you allowed it once', use
 // auto mode's classifier refusing a call: the error result the model reads instead of the call's output
 const CLASSIFIED = /^Permission for this action was denied by the Claude Code auto mode classifier/
 // the error results a refused call returns: a denied permission prompt (or one no one could answer, headless), you rejecting it,
-// the classifier, the guard on the session's working directories. Read from the text too: without OTEL export no decision record
-// comes, and a refusal's record can come late
+// the classifier, the guard on the session's working directories. Read from the text too: a decision record can be missing (an
+// older engine), and a refusal's record can come late
 const DENIED = /^(Permission to use \S+ has been denied|The user doesn't want to proceed with this tool use|Permission for this action was denied|\S+ in '[^']*' was blocked\. For security)/
 // why it was refused: the first sentence (past it, advice to the model); the guard's, with the rule it applied but not the directories
 const deniedWhy = (s: string) => /was blocked\. For security/.test(s) ? s.replace(/:\s*'[\s\S]*$/, '') : s.split(/(?<=\.)\s/)[0]!
@@ -653,7 +653,7 @@ const blockedUse = new Set<string>() // tool_use_ids a PreToolUse hook blocked: 
 // tool_use_id -> when tool.check returned its verdict, and when the engine's collector record `tool_decision` settled it. The gap
 // is not the tool's: a call that starts while the model still streams its message is decided once that message ends (probed on
 // 2.1.296: an `ask` settled `source: config` 1.1 s after the check, its `tool_decision` 6 ms before main's `api_request` record,
-// with no classifier request). Only with OTEL export on does the engine raise collector records; without them no wait is logged
+// with no classifier request). Without its collector records (an older engine) no wait is logged
 const checkedAt = new Map<string, number>()
 const decided = new Map<string, { t: number; source?: string; decision?: string }>()
 let streamEnd = 0 // when main's last model request closed (collector `api_request`)
@@ -1205,7 +1205,7 @@ export const register: Register = (on, options) => {
     // ConfigChange's source (`user_settings`) is left out: its event row names the settings file
     const detail = String(e.tool_name ?? e.tool ?? (event === 'ConfigChange' ? undefined : e.source) ?? e.reason ?? [e.load_reason, e.file_path && at(e.file_path)].filter(Boolean).join(' ')).slice(0, 120) // no e.prompt: that is the person's prompt
     // settings hooks that exited with an error or that the engine cancelled (a timeout), as the collector counted them: a red row,
-    // even when the rest of the event changed nothing. Only with OTEL export on
+    // even when the rest of the event changed nothing
     // classic.PreToolUse's e is the tool.call envelope: `tool`, no `tool_name` or `hook_event_name`
     const target = targetOf(e, event)
     const run = lastRun && lastRun.event === event && lastRun.t >= t0 && (!lastRun.name.includes(':') || fits(lastRun.name.slice(lastRun.name.indexOf(':') + 1), target)) ? lastRun : undefined
@@ -2023,8 +2023,8 @@ export const register: Register = (on, options) => {
         {KEYS.map(([k, v]) => <Box key={`ky${k}`} flexDirection="row"><Box flexShrink={0} width={11}><Text dimColor>{k}</Text></Box><Text wrap="wrap">{v}</Text></Box>)}
       </Box>
     )
-    // The setup page: the session's setup and how it held up. Hook runs and plugins come from the collector (OTEL export on); without
-    // it, the hooks and plugins your settings name. A problem's row opens its inspector
+    // The setup page: the session's setup and how it held up. Hook runs and plugins come from the collector; without its
+    // records, the hooks and plugins your settings name. A problem's row opens its inspector
     const setupPage = (at?: [string, string, string | undefined]) => {
       const xs = (f: (x: Entry) => boolean) => entries.filter(f)
       // requests: how many, their time, tokens and price where the collector gave one

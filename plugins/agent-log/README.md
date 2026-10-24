@@ -1,6 +1,6 @@
 # agent-log
 
-Why was that turn slow, and who allowed that call? A live pane that splits each turn's time across the model (time to first token, thinking), tools, hooks and waiting on you, read from Claude Code's own model stream. With OTEL on, also who decided each call: you, a hook or the classifier.
+Why was that turn slow, and who allowed that call? A live pane that splits each turn's time across the model (time to first token, thinking), tools, hooks and waiting on you, read from Claude Code's own model stream, and who decided each call: you, a hook or the classifier.
 
 ```
 #1 · tools 17.2s · model 12.3s · 4 hidden ▸                                           39.6s
@@ -20,15 +20,15 @@ agent-log is the interpreted view of a session. [event-log](../event-log) is the
 
 ## What it shows
 
-Parts marked *(OTEL)* need OpenTelemetry export on (`CLAUDE_CODE_ENABLE_TELEMETRY=1`). Without it they are missing and the rest works.
+Prices, request ids, who decided a call, permission waits, hook run counts and API errors come from the telemetry records Claude Code hands plugins. They arrive whether or not telemetry export is on (checked on Claude Code 2.1.310), so agent-log needs no `CLAUDE_CODE_ENABLE_TELEMETRY` or `OTEL_*` variables.
 
 - **Turns**: each prompt's header gives the turn's time and its two largest parts. `#N` opens the full split: model, tools, agents, hooks, compaction, permission prompts and you.
-- **Model requests**: one row per request of the main loop or a subagent, with time to first token, thinking time, tokens and the start of the reply. Price and request id *(OTEL)*.
-- **Tool calls**: each call with its run time, and its hooks bracketed around it (`╭ ├ ╰`). The inspector says who decided it: a settings rule, or, *(OTEL)*, you, a hook or the auto-mode classifier. A call that waited for that decision gets a `Waiting for …` row above it *(OTEL)*.
+- **Model requests**: one row per request of the main loop or a subagent, with time to first token, thinking time, tokens and the start of the reply. Price and request id.
+- **Tool calls**: each call with its run time, and its hooks bracketed around it (`╭ ├ ╰`). The inspector says who decided it: a settings rule, you, a hook or the auto-mode classifier. A call that waited for that decision gets a `Waiting for …` row above it.
 - **Outside the project root**: a call that reached another project is marked `↗` with the place, and the controls count them (`↗ 2 other project`). A routine place (`~/.claude`, `/tmp`) shows as a dim path without the `↗`. The `outside` view keeps all of these calls.
-- **The harness**: hook runs and what they injected, plugins' model calls, compactions, model switches and MCP failures. Claude Code's own requests (titles, suggestions) and API errors *(OTEL)*.
+- **The harness**: hook runs and what they injected, plugins' model calls, compactions, model switches and MCP failures. Claude Code's own requests (titles, suggestions) and API errors.
 - **Running now**: what streams or runs at this moment, as green `●` lines under the log.
-- **Setup page** (`s`): what broke this session (each problem opens its row), hooks per event with their runs *(OTEL for the run counts)*, plugins, model use per source, where the session is, and background work still running. Context, cost, rate limits and MCP servers are left to `/context`, `/cost`, `/status` and `/mcp`.
+- **Setup page** (`s`): what broke this session (each problem opens its row), hooks per event with their runs, whether hook-timer times them (`per-hook times`), plugins, model use per source, where the session is, and background work still running. Context, cost, rate limits and MCP servers are left to `/context`, `/cost`, `/status` and `/mcp`.
 
 `i` opens the keys page, which lists what every mark and colour means. Each mark has its own glyph, so none relies on colour alone. In the controls, bright means active: the view shown (also marked `•`), the open page, the loop the log is filtered to. When the log starts mid-turn, that turn's `#N` header stays pinned on its first line.
 
@@ -64,7 +64,7 @@ In the pane, `a` `m` `h` `u` switch views: all, what the model did, the harness,
 ## What it does on your machine
 
 - **Storage**: the rows of the 10 newest sessions in the plugin store. A session keeps at most 300 rows (the `keep` option), and fewer when its rows are large, since each session is held to a tenth of the store's 4 MiB. Every new session prunes the older ones. If the store refuses a write, the rows stay in memory, the setup badge shows "log not saved", and the write is retried. Secret-shaped text (tokens, keys, passwords, `Authorization` headers) is masked as `***` on a best-effort basis, and text is cut short: 300 characters, 400 for a command. Your typed prompts and a slash command's arguments are not stored as such. A turn header's first few words of the prompt are kept in memory only, so a resumed session's headers have none. Two stored texts can still restate what you typed: a skill's expanded text (which can include the arguments after `/name`) and a compaction summary. Both are kept scrubbed, up to 300 characters.
-- **OTEL**: with export on, it reads the records Claude Code sends the collector: request prices and ids, who decided each permission, hook run counts, plugins loaded, MCP connections, API errors and Claude Code's own model requests. It reads them and sends nothing.
+- **Telemetry records**: it reads the records Claude Code hands plugins, export on or off: request prices and ids, who decided each permission, hook run counts, plugins loaded, MCP connections, API errors and Claude Code's own model requests. It reads them and sends nothing.
 - **Reads**: your settings and the `hooks.json` of enabled plugins (to name hooks), `~/.claude/hook-times/<session_id>.jsonl` when hook-timer writes it, the main loop's model at session start, and the session's root and cwd at each tool call. It makes no model requests and no network calls.
 
 ## Develop

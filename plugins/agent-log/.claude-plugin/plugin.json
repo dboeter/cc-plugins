@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "agent-log",
   "version": "0.1.0",
-  "description": "Why was that turn slow, and who allowed that call? A live pane that splits each turn's time across the model (first token, thinking), tools, hooks and waiting on you, read from Claude Code's own model stream. With OTEL on, also who decided each call: you, a hook or the classifier.",
+  "description": "Why was that turn slow, and who allowed that call? A live pane that splits each turn's time across the model (first token, thinking), tools, hooks and waiting on you, read from Claude Code's own model stream, and who decided each call: you, a hook or the classifier.",
   "author": { "name": "dboeter", "email": "daan.boeter@hotmail.com" },
   "license": "MIT",
   "repository": "https://github.com/dboeter/cc-plugins",
