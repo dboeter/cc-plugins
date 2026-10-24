@@ -178,6 +178,13 @@ const runsOf = async ($: any, keep: (r: any) => boolean, from: number) => {
   try { return pickRuns(await $.fs.read(`${await $.env.get('HOME')}/.claude/hook-times/${await $.session.id()}.jsonl`), keep, from) } catch { return [] } // no file yet
 }
 const timed = (h: { cmd?: string }) => !!h.cmd?.includes('hook-timer')
+// the setup page's per-hook times line: how many of your distinct settings hook commands run through hook-timer (a plugin's can't)
+export const hookTimes = (cfg: HookCfg) => {
+  const own = [...new Set(Object.values(cfg).flat().filter(h => !h.plugin).map(h => h.cmd ?? h.name))]
+  const n = own.filter(cmd => timed({ cmd })).length
+  return !own.length ? 'no settings hooks' : !n ? 'off: no settings hook runs through hook-timer (README: Per-hook times)'
+    : `on for ${n} of ${own.length} settings hook${own.length === 1 ? '' : 's'}`
+}
 // whether hook-timer wraps any hook this event runs: else there is nothing to read
 const wraps = (cfg: HookCfg, event: string, target?: string) => (cfg[event] ?? []).some(h => timed(h) && fits(h.matcher, target))
 // the hook that handed back a text: the wrapped run whose first line starts one of its lines, past the engine's framing
@@ -2054,6 +2061,7 @@ export const register: Register = (on, options) => {
           {title('pb', problems.length ? `Problems: ${problems.join(', ')}` : 'Problems: none this session')}
           {bad.slice(-20).map(x => <Box key={`p${idOf(x)}`} flexDirection="row"><Button key={`pb${idOf(x)}`} label={fit(`✗ ${action(x)}`, cols - 4)} plain onPress={() => show(x)} /></Box>)}
           {title('hk', `Hooks: ${hookN} distinct settings and plugin hook commands${setup.runs.size ? '; runs as the collector counted them' : ''}`)}
+          {hookCfg && kw('per-hook times', hookTimes(hookCfg))}
           {events.map(ev => { const r = setup.runs.get(ev), names = [...new Set((hookCfg?.[ev] ?? []).map(h => h.name))]
             return kw(ev, [names.join(', ') || 'no hook in your settings', r && `${r.n} run${r.n === 1 ? '' : 's'} · ${exact(r.ms)}${r.errors ? ` · ${r.errors} failed` : ''}${r.cancelled ? ` · ${r.cancelled} cancelled` : ''}`].filter(Boolean).join(' — '), `hk${ev}`) })}
           {title('pl', `Plugins: ${plugins}`)}

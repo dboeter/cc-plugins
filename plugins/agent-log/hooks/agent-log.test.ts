@@ -1,6 +1,6 @@
 // Pane tests share the module's state (level, folds, finished agents shown): a test that changes one sets it back before it ends.
 import { test, expect, mock, type TestBody } from 'claude-code/testing'
-import { ASKED, costOf, scrub, ctxOf, harnessOf, hookName, markAgain, modelName, outsideOf, pack, pickRuns, rootOf, routine, runNames, runOf, scriptName, speaker, targetOf, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
+import { ASKED, costOf, scrub, ctxOf, harnessOf, hookName, hookTimes, markAgain, modelName, outsideOf, pack, pickRuns, rootOf, routine, runNames, runOf, scriptName, speaker, targetOf, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
 
 // the shape hooksOf builds: settings hooks by script name, plugin hooks by plugin. Texts are real rows from the store
 const cfg = {
@@ -1502,6 +1502,15 @@ test('a wrapped hook is named by its run: text by the run that said it, silence 
   const ok = [{ name: 'okay', ms: 1, say: 'ok' }]
   expect(speaker(ok, 'look at this')).toBe(undefined) // a word inside a line is no hook's first line
   expect(speaker(ok, 'PostToolUse:Edit hook additional context: ok, formatted')).toBe('okay')
+})
+
+test('the setup page says whether hook-timer times your settings hooks; plugins\' hooks do not count', () => {
+  const T = '$HOME/.claude/hooks/hook-timer '
+  const plugin = { matcher: '', name: 'context-mode', plugin: true, cmd: 'node pretooluse.mjs' }
+  expect(hookTimes({ PreToolUse: [{ matcher: 'Bash', name: 'guard', cmd: 'guard.sh' }, plugin] })).toMatch(/^off: /)
+  expect(hookTimes({ PreToolUse: [{ matcher: 'Bash', name: 'guard', cmd: `${T}guard.sh` }, { matcher: 'Edit', name: 'guard', cmd: `${T}guard.sh` }, plugin] })).toBe('on for 1 of 1 settings hook')
+  expect(hookTimes({ PreToolUse: [{ matcher: 'Bash', name: 'guard', cmd: `${T}guard.sh` }], Stop: [{ matcher: '', name: 'plan', cmd: 'plan.sh' }] })).toBe('on for 1 of 2 settings hooks')
+  expect(hookTimes({ PreToolUse: [plugin] })).toBe('no settings hooks')
 })
 
 test('overlapping SubagentStop chains of two agents keep their own runs', () => {
