@@ -2142,14 +2142,14 @@ export const register: Register = (on, options) => {
     const sticks = (w: number) => heads.some(i => i < w) && !heads.includes(w) && !String(rows[w]?.props?.key).startsWith('gap')
     if (sticks(win) && (follow || (moved && rowAt(sel!) === win + avail - 1))) win = Math.min(rows.length - 1, win + 1)
     const stick = sticks(win) ? heads.filter(i => i < win).at(-1)! : undefined
-    const fits = avail - (stick !== undefined ? 1 : 0)
+    const winRows = avail - (stick !== undefined ? 1 : 0)
     winMax = Math.max(0, rows.length - avail + (sticks(rows.length - avail) ? 1 : 0))
-    winEnd = win + fits - 1
+    winEnd = win + winRows - 1
     return (
       <Box flexDirection="column">
         {head}
         {stick !== undefined ? rows[stick] : null}
-        {rows.slice(win, win + fits)}
+        {rows.slice(win, win + winRows)}
         {!follow && <Box key="jumprow" flexDirection="row" justifyContent="flex-end"><Button key="jump" label={fresh ? `↓ ${fresh} new event${fresh > 1 ? 's' : ''} (e)` : '↓ newest (e)'} hotkey="e" onPress={jump} /></Box>}
       </Box>
     )
