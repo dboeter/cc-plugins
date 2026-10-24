@@ -107,7 +107,10 @@ test('scrub masks common secret shapes and leaves code alone', () => {
     ['token ghp_' + 'a'.repeat(36), 'token ***'], ['curl -u admin:s3cretpw https://h', 'curl -u admin:*** https://h'],
     ['mysql -ps3cretpw', 'mysql -p***'], ['Authorization: Basic dXNlcjpwYXNz', 'Authorization: Basic ***'],
     ['DB_PASS=hunter2', 'DB_PASS=***'], ['https://hooks.slack.com/services/T0/B0/XXXX', 'https://hooks.slack.com/services/***'],
-    ['https://x.io/f?X-Amz-Signature=fe5f80&x=1', 'https://x.io/f?X-Amz-Signature=***&x=1']])
+    ['https://x.io/f?X-Amz-Signature=fe5f80&x=1', 'https://x.io/f?X-Amz-Signature=***&x=1'],
+    ['https://x.io/f?X-Amz-Security-Token=IQoJb3&x=1', 'https://x.io/f?X-Amz-Security-Token=***&x=1'], ['https://x.io/f?signature=abc123', 'https://x.io/f?signature=***'],
+    ['https://x.io/f?token=abc123&page=2', 'https://x.io/f?token=***&page=2'], ['https://x.io/cb?access_token=abc123', 'https://x.io/cb?access_token=***'],
+    ['MYSQL_PWD=hunter2', 'MYSQL_PWD=***']])
     expect(scrub(raw!)).toBe(out!)
   for (const kept of ['const token = getToken()', 'TOKEN=$GITHUB_TOKEN', 'git push -u origin main']) expect(scrub(kept)).toBe(kept)
 })

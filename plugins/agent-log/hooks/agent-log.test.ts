@@ -467,9 +467,12 @@ test('the controls take as many rows as the width needs, never clipping one', as
 
 test('k and j move a row cursor the window keeps in view; e goes back to the newest', async ($, on) => {
   session(on, 'CU', steps())
-  const m = await pane($, 12, 100) // 9 log rows: Step 22-30
+  const m = await pane($, 12, 100) // #1 pinned over Step 23-30
   await m.press({ key: 'cup' }) // the cursor starts on the window's last row: Step 30
-  for (let i = 0; i < 9; i++) await m.press({ key: 'cup' }) // up to Step 21, above the window
+  for (let i = 0; i < 7; i++) await m.press({ key: 'cup' }) // Step 23, the window's first row: it has not moved, so k began on Step 30
+  expect(await m.find({ text: /^Step 30$/ })).toBeDefined()
+  expect(await m.find({ text: /^Step 22$/ })).toBe(undefined)
+  await m.press({ key: 'cup' }); await m.press({ key: 'cup' }) // Step 21, above the window
   expect(await m.find({ text: /^Step 21$/ })).toBeDefined()
   expect(await m.find({ text: /^Step 30$/ })).toBe(undefined) // the window moved up with it
   expect(await m.find({ key: 'jump' })).toBeDefined()
@@ -519,6 +522,11 @@ test('ctrl+↑↓ (the turn ↑↓ buttons) put the previous or next prompt\'s t
   await m.press({ key: 'cdown' })
   expect(await m.find({ text: /^#2$/ })).toBeDefined()
   expect(await m.find({ text: /^Step 30$/ })).toBe(undefined)
+  // and j after ^↓ starts in the window ^↓ moved to, not on from the cursor on #2
+  await m.press({ key: 'tnext' })
+  await m.press({ key: 'cdown' })
+  expect(await m.find({ text: /^#3$/ })).toBeDefined()
+  expect(await m.find({ text: /^Step 11$/ })).toBe(undefined)
 })
 
 test('with no cursor, j starts on the window\'s first row and k on its last', async ($, on) => {
@@ -1546,6 +1554,41 @@ test('the setup page says whether hook-timer times your settings hooks; plugins\
   expect(hookTimes({ PreToolUse: [plugin] })).toBe('no settings hooks')
 })
 
+// settings whose hooks hooksOf reads afresh: a ConfigChange drops the one read before (module state)
+const hooksFrom = async ($: any, on: any, settings: () => object, files: Record<string, () => string> = {}) => {
+  on('classic.*', () => ({}) as any)
+  on('env.get', () => ({ value: '/home/u' }))
+  on('settings.read', () => ({ value: settings() }))
+  on('fs.read', (_$: any, e: any) => ({ value: files[e.path]?.() ?? '{}' })) // no plugin installed
+  await $.classic.ConfigChange({ source: 'user_settings' })
+}
+
+test('the setup page shows per-hook times off, then on once a settings hook runs through hook-timer', async ($, on) => {
+  session(on, 'PH')
+  let cmd = '$HOME/.claude/hooks/guard.sh'
+  await hooksFrom($, on, () => ({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: cmd }] }] } }))
+  const m = await pane($, 60, 160)
+  await m.press({ key: 'fsetup' })
+  expect(await m.find({ text: /^off: no settings hook runs through hook-timer/ })).toBeDefined()
+  await m.press({ key: 'back' })
+  cmd = `$HOME/.claude/hooks/hook-timer ${cmd}`
+  await ($ as any).classic.ConfigChange({ source: 'user_settings' })
+  await m.press({ key: 'fsetup' })
+  expect(await m.find({ text: 'on for 1 of 1 settings hook' })).toBeDefined()
+  await m.press({ key: 'back' })
+})
+
+test('a SubagentStop row keeps its own agent\'s hook-timer run when another agent\'s chain overlaps it', async ($, on) => {
+  const db = capture(on, 'SA')
+  const T = '$HOME/.claude/hooks/hook-timer $HOME/.claude/hooks/'
+  const run = (name: string, agent: string) => JSON.stringify({ name, event: 'SubagentStop', use: null, agent, t0: Date.now() - 20, t1: Date.now(), exit: 0, say: null })
+  await hooksFrom($, on, () => ({ hooks: { SubagentStop: [{ matcher: 'Explore', hooks: [{ type: 'command', command: `${T}stop-check.sh` }] }, { matcher: 'Plan', hooks: [{ type: 'command', command: `${T}plan-check.sh` }] }] } }),
+    { '/home/u/.claude/hook-times/SA.jsonl': () => [run('plan-check', 'a2'), run('stop-check', 'a1')].join('\n') }) // a2, a Plan agent, stopped meanwhile
+  await ($ as any).classic.SubagentStop({ agent_id: 'a1', agent_type: 'Explore', stop_hook_active: false })
+  const rows = (await flushed($, 'SA', db)).filter(x => x.origin === 'SubagentStop')
+  expect(rows.map(x => x.name)).toEqual(['stop-check'])
+})
+
 test('overlapping SubagentStop chains of two agents keep their own runs', () => {
   const r = (agent: string | null, o: object = {}) => ({ name: 'stop-check', event: 'SubagentStop', use: null, agent, t0: 1000, t1: 1100, ...o })
   const keep = keepRun({ agent_id: 'a1' }, 'SubagentStop', 1000, 1200)
@@ -1593,6 +1636,11 @@ test('scrub masks common secret shapes and leaves code alone', () => {
     ['curl https://hooks.slack.com/services/T0/B0/XXXX', 'curl https://hooks.slack.com/services/***'],
     ['https://b.s3.amazonaws.com/f?X-Amz-Date=1&X-Amz-Signature=fe5f80&x=1', 'https://b.s3.amazonaws.com/f?X-Amz-Date=1&X-Amz-Signature=***&x=1'],
     ['https://x.io/hook?sig=abc123', 'https://x.io/hook?sig=***'],
+    ['https://b.s3.amazonaws.com/f?X-Amz-Security-Token=IQoJb3&X-Amz-Date=1', 'https://b.s3.amazonaws.com/f?X-Amz-Security-Token=***&X-Amz-Date=1'],
+    ['https://x.io/f?signature=abc123', 'https://x.io/f?signature=***'],
+    ['https://x.io/f?token=abc123&page=2', 'https://x.io/f?token=***&page=2'],
+    ['https://x.io/cb?access_token=abc123', 'https://x.io/cb?access_token=***'],
+    ['export MYSQL_PWD=hunter2', 'export MYSQL_PWD=***'],
   ]
   for (const [raw, out] of masked) expect(scrub(raw)).toBe(out)
   for (const kept of ['const token = getToken()', 'TOKEN=$GITHUB_TOKEN', 'cat plugins/agent-log/hooks/agent-log.tsx', 'git push -u origin main', 'self.token = token',
