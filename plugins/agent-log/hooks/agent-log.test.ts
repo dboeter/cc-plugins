@@ -943,9 +943,16 @@ test('a PostToolUse attachment left out of the request still spends its call\'s 
   await m.press({ key: 'back' })
 })
 
+// The test engine's $.tool.call raises its own tool.check before the call runs, and refuses an ask: no dialog, no host to put it
+// to. checked() allows that one and gives the verdict to the check a test raises inside the call, where an answered ask lands
+const checked = (verdict: (e: any) => object) => {
+  const seen = new Set<string>()
+  return (_$: any, e: any) => (e.tool_use_id && !seen.has(e.tool_use_id) ? (seen.add(e.tool_use_id), { decision: 'allow' }) : verdict(e)) as any
+}
+
 test('a call\'s inspector says who decided it: a rule, you after an ask, or the mode, a hook or the tool', async ($, on) => {
   const verdict: Record<string, object> = { d0: { decision: 'allow' }, da: { decision: 'allow', rule: 'Bash(git push:*)' }, db: { decision: 'ask' }, dc: { decision: 'allow' } }
-  on('tool.check', (_$, e: any) => ({ ...verdict[e.tool_use_id] }) as any)
+  on('tool.check', checked(e => ({ ...verdict[e.tool_use_id] })))
   on('telemetry.log', () => ({ value: undefined }))
   on('tool.call', async (_$, e: any) => {
     await ($ as any).tool.check({ tool: e.tool, input: {}, tool_use_id: e.tool_use_id })
@@ -966,10 +973,10 @@ test('a call\'s inspector says who decided it: a rule, you after an ask, or the 
 })
 
 test('the gap between a call\'s check and its decision is the call\'s inspector\'s, not its time; a wait on the model\'s message draws no line', async ($, on) => {
-  on('tool.check', () => ({ decision: 'ask' }))
+  on('tool.check', checked(() => ({ decision: 'ask' })))
   on('telemetry.log', () => ({ value: undefined }))
   on('tool.call', async (_$, e: any) => {
-    await ($ as any).tool.check({ tool: e.tool, input: {}, tool_use_id: e.tool_use_id }) // a test's tool.call raises no tool.check
+    await ($ as any).tool.check({ tool: e.tool, input: {}, tool_use_id: e.tool_use_id }) // the check that decides it (checked)
     if (e.tool_use_id === 'wa') { // the model still streams: the call is decided as main's request closes
       await wait(150)
       await ($ as any).telemetry.log({ to: 'collector', event: 'tool_decision', attributes: { tool_use_id: 'wa', source: 'config' } })
@@ -998,7 +1005,7 @@ test('the gap between a call\'s check and its decision is the call\'s inspector\
 
 test('auto mode\'s classifier refusing a call is a denial that names it, not a failure', async ($, on) => {
   const db = capture(on, 'AC')
-  on('tool.check', () => ({ decision: 'ask' }))
+  on('tool.check', checked(() => ({ decision: 'ask' })))
   on('telemetry.log', () => ({ value: undefined }))
   on('tool.call', async (_$, e: any) => {
     if (e.tool_use_id !== 'ac1') return { result: 'ok', text: 'ok' }
