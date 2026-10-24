@@ -2145,10 +2145,10 @@ export const register: Register = (on, options) => {
     }
     // A window that starts mid-turn pins that turn's header on its first line, so the rows on screen keep their `#N`. It costs a
     // row as the jump row does: following, the window moves down one so the newest row stays; the cursor's row stays in view, so
-    // a cursor moved onto the top row of the last page stops the following rather than drop off it.
+    // a cursor on the top row of the last page stops the following, on this draw and later ones, rather than drop off it.
     // Not on a gap row: the next turn's header is right below it
     const sticks = (w: number) => heads.some(i => i < w) && !heads.includes(w) && !String(rows[w]?.props?.key).startsWith('gap')
-    follow = win >= max0 && !(moved && rowAt(sel!) === win && sticks(win))
+    follow = win >= max0 && !(sel && rowAt(sel) === win && sticks(win))
     if (follow) fresh = 0
     const avail = follow ? avail0 : Math.max(1, avail0 - 1)
     if (sticks(win) && (follow || (moved && rowAt(sel!) === win + avail - 1))) win = Math.min(rows.length - 1, win + 1)

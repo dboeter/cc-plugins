@@ -528,6 +528,10 @@ test('with no cursor, j starts on the window\'s first row and k on its last', as
   await m.press({ key: 'cup' }) // Step 22: above the window, which moves up and stops following
   expect(await m.find({ text: /^Step 22$/ })).toBeDefined()
   expect(await m.find({ key: 'jump' })).toBeDefined()
+  await m.redraw() // a later draw keeps the window where the cursor left it
+  expect(await m.find({ text: /^Step 22$/ })).toBeDefined()
+  await m.press({ key: 'cup' }) // and k goes on from Step 22, not from the window's last row
+  expect(await m.find({ text: /^Step 21$/ })).toBeDefined()
 })
 
 // lookups in hooks/, three by default: `Explore hooks ×3`
