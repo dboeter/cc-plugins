@@ -101,7 +101,7 @@ test('chunks rotate before a line would cross the limit', () => {
   expect(pack({ n: 1, buf: '' }, ['x'.repeat(50)], 12)).toEqual([]) // an oversized line still lands in an empty chunk
 })
 
-// the same rules as agent-log's scrub (three copies kept in step: redact, agent-log, event-log)
+// the same rules as agent-log's scrub: both copy plugins/shared/scrub.ts
 test('scrub masks common secret shapes and leaves code alone', () => {
   for (const [raw, out] of [['export API_KEY="abc123def"', 'export API_KEY="***"'], ['{"api_key": "abc123def"}', '{"api_key": "***"}'],
     ['token ghp_' + 'a'.repeat(36), 'token ***'], ['curl -u admin:s3cretpw https://h', 'curl -u admin:*** https://h'],

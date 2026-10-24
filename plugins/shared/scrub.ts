@@ -1,4 +1,4 @@
-// The secret scrub agent-log and event-log share: one source, imported by both. A secret's value as ***, the text around it
+// The secret scrub agent-log and event-log share: one source, copied into both by sync.sh. A secret's value as ***, the text around it
 // kept. Best-effort, not a guarantee (ponytail). Its own rules, not redact's (redact reads redact-rules.json). No email
 // rule: paths and git output stay readable. Repeats that can fail are bounded
 // a secret's name: a keyword anywhere in it, or `_pass`/`_pwd` as its end (`DB_PASS`, not `DB_PASSPORT`)
