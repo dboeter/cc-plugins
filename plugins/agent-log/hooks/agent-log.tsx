@@ -189,10 +189,17 @@ export const hookTimes = (cfg: HookCfg) => {
 }
 // whether hook-timer wraps any hook this event runs: else there is nothing to read
 const wraps = (cfg: HookCfg, event: string, target?: string) => (cfg[event] ?? []).some(h => timed(h) && fits(h.matcher, target))
-// the hook that handed back a text: the wrapped run whose first line starts one of its lines, past the engine's framing
+// code points hook-timer keeps of a say (its `line`, jq .[0:80]): a say that long may be cut mid-word, so it matches as a prefix only
+const CUT = 80
+// the hook that handed back a text: the wrapped run whose first line starts one of its lines, past the engine's framing, as whole
+// words (`ok` is not `okay …`) unless the say was cut
+const says = (say: string, l: string) => {
+  const s = say.trim()
+  return l.startsWith(s) && ([...say].length >= CUT || !/\w$/.test(s) || !/^\w/.test(l.slice(s.length)))
+}
 export const speaker = (runs: Run[], text: string) => {
   const lines = text.split('\n').map(l => l.trim().replace(FRAME, ''))
-  return [...runs].reverse().find(r => r.say?.trim() && lines.some(l => l.startsWith(r.say!.trim())))?.name
+  return [...runs].reverse().find(r => r.say?.trim() && lines.some(l => says(r.say!, l)))?.name
 }
 // a classic event's hooks, given its runs: each text (pieces) by its speaker, else by hookName; with nothing said, the wrapped
 // hooks that ran and the unwrapped ones that fit

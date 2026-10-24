@@ -1530,6 +1530,11 @@ test('a wrapped hook is named by its run: text by the run that said it, silence 
   const ok = [{ name: 'okay', ms: 1, say: 'ok' }]
   expect(speaker(ok, 'look at this')).toBe(undefined) // a word inside a line is no hook's first line
   expect(speaker(ok, 'PostToolUse:Edit hook additional context: ok, formatted')).toBe('okay')
+  expect(speaker(ok, 'okay then')).toBe(undefined) // whole words: ok is not okay
+  expect(speaker(ok, 'ok.')).toBe('okay')
+  expect(speaker(ok, 'ok')).toBe('okay')
+  const cut = 'lint: ' + 'x'.repeat(70) + 'abcd' // hook-timer keeps 80 code points, here mid-word
+  expect(speaker([{ name: 'lint', ms: 1, say: cut }], `${cut}efgh and more`)).toBe('lint')
 })
 
 test('the setup page says whether hook-timer times your settings hooks; plugins\' hooks do not count', () => {
