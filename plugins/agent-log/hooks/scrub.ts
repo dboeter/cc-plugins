@@ -1,10 +1,10 @@
 // Copied from plugins/shared/scrub.ts by plugins/shared/sync.sh: edit that file, then run the script.
 // The secret scrub agent-log and event-log share: one source, imported by both. A secret's value as ***, the text around it
-// kept. Best-effort, not a guarantee (ponytail). The rules are redact's (plugins/redact/hooks/redact.tsx RULES, minus its email
-// rule: paths and git output stay readable), plus three shapes it lacks: an Authorization header's value, curl's
-// `-u user:pass` and mysql's `-p<pass>`. redact keeps its own copy (with the email rule); keep the two in step. Repeats that
-// can fail are bounded, as redact's speed test pins
-const NAME = String.raw`\w{0,64}(?:token|secret|password|passwd|api[_-]?key|private[_-]?key|access[_-]?key|credential)\w{0,64}`
+// kept. Best-effort, not a guarantee (ponytail). The rules began as redact's built-in ones; redact now reads its own
+// redact-rules.json, so the two no longer share rules. No email rule: paths and git output stay readable. Repeats that can
+// fail are bounded
+// a secret's name: a keyword anywhere in it, or `_pass`/`_pwd` as its end (`DB_PASS`, not `DB_PASSPORT`)
+const NAME = String.raw`\w{0,64}(?:(?:token|secret|password|passwd|api[_-]?key|private[_-]?key|access[_-]?key|credential)\w{0,64}|_(?:pass|pwd))`
 const STOP = String.raw`\s'"\`,;&<>()[\]{}⟦⟧`
 const VAL = String.raw`[^${STOP}]+`
 const END = String.raw`(?![^${STOP}])`
@@ -16,6 +16,8 @@ const SCRUB: RegExp[] = [
   /\b(?:sk-[\w-]{20,}|gh[pousr]_\w{36,}|github_pat_\w{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}|xox[abprs]-[\w-]{10,}|AIza[\w-]{35}|[sr]k_(?:live|test)_[0-9A-Za-z]{24,}|glpat-[\w-]{20,}|npm_[A-Za-z0-9]{36}|dckr_pat_[\w-]{20,}|SG\.[\w-]{20,}\.[\w-]{20,}|hf_[A-Za-z0-9]{30,}|ya29\.[\w-]{20,}|eyJ[\w-]{1,512}\.[\w-]+\.[\w-]+)/g,
   /(?<pre>\bauthorization["']?[ \t]*[:=][ \t]*(?:(?:basic|bearer|token|digest)[ \t]+)?)(?<v>[^\s'"]+)/gi,
   /\b(?<pre>bearer[ \t]+)(?<v>[\w.~+/-]{8,}=*)/gi,
+  /(?<pre>\bhooks\.slack\.com\/services\/)(?<v>[\w\/]+)/g,
+  /(?<pre>[?&](?:x-amz-signature|sig|signature)=)(?<v>[^&\s'"#]+)/gi, // a presigned URL's signature
   /(?<pre>:\/\/[^:\/\s@]+:)(?!\$)(?<v>[^\s@\/]+)(?<post>@)/g,
   /(?<pre>(?:^|\s)(?:-u|--user)(?:[ \t]+|=)["']?[^\s:'"]{1,64}:)(?<v>[^\s'"]+)/g,
   /(?<pre>\b(?:mysql|mysqldump|mariadb)\b[^\n]{0,200}?[ \t]-p)(?<v>[^\s'"]+)/g,

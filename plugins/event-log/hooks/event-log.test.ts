@@ -105,7 +105,9 @@ test('chunks rotate before a line would cross the limit', () => {
 test('scrub masks common secret shapes and leaves code alone', () => {
   for (const [raw, out] of [['export API_KEY="abc123def"', 'export API_KEY="***"'], ['{"api_key": "abc123def"}', '{"api_key": "***"}'],
     ['token ghp_' + 'a'.repeat(36), 'token ***'], ['curl -u admin:s3cretpw https://h', 'curl -u admin:*** https://h'],
-    ['mysql -ps3cretpw', 'mysql -p***'], ['Authorization: Basic dXNlcjpwYXNz', 'Authorization: Basic ***']])
+    ['mysql -ps3cretpw', 'mysql -p***'], ['Authorization: Basic dXNlcjpwYXNz', 'Authorization: Basic ***'],
+    ['DB_PASS=hunter2', 'DB_PASS=***'], ['https://hooks.slack.com/services/T0/B0/XXXX', 'https://hooks.slack.com/services/***'],
+    ['https://x.io/f?X-Amz-Signature=fe5f80&x=1', 'https://x.io/f?X-Amz-Signature=***&x=1']])
     expect(scrub(raw!)).toBe(out!)
   for (const kept of ['const token = getToken()', 'TOKEN=$GITHUB_TOKEN', 'git push -u origin main']) expect(scrub(kept)).toBe(kept)
 })

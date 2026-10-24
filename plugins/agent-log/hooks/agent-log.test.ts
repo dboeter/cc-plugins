@@ -1506,9 +1506,14 @@ test('scrub masks common secret shapes and leaves code alone', () => {
     ['git clone https://me:pw123@host/r', 'git clone https://me:***@host/r'],
     ['tool --token abc123', 'tool --token ***'],
     ['-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----', '***'],
+    ['export DB_PASS=hunter2', 'export DB_PASS=***'],
+    ['curl https://hooks.slack.com/services/T0/B0/XXXX', 'curl https://hooks.slack.com/services/***'],
+    ['https://b.s3.amazonaws.com/f?X-Amz-Date=1&X-Amz-Signature=fe5f80&x=1', 'https://b.s3.amazonaws.com/f?X-Amz-Date=1&X-Amz-Signature=***&x=1'],
+    ['https://x.io/hook?sig=abc123', 'https://x.io/hook?sig=***'],
   ]
   for (const [raw, out] of masked) expect(scrub(raw)).toBe(out)
-  for (const kept of ['const token = getToken()', 'TOKEN=$GITHUB_TOKEN', 'cat plugins/agent-log/hooks/agent-log.tsx', 'git push -u origin main', 'self.token = token'])
+  for (const kept of ['const token = getToken()', 'TOKEN=$GITHUB_TOKEN', 'cat plugins/agent-log/hooks/agent-log.tsx', 'git push -u origin main', 'self.token = token',
+    'max_tokens=4096', 'DB_PASSPORT=x1', 'curl http://localhost:8080/api/health?verbose=1'])
     expect(scrub(kept)).toBe(kept)
   expect(scrub(scrub('export API_KEY="abc123def"'))).toBe('export API_KEY="***"') // a scrubbed text scrubs to itself: peeks of insights scrub twice
 })
