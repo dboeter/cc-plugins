@@ -129,7 +129,26 @@ async function hooksOf($: any): Promise<HookCfg> {
   // a plugin's command hooks run in the same classic chain; named by the plugin (`context-mode`), not their scripts (`pretooluse`)
   try {
     const installed = JSON.parse(await $.fs.read(`${await $.env.get('HOME')}/.claude/plugins/installed_plugins.json`))?.plugins ?? {}
-    for (const [id, on] of Object.entries(s?.enabledPlugins ?? {})) if (on) for (const i of installed[id] ?? []) try { add(JSON.parse(await $.fs.read(`${i.installPath}/hooks/hooks.json`))?.hooks, id.split('@')[0]) } catch {}
+    const items: { path: string; name: string }[] = []
+    for (const [id, on] of Object.entries(s?.enabledPlugins ?? {})) {
+      if (on) {
+        const pluginName = id.split('@')[0] ?? ''
+        for (const i of (installed as any)[id] ?? []) {
+          if (i?.installPath) items.push({ path: `${i.installPath}/hooks/hooks.json`, name: pluginName })
+        }
+      }
+    }
+    const results = await Promise.all(items.map(async item => {
+      try {
+        const content = await $.fs.read(item.path)
+        return { hooks: JSON.parse(content)?.hooks, name: item.name }
+      } catch {
+        return null
+      }
+    }))
+    for (const res of results) {
+      if (res?.hooks) add(res.hooks, res.name)
+    }
   } catch {}
   hookFresh = ok
   return hookCfg = cfg
