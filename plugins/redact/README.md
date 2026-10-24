@@ -57,7 +57,7 @@ No `/redact` command enters the conversation: its line is dropped and its reply 
 
 `/redact test <text>`, `/redact add <rule>`, `/redact remove <n|name>`, `/redact on <n|name>`, `/redact off <n|name>` and `/redact env on|off` work from the prompt, answered in a toast. A rule is named by its number in the file, its `name`, or its pattern; a number that names a rule is read as its number. Should a `/redact` line reach the conversation all the same, its arguments are emptied in every row the model is sent.
 
-Your rules live in `~/.claude/redact-rules.json` (in `$CLAUDE_CONFIG_DIR` when that is set), one file for every project, on your machine only. redact creates it on first use holding the two examples, both off; it ships no other rules, and a later version's change to the examples does not reach a file already made. Edit the file by hand, or with `/redact add`, `remove`, `on` and `off`, which keep any other keys you put in it. It is read again before every masking, so an edit masks from the next message on, in every open session.
+Your rules live in `~/.claude/redact-rules.json` (in `$CLAUDE_CONFIG_DIR` when that is set), one file for every project, on your machine only. redact creates it on first use holding the two examples, both off; it ships no other rules, and a later version's change to the examples does not reach a file already made. Edit the file by hand, or with `/redact add`, `remove`, `on` and `off`, which keep any other keys you put in it. It is read again before every masking, so an edit masks whatever is recorded after it, in every open session, a turn already running included; text already sent is not masked again. `/redact` runs at once, mid-turn too.
 
 ```json
 {

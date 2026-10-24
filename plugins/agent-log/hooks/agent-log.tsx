@@ -1292,7 +1292,7 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     refreshSetup($).catch(() => {})
-    try { await $.command.register({ name: 'agentlog', description: `Toggle the agent log pane; "clear" empties it, "${SHOWN.join('|')}" picks a view, "level debug|info|notice|error" the least important row shown.`, argumentHint: `[clear|${SHOWN.join('|')}|level <debug|info|notice|error>]` }) } catch {} // throws on hot reload: no session bound yet
+    try { await $.command.register({ name: 'agentlog', description: `Toggle the agent log pane; "clear" empties it, "${SHOWN.join('|')}" picks a view, "level debug|info|notice|error" the least important row shown.`, argumentHint: `[clear|${SHOWN.join('|')}|level <debug|info|notice|error>]`, immediate: true }) } catch {} // throws on hot reload: no session bound yet
     // never opens by itself: a debugger, not a dashboard. A turn that ended unusually says so in the band (AbovePrompt)
     try {
       await load($) // which prunes the other sessions

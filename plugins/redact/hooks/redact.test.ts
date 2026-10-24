@@ -344,13 +344,13 @@ const runner = ($: any, toasts: string[]) => async (args: string) => {
   return toasts.length > n ? toasts.at(-1)!.replace(/^redact: /, '') : undefined
 }
 
-test('/redact add keeps a rule, on, that masks from the next message on; /redact remove drops it', async ($, on) => {
+test('/redact add keeps a rule, on, that masks from now on; /redact remove drops it', async ($, on) => {
   const { files, entered } = world(on)
   const opened: any[] = []
   on('ui.open', (_$: any, e: any) => { opened.push(e); return { value: { isPlaced: true } } as any })
   const run = runner($, toasted(on))
   expect(await run('add ACME: acme_[a-z0-9]{8}')).toContain('added as #3')
-  expect(await run('add x_[0-9]+')).toBe('added as #4: it masks from the next message on')
+  expect(await run('add x_[0-9]+')).toBe('added as #4: it masks from now on, mid-turn too')
   expect(rulesOf(files).slice(2)).toEqual([
     { pattern: 'acme_[a-z0-9]{8}', replacement: 'ACME', enabled: true }, { pattern: 'x_[0-9]+', replacement: 'SECRET', enabled: true }])
   expect(await entered($, `id ${ACME} ok`)).toBe(`id ${ph('ACME')} ok`)
@@ -372,12 +372,12 @@ test('a rule turns on and off, from the prompt by number or name, the pane or th
   const run = runner($, toasted(on))
   const other = 'bob' + '@example.com'
   expect(await entered($, `mail ${MAIL}`)).toBe(`mail ${MAIL}`)
-  expect(await run('on 2')).toBe('#2 on: from the next message on')
+  expect(await run('on 2')).toBe('#2 on: from now on, mid-turn too')
   expect(rulesOf(files)[1]).toEqual({ ...EXAMPLES[1], enabled: true })
   expect(await entered($, `mail ${MAIL}`)).toBe(`mail ${ph('EMAIL')}`)
   expect(await run('on 2')).toBe('already on: #2')
   expect(await run('off nope')).toContain('no such rule')
-  expect(await run('off Example: email addresses')).toBe('#2 off: from the next message on')
+  expect(await run('off Example: email addresses')).toBe('#2 off: from now on, mid-turn too')
   expect(await entered($, `mail ${other}`)).toBe(`mail ${other}`)
   const m = await mount($)
   await m.press({ key: 'tab-rules' })
@@ -389,7 +389,7 @@ test('a rule turns on and off, from the prompt by number or name, the pane or th
   expect(await entered($, `mail ${other}`)).toBe(`mail ${ph('EMAIL', 2)}`)
 })
 
-test('a rule added to the file by hand masks from the next message on, on with no enabled; /redact keeps the other keys', async ($, on) => {
+test('a rule added to the file by hand masks from now on, on with no enabled; /redact keeps the other keys', async ($, on) => {
   const { files, entered } = world(on)
   expect(await entered($, `id ${ACME}`)).toBe(`id ${ACME}`)
   files.set(RULES, file([...EXAMPLES, { name: 'Acme keys', pattern: 'acme_[a-z0-9]{8}', replacement: 'ACME' }]))

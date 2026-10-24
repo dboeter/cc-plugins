@@ -101,7 +101,7 @@ const isUp = async ($: EngineInterface) => (await $.ui.panes()).some(p => p.id =
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     turns = []; turnNo = 0; owed = false // another session's turns are not this one's
-    try { await $.command.register({ name: 'contextbudget', description: 'Toggle a pane that explains what fills the context window and how it grows.' }) }
+    try { await $.command.register({ name: 'contextbudget', description: 'Toggle a pane that explains what fills the context window and how it grows.', immediate: true }) }
     catch (err) { $.ui.log(`context-budget: /contextbudget not registered: ${(err as Error)?.message ?? err}`, { to: 'debug' }) } // throws on hot reload (no session bound yet); anything else should be findable
     return next(e)
   })

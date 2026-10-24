@@ -111,7 +111,7 @@ async function restore($: EngineInterface): Promise<void> {
   const g = m.goal
   if (g?.isDraft && !goalQueue.some(q => q.text === g.text)) goalQueue = [{ text: g.text, from: g.from }, ...goalQueue]
   // per session: the session after a /clear or a resume needs it again
-  await $.command.register({ name: 'session-pane', description: 'Show or hide the session pane: your goal, changes so far and whether checks still hold, what needs you, and context.' })
+  await $.command.register({ name: 'session-pane', description: 'Show or hide the session pane: your goal, changes so far and whether checks still hold, what needs you, and context.', immediate: true })
     .catch(err => { $.ui.log(`session-pane: /session-pane could not be registered: ${err}`) })
 }
 
@@ -276,11 +276,11 @@ export const register: Register = on => {
   on('command.run', { command: 'session-pane' }, async $ => {
     const up = (await $.ui.panes()).some(p => p.id === PANE)
     if (up) { await $.ui.close({ id: PANE }); await update($, shownAtom, () => false); return { text: 'Session pane hidden' } }
-    await flush($).catch(() => {})
     // docked, the default share is far wider than the ~44 columns the pages are laid out for and squeezes the transcript;
     // 48 leaves a few over, so a long label wraps less. A request only: a width the person dragged the dock to wins
     await $.ui.open({ id: PANE, title: TITLE, focus: true, columns: 48 })
     await update($, shownAtom, () => true)
+    await flush($).catch(() => {}) // after the open: its git scan can take seconds, and its modelAtom write redraws the open pane
     if (goalQueue.length && !goalBusy) void askGoal($) // what was said while it was hidden, in one call
     return { text: 'Session pane shown' }
   })

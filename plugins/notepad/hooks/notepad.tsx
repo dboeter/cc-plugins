@@ -10,7 +10,7 @@ const isUp = async ($: EngineInterface) => (await $.ui.panes()).some(p => p.id =
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    try { await $.command.register({ name: 'notepad', description: 'Toggle a notepad pane for this project. Claude does not see it.' }) }
+    try { await $.command.register({ name: 'notepad', description: 'Toggle a notepad pane for this project. Claude does not see it.', immediate: true }) }
     catch (err) { $.ui.log(`notepad: /notepad not registered: ${(err as Error)?.message ?? err}`, { to: 'debug' }) } // throws on hot reload (no session bound yet)
     return next(e)
   })

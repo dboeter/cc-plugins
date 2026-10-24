@@ -354,7 +354,7 @@ const turn = async ($: EngineInterface, k: Kept, ref: string, on: boolean) => {
   if (i < 0) return NONE
   if (isOn(k.rules[i]) === on) return `already ${on ? 'on' : 'off'}: #${i + 1}`
   return await save($, k, rules => rules.map((r, j) => j === i ? { ...r as object, enabled: on } : r))
-    ?? `#${i + 1} ${on ? 'on' : 'off'}: from the next message on`
+    ?? `#${i + 1} ${on ? 'on' : 'off'}: from now on, mid-turn too`
 }
 const add = async ($: EngineInterface, k: Kept, typed: string) => {
   await sync($, k)
@@ -363,7 +363,7 @@ const add = async ($: EngineInterface, k: Kept, typed: string) => {
   try { rule = read(typed) } catch (err) { return `not added: ${(err as Error).message}` }
   const at = k.rules.findIndex((r: any) => r?.pattern === rule.pattern && (r?.replacement ?? 'SECRET') === rule.replacement)
   if (at >= 0) return `already there, as #${at + 1}`
-  return await save($, k, rules => [...rules, rule]) ?? `added as #${k.rules.length}: it masks from the next message on`
+  return await save($, k, rules => [...rules, rule]) ?? `added as #${k.rules.length}: it masks from now on, mid-turn too`
 }
 // Turns seeding from env files on or off: `envFiles` in the rules file, on when absent. Off keeps
 // what it already put in the vault; on reads the files before the next prompt.
@@ -666,7 +666,7 @@ export const register: Register = (on, options) => {
   const failed = (where: string, kind: string) => `redact could not mask ${where} (${kind})`
 
   on('session.start', async ($, e, next) => {
-    try { await $.command.register({ name: 'redact', description: 'Show the redact pane, test, add or remove rules, turn them on or off, and forget held values.', argumentHint: USAGE }) }
+    try { await $.command.register({ name: 'redact', description: 'Show the redact pane, test, add or remove rules, turn them on or off, and forget held values.', argumentHint: USAGE, immediate: true }) }
     catch (err) { $.ui.log(`redact: /redact not registered: ${(err as Error)?.message ?? err}`, { to: 'debug' }) } // throws on hot reload (no session bound yet)
     try { await prune($) } catch (err) { $.ui.log(`redact: old vaults not pruned: ${(err as Error)?.message ?? err}`, { to: 'debug' }) }
     try { await sync($, kept); badge($, kept, await hold($, kept)) } // a --resume starts with a vault

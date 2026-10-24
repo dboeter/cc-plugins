@@ -231,7 +231,7 @@ export const register: Register = (on, options) => {
   on('telemetry.*', { to: 'collector' }, capture as any)
 
   on('session.start', async ($, e, next) => {
-    try { await $.command.register({ name: 'eventlog', description: 'Toggle the event log pane; "you|claude|engine|hook|plugin" filters it by who raised the event, "all" clears the filter.', argumentHint: '[you|claude|engine|hook|plugin|all]' }) } catch {} // throws on hot reload: no session bound yet
+    try { await $.command.register({ name: 'eventlog', description: 'Toggle the event log pane; "you|claude|engine|hook|plugin" filters it by who raised the event, "all" clears the filter.', argumentHint: '[you|claude|engine|hook|plugin|all]', immediate: true }) } catch {} // throws on hot reload: no session bound yet
     timer ??= $.clock.every(2000, () => { flush($).catch(() => {}) })
     // the pane never opens on its own: /eventlog opens it
     await (ready ??= restore($).catch(() => { ready = undefined }))

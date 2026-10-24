@@ -215,7 +215,7 @@ const fold = ($: any, root: string) => {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    try { await $.command.register({ name: 'sessiontree', description: 'Toggle the tree of this machine\'s Claude sessions; press one to focus its herdr pane, or attach a background one in a new herdr tab; ⋯ for info, stop, remove and kill.' }) } catch {} // agent-log saw this throw on hot reload
+    try { await $.command.register({ name: 'sessiontree', description: 'Toggle the tree of this machine\'s Claude sessions; press one to focus its herdr pane, or attach a background one in a new herdr tab; ⋯ for info, stop, remove and kill.', immediate: true }) } catch {} // agent-log saw this throw on hot reload
     home = (await $.process.run(['printenv', 'HOME']).catch(() => undefined))?.stdout.trim() ?? ''
     folded = new Set(((await $.store.get(FOLDED).catch(() => undefined)) as string[] | undefined) ?? [])
     if (e.isInteractive && (await $.store.get(SHOWN).catch(() => undefined)) !== false) await show($)
