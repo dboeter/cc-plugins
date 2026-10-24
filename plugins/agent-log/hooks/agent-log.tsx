@@ -116,7 +116,7 @@ let enabled: string[] = [] // the plugins settings enable (`name@marketplace`): 
 export const scriptName = (h: any): string => {
   const cmd = String(h?.command ?? '')
   // a name starts a path segment or word and is no dotfile: `source ~/.vars.sh && ~/hooks/guard.sh` is guard. hook-timer's matches
-  return cmd.match(/(?:^|[\s\/"'=])([\w-][\w.-]*)\.(sh|py|js|mjs|ts|rb|pl)\b/)?.[1] ?? cmd.split(/\s+/)[0]?.split('/').pop() ?? String(h?.type ?? 'hook')
+  return cmd.match(/(?:^|[\s\/"'=;&|(])([\w-][\w.-]*)\.(sh|py|js|mjs|ts|rb|pl)\b/)?.[1] ?? cmd.split(/\s+/)[0]?.split('/').pop() ?? String(h?.type ?? 'hook')
 }
 async function hooksOf($: any): Promise<HookCfg> {
   if (hookCfg && hookFresh) return hookCfg
@@ -152,7 +152,7 @@ const MATCHED_BY: Record<string, string> = {
 }
 export const targetOf = (e: any, event: string): string | undefined => e.tool ?? e.tool_name ?? (event in MATCHED_BY ? e[MATCHED_BY[event]!] : undefined)
 // hook-timer's runs (~/.claude/hooks/hook-timer, which settings.json puts in front of each hook command): `{name, event, use,
-// t0, t1, exit, say}` per run, one file per session; say is the first line of what the hook handed back. The engine times an
+// agent, t0, t1, exit, say}` per run, one file per session; say is the first line of what the hook handed back. The engine times an
 // event's chain whole and merges its hooks' text, so these are what name a wrapped hook, time it and credit its text to it;
 // hooks it does not wrap (a plugin's) are still read from the settings and their text (hookName).
 // keep: the runs that count; reading goes newest first and stops at the first run that ended before `from`
@@ -1206,7 +1206,6 @@ export const register: Register = (on, options) => {
     const detail = String(e.tool_name ?? e.tool ?? (event === 'ConfigChange' ? undefined : e.source) ?? e.reason ?? [e.load_reason, e.file_path && at(e.file_path)].filter(Boolean).join(' ')).slice(0, 120) // no e.prompt: that is the person's prompt
     // settings hooks that exited with an error or that the engine cancelled (a timeout), as the collector counted them: a red row,
     // even when the rest of the event changed nothing
-    // classic.PreToolUse's e is the tool.call envelope: `tool`, no `tool_name` or `hook_event_name`
     const target = targetOf(e, event)
     const run = lastRun && lastRun.event === event && lastRun.t >= t0 && (!lastRun.name.includes(':') || fits(lastRun.name.slice(lastRun.name.indexOf(':') + 1), target)) ? lastRun : undefined
     if (run) lastRun = undefined

@@ -1,7 +1,6 @@
 // The secret scrub agent-log and event-log share: one source, imported by both. A secret's value as ***, the text around it
-// kept. Best-effort, not a guarantee (ponytail). The rules began as redact's built-in ones; redact now reads its own
-// redact-rules.json, so the two no longer share rules. No email rule: paths and git output stay readable. Repeats that can
-// fail are bounded
+// kept. Best-effort, not a guarantee (ponytail). Its own rules, not redact's (redact reads redact-rules.json). No email
+// rule: paths and git output stay readable. Repeats that can fail are bounded
 // a secret's name: a keyword anywhere in it, or `_pass`/`_pwd` as its end (`DB_PASS`, not `DB_PASSPORT`)
 const NAME = String.raw`\w{0,64}(?:(?:token|secret|password|passwd|api[_-]?key|private[_-]?key|access[_-]?key|credential)\w{0,64}|_(?:pass|pwd))`
 const STOP = String.raw`\s'"\`,;&<>()[\]{}⟦⟧`

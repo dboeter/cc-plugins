@@ -35,7 +35,7 @@ rm -f "$errf"
 
 # the name agent-log gives the hook (scriptName in agent-log.tsx): first script file named, else the command's basename
 # a name starts a path segment or word and is no dotfile: `source ~/.vars.sh && ~/hooks/guard.sh` is guard
-re='(^|[[:space:]/"'"'"'=])([[:alnum:]_-][[:alnum:]_.-]*)\.(sh|py|js|mjs|ts|rb|pl)([^[:alnum:]_]|$)'
+re='(^|[[:space:]/"'"'"'=;&|(])([[:alnum:]_-][[:alnum:]_.-]*)\.(sh|py|js|mjs|ts|rb|pl)([^[:alnum:]_]|$)'
 if [[ "$*" =~ $re ]]; then name=${BASH_REMATCH[2]}; else name=${1##*/}; fi
 dir="$HOME/.claude/hook-times"
 [[ -d $dir ]] || mkdir -p "$dir" 2>/dev/null

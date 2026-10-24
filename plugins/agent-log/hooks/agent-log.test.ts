@@ -64,6 +64,7 @@ test('each event is matched on its own field: a SubagentStop on the agent type, 
 test('a hook is named by its script, not a dotfile the command sources first', () => {
   expect(scriptName({ command: 'bash -c "source ~/.vars.sh && ~/.claude/hooks/guard.sh"' })).toBe('guard')
   expect(scriptName({ command: 'node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs' })).toBe('pretooluse')
+  expect(scriptName({ command: 'cd x;guard.sh' })).toBe('guard') // after a shell separator too
 })
 
 test('unnamed text: the one candidate, else the event', () => {
