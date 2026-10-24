@@ -1,6 +1,6 @@
 // Pane tests share the module's state (level, folds, finished agents shown): a test that changes one sets it back before it ends.
 import { test, expect, mock, type TestBody } from 'claude-code/testing'
-import { ASKED, costOf, scrub, ctxOf, harnessOf, hookName, hookTimes, markAgain, modelName, outsideOf, pack, pickRuns, rootOf, routine, runNames, runOf, scriptName, speaker, targetOf, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
+import { ASKED, costOf, scrub, ctxOf, harnessOf, hookName, hookTimes, markAgain, modelName, outsideOf, pack, pickRuns, rootOf, routine, runNames, keepRun, scriptName, speaker, targetOf, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
 
 // the shape hooksOf builds: settings hooks by script name, plugin hooks by plugin. Texts are real rows from the store
 const cfg = {
@@ -1543,11 +1543,11 @@ test('the setup page says whether hook-timer times your settings hooks; plugins\
 
 test('overlapping SubagentStop chains of two agents keep their own runs', () => {
   const r = (agent: string | null, o: object = {}) => ({ name: 'stop-check', event: 'SubagentStop', use: null, agent, t0: 1000, t1: 1100, ...o })
-  const keep = runOf({ agent_id: 'a1' }, 'SubagentStop', 1000, 1200)
+  const keep = keepRun({ agent_id: 'a1' }, 'SubagentStop', 1000, 1200)
   expect(keep(r('a1'))).toBe(true)
   expect(keep(r('a2'))).toBe(false)
   expect(keep({ name: 'old', event: 'SubagentStop', t0: 1000, t1: 1100 })).toBe(true) // written before hook-timer recorded the agent
-  expect(runOf({ tool_use_id: 'u1' }, 'PreToolUse', 1000, 1200)({ event: 'PreToolUse', use: 'u1', agent: 'a1', t0: 1000, t1: 1100 })).toBe(true) // a call's runs go by its id
+  expect(keepRun({ tool_use_id: 'u1' }, 'PreToolUse', 1000, 1200)({ event: 'PreToolUse', use: 'u1', agent: 'a1', t0: 1000, t1: 1100 })).toBe(true) // a call's runs go by its id
 })
 
 test('each hook outcome has its mark: + context, · nothing, ■ a stop (yellow, not ✗), ⊘ a block', async ($, on) => {

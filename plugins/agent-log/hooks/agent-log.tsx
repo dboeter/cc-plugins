@@ -62,6 +62,8 @@ export { scrub }
 const SESSIONS = 10 // was 20 before step rows. Each session's key is held to BUDGET bytes, so 10 of them fit the store's 4 MiB cap
 const PEEK = 300 // chars of text kept per entry
 const peek = (s: unknown): string | undefined => typeof s === 'string' && s.trim() ? scrub(s.trim()).slice(0, PEEK) : undefined
+// an email address, masked in the session_context peek only: scrub has no email rule, so paths and git output stay readable
+const EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g
 const noCd = (s: string) => s.replace(/^\s*cd\s+\S+\s*(&&|;)\s*/, '') // a Bash command minus its leading `cd <dir> &&` / `;`
 const first = (s?: string) => (s ?? '').split('\n').find(l => l.trim())?.trim() ?? ''
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -170,7 +172,7 @@ export const pickRuns = (text: string, keep: (r: any) => boolean, from: number):
 const SKEW = 100 // ms: the wrapper's clock read sits a process start inside the engine's
 // a hook-timer run of this event's chain (t0..now): a call's by its tool_use_id; others by loop too, so two agents' overlapping
 // SubagentStop chains keep their own. A run recorded before hook-timer wrote `agent` has no such key and still counts
-export const runOf = (e: any, event: string, t0: number, now: number) => (r: any) =>
+export const keepRun = (e: any, event: string, t0: number, now: number) => (r: any) =>
   r.event === event && (r.use ?? undefined) === e.tool_use_id && (!!e.tool_use_id || !('agent' in r) || (r.agent ?? undefined) === e.agent_id) &&
   r.t0 >= t0 - SKEW && r.t1 <= now + SKEW
 const LATE = 30 * 60_000 // ms: how far back a hook's text can have been said: a PreToolUse hook's goes out with the request after its call
@@ -1202,7 +1204,8 @@ export const register: Register = (on, options) => {
     if (event === 'PreToolUse' && e.tool_use_id && ctx.length) preCtx.set(e.tool_use_id, ctx.length) // one attachment per entry
     const outcome = blocked ? 'block' : ctx.length ? `context x${ctx.length} ${kb(ctx.join('').length)}` : r?.preventContinuation ? 'stop' : ''
     // InstructionsLoaded/FileChanged: which file, and why it loaded
-    // ConfigChange's source (`user_settings`) is left out: its event row names the settings file
+    // ConfigChange's source (`user_settings`) is left out: its event row names the settings file.
+    // The row's label, not what the matcher tests (targetOf): ConfigChange is matched on its source but does not show it
     const detail = String(e.tool_name ?? e.tool ?? (event === 'ConfigChange' ? undefined : e.source) ?? e.reason ?? [e.load_reason, e.file_path && at(e.file_path)].filter(Boolean).join(' ')).slice(0, 120) // no e.prompt: that is the person's prompt
     // settings hooks that exited with an error or that the engine cancelled (a timeout), as the collector counted them: a red row,
     // even when the rest of the event changed nothing
@@ -1215,7 +1218,7 @@ export const register: Register = (on, options) => {
     const failed = !!broke && !blocked && !r?.preventContinuation
     const cfg = await hooksOf($)
     // the wrapped hooks that ran on this event and call, within its span
-    const runs = wraps(cfg, event, target) ? await runsOf($, runOf(e, event, t0, Date.now()), t0) : []
+    const runs = wraps(cfg, event, target) ? await runsOf($, keepRun(e, event, t0, Date.now()), t0) : []
     // each context entry is one hook's: by the run that said it, else named in its own first line. Context leaves the silent hooks
     // in the name: they ran too, and the row counts them. A block keeps only its blocker, whom the call's ⊘ names (byOf)
     const spoke = runs.length ? runNames(cfg, event, target, runs, typeof blocked === 'string' ? [blocked] : ctx)
@@ -1272,8 +1275,8 @@ export const register: Register = (on, options) => {
     const by = ev && wraps(cfg, ev, target) ? speaker(await runsOf($, x => x.event === ev && !!x.say, Date.now() - LATE), r.text) : undefined
     const name = e.origin.kind === 'hook' ? by ?? (hookName(cfg, ev, target, r.text) || `${ev} hook`)
       : origin ? `${origin} ${label(e.type)}` : label(e.type)
-    // a queued prompt is the person's own typing. session_context carries their email, which scrub keeps (paths and git output stay readable)
-    const text = e.type === 'queued_command' ? undefined : peek(e.type === 'session_context' ? r.text.replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '***') : r.text)
+    // a queued prompt is the person's own typing. session_context carries their email (EMAIL)
+    const text = e.type === 'queued_command' ? undefined : peek(e.type === 'session_context' ? r.text.replace(EMAIL, '***') : r.text)
     try { push($, { kind: 'prompt', name, type: e.type, origin, detail: '', outcome: kb(r.text.length), src: e.origin.kind, bytes: r.text.length, agent: e.agentId, peek: text, use: post }, { above: e.origin.kind === 'hook' && e.origin.event === 'PreToolUse' ? target : undefined, after: e.origin.kind === 'hook' && e.origin.event === 'PostToolUse' ? target : undefined }) } catch {}
     return r
   })
@@ -1536,6 +1539,7 @@ export const register: Register = (on, options) => {
             <Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} />
             {at > 0 && <Button key="prev" label="↑ prev" hotkey="p" plain onPress={() => show(steps[at - 1]!)} />}
             {at >= 0 && at < steps.length - 1 && <Button key="next" label="↓ next" hotkey="n" plain onPress={() => show(steps[at + 1]!)} />}
+            {/* f is fclear's too: this draws after the controls, so it wins here (d.ts: two clash, later wins) */}
             {x.child && <Button key="fonly" label={only === x.child ? 'every agent' : 'only this agent'} hotkey="f" plain onPress={only1} />}
           </Box>
           <Text> </Text>
@@ -2096,6 +2100,7 @@ export const register: Register = (on, options) => {
       ...controls,
       ...(treeOn ? [<Box key="main" flexDirection="row" overflow="hidden" columnGap={2}>
         <Button key="fmain" label="main" plain dimColor={only !== 'main'} onPress={() => pick('main')} />
+        {/* f outside the inspector; inside it fonly's f draws later and wins */}
         {only ? <Button key="fclear" label={fit(`filter: ${nameOf(only)} ✕`, cols - 8)} hotkey="f" plain onPress={() => pick(only!)} /> : null}
       </Box>, ...tree.slice(0, most).map(agentRow)] : []),
       ...(treeOn && (done || more) ? [<Box key="done" flexDirection="row"><Text>  </Text><Button key="fdone" label={toggle} plain dimColor onPress={() => { showDone = !showDone; $.ui.invalidate('ui.render') }} /></Box>] : []),
