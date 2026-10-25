@@ -1212,7 +1212,7 @@ export const register: Register = (on, options) => {
   // every classic event; one that changed nothing (or only added context, logged again as its attachment) ranks debug unless slow
   on('classic.*', async ($, e: any, next) => {
     if (e.hook_event_name === 'SessionStart' && (e.source === 'resume' || e.source === 'fork')) {
-      await mutate(() => load($)).catch(() => {}) // a /resume inside this process switches the key: match against the resumed session's counts
+      await load($).catch(() => {}) // a /resume inside this process switches the key: match against the resumed session's counts
       if (!Object.keys(seen).length) { owed = {}; blind = true; closed.clear() } // store pruned: the history is unknown, so its replay is muted whole
     }
     if (/^Subagent(Start|Stop)$/.test(e.hook_event_name) && e.agent_id && !started.has(e.agent_id)) {
@@ -1322,7 +1322,7 @@ export const register: Register = (on, options) => {
   // the system prompt: one row for the engine's sections (ids and sizes, no text), one per plugin-added section; again only when its shape changes
   on('prompt.compose', async ($, e, next) => {
     const r = await next(e)
-    await mutate(() => load($)).catch(() => {}) // switch to a /clear'd or resumed session first: its load empties `composed`
+    await load($).catch(() => {}) // switch to a /clear'd or resumed session first: its load empties `composed`
     const sig = r.sections.map(s => `${s.id}:${s.text.length}`).join() + `|${e.outputStyle?.name ?? ''}`
     if (composed.has(sig)) return r
     composed.add(sig)

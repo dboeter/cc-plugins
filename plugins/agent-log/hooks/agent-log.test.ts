@@ -1806,6 +1806,28 @@ test('a store filled by older, larger sessions frees room for this one on the fi
   expect(db['r:fat8']).toBeDefined() // the newest stayed
 })
 
+test('a resume whose store was pruned logs none of the history it replays, then what is new after its first call', async ($, on) => {
+  const db = replay(on, 'BR')
+  on('classic.*', () => ({}) as any)
+  await ($ as any).classic.SessionStart({ source: 'resume' })
+  await $.prompt.context(MEM); await $.prompt.attachment(START); await $.prompt.attachment(ASK) // the resumed history
+  await $.tool.call(ls('br1'))
+  await $.prompt.attachment(ASK) // this prompt's
+  expect(kinds(await flushed($, 'BR', db))).toEqual(['hook_success UserPromptSubmit'])
+})
+
+test('after a compaction, an attachment a replay matched before logs again', async ($, on) => {
+  const db = replay(on, 'CP')
+  on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] }) as any)
+  await $.prompt.attachment(START); await $.prompt.attachment(ASK)
+  await $.tool.call(ls('cp1'))
+  await $.prompt.attachment(START) // the history asked again: a replay
+  await $.tool.call(ls('cp2'))
+  await ($ as any).session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'history', toolUses: [] }] })
+  await $.prompt.attachment(START) // the compaction took the first copy out of the history: this one is new
+  expect(kinds(await flushed($, 'CP', db))).toEqual(['hook_success SessionStart', 'hook_success UserPromptSubmit', 'hook_success SessionStart'])
+})
+
 test('a hook that fails after next leaves the call\'s result as next returned it, and says so once in the transcript', async ($, on) => {
   capture(on, 'FO'); at(on, '/p')
   const logs: any[] = []
