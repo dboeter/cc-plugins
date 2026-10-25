@@ -50,7 +50,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
   'retro-terminal': {
     muted: '#74b386',
     sprite: modem({ on: '#33ff66', off: '#1f4d2b', noise: '#74b386' }),
-    word: overdrive(typewriter({ ink: '#33ff66', dim: '#74b386', glow: '#c2f5cc' }), ['#c2f5cc', '#ffff66']),
+    word: overdrive(typewriter({ ink: '#33ff66', dim: '#74b386', glow: '#c2f5cc' }), ['#c2f5cc']),
     words: [
       'DIALING UP AT 56K', 'Handshaking furiously', 'Spooling ALL the things', 'Seeking track 0', 'Rewinding the mainframe',
       'Defragmenting reality', 'Paging in the universe', 'Polling at maximum baud', 'POKEing memory', 'Bit-banging',
@@ -74,7 +74,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
   'cyberpunk-neon': {
     muted: '#8f93bf',
     sprite: packet({ trace: '#0fa3b8', packet: '#ff2bd6', flash: '#d6fffa' }),
-    word: overdrive(hexDecode({ done: '#ff2bd6', hex: '#05d9e8', glitch: '#fcee0a' }), ['#fcee0a', '#05d9e8', '#d6fffa']),
+    word: overdrive(hexDecode({ done: '#ff2bd6', hex: '#05d9e8', glitch: '#fcee0a' }), ['#05d9e8', '#fcee0a']),
     words: [
       'JACKING IN', 'Breaching black ICE', 'Spoofing the megacorp', 'Overclocking the wetware', 'Netrunning at redline',
       'Decrypting the mainframe', 'Ghosting the daemons', 'Burning chrome',
@@ -96,7 +96,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
   'space-gray': {
     muted: '#9aa0ab',
     sprite: orbit({ planet: '#3ddcff', path: '#9aa0ab', body: '#eceef3', moon: '#3ddcff', pulse: '#ff6eb3', star: '#ffe03d' }),
-    word: overdrive(signal('#eceef3', '#9aa0ab'), ['#3ddcff', '#ff6eb3', '#ffe03d']),
+    word: overdrive(signal('#eceef3', '#9aa0ab'), ['#3ddcff', '#ff6eb3']),
     words: [
       'TRANSMITTING TO DEEP SPACE', 'Station-keeping', 'Slingshotting round Jupiter', 'Orbiting at escape velocity',
       'Clearing the ring plane', 'Main engine burn', 'Awaiting reply from Voyager', 'Engaging warp',
@@ -122,7 +122,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
       heights: [1, 2, 1, 2, 2, 1, 2, 1, 2, 2, 1], mast: 3,
       wall: '#3b4261', lit: '#e0af68', antenna: '#f7768e', rain: mix('#7aa2f7', '#1a1b26', 0.5), bolt: '#c0caf5',
     }),
-    word: overdrive(splitFlap({ landed: '#c0caf5', spinning: '#e0af68', flicker: '#7dcfff' }), ['#f7768e', '#bb9af7', '#7dcfff']),
+    word: overdrive(splitFlap({ landed: '#c0caf5', spinning: '#e0af68', flicker: '#7dcfff' }), ['#7dcfff', '#e0af68']),
     words: [
       'NEON OVERDRIVE', 'Drizzling on Shibuya', 'Glowing like Akihabara', 'Wiring the whole city', 'Night-driving the Shuto',
       'Rain-checking', 'Departing platform 9', 'Boarding the bullet train', 'Transferring at Shinjuku', 'Minding the gap',
@@ -143,7 +143,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
   dracula: {
     muted: '#6272a4',
     sprite: batMoon({ moon: '#bd93f9', shade: '#8a6ad1', bat: '#6272a4', cut: '#282a36', blood: '#ff5555' }),
-    word: overdrive(band({ head: '#ff5555', near: '#ff79c6', base: '#6272a4' }), ['#ff5555', '#f1fa8c']),
+    word: overdrive(band({ head: '#ff5555', near: '#ff79c6', base: '#6272a4' }), ['#ff79c6', '#ff5555']),
     words: [
       'BROODING DARKLY', 'Haunting the halls', 'Conjuring the undead', 'Lurking in the crypt', 'Scheming eternally',
       'Unliving my best unlife', 'Entering freely and of my own will', 'Counting every grain', 'Coffin-napping', 'Turning to mist',
@@ -169,7 +169,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
   ayu: {
     muted: '#626a73',
     sprite: sunrise({ from: '#e6b450', to: '#ff8f40', water: '#39bae6', glint: '#fff3d6' }),
-    word: overdrive(glint('#e6b450', '#ff8f40', '#fff3d6'), ['#fff3d6', '#f07178']),
+    word: overdrive(glint('#e6b450', '#ff8f40', '#fff3d6'), ['#fff3d6']),
     words: [
       'DAWNING GLORIOUSLY', 'Glinting', 'Warming the world', 'Kindling a new sun', 'Shining at full blaze', 'Ripening',
       'Rising and shipping', 'Catching first light', 'Going supernova',
@@ -195,7 +195,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
   gruvbox: {
     muted: '#928374',
     sprite: tape({ reel: '#ebdbb2', tape: '#a89984', button: '#fabd2f', vu: ['#b8bb26', '#fabd2f', '#fb4934'] }),
-    word: overdrive(mirrored(['#fabd2f', '#fe8019', '#fb4934']), ['#ebdbb2', '#b8bb26']),
+    word: overdrive(mirrored(['#fabd2f', '#fe8019', '#fb4934']), ['#fabd2f', '#ebdbb2']),
     words: [
       'BREWING A DOUBLE', 'Roasting the beans', 'Simmering', 'Toasting', 'Percolating', 'Kindling', 'Grooving',
       'Dropping the needle', 'Rewinding with a pencil', 'Cranking it to eleven',
@@ -217,7 +217,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
   kanagawa: {
     muted: '#727169',
     sprite: waves({ sea: '#7e9cd8', crest: '#7fb4ca', mountain: '#dcd7ba' }),
-    word: overdrive(crest({ head: '#dcd7ba', rising: '#7fb4ca', foam: '#727169', sea: '#7e9cd8' }), ['#dcd7ba', '#e46876']),
+    word: overdrive(crest({ head: '#dcd7ba', rising: '#7fb4ca', foam: '#727169', sea: '#7e9cd8' }), ['#dcd7ba', '#7fb4ca']),
     words: [
       'CRESTING THE GREAT WAVE', 'Inking', 'Brushing', 'Swelling', 'Breaking over the bow', 'Ebbing', 'Rowing for your life',
       'Bowing into the foam',
@@ -239,7 +239,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
   nord: {
     muted: '#7b88a1',
     sprite: harbour({ dark: '#4c566a', tower: '#bf616a', flake: '#d8dee9', flash: '#eceff4', night: '#2e3440', aurora: ['#a3be8c', '#88c0d0', '#b48ead', '#a3be8c'] }),
-    word: overdrive(band({ head: '#eceff4', near: '#88c0d0', base: '#7b88a1' }, 2, 2), ['#a3be8c', '#b48ead']),
+    word: overdrive(band({ head: '#eceff4', near: '#88c0d0', base: '#7b88a1' }, 2, 2), ['#88c0d0', '#eceff4']),
     words: [
       'BRAVING THE BLIZZARD', 'Frosting', 'Chilling to absolute zero', 'Thawing', 'Skiing the black run', 'Gliding',
       'Keeping watch', 'Trimming the wick', 'Sounding the horn',
@@ -265,7 +265,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
   'rose-pine': {
     muted: '#6e6a86',
     sprite: grove({ shade: '#191724', glow: '#ebbcba', pine: '#31748f', leaf: '#9ccfd8', petal: '#eb6f92' }),
-    word: overdrive(breathing('#ebbcba', '#c4a7e7'), ['#eb6f92', '#f6c177']),
+    word: overdrive(breathing('#ebbcba', '#c4a7e7'), ['#eb6f92', '#ebbcba']),
     words: [
       'BLOOMING MAGNIFICENTLY', 'Pruning', 'Steeping', 'Petaling', 'Wilting dramatically', 'Climbing', 'Pining', 'Lounging',
       'Swooning',
@@ -285,7 +285,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
   everforest: {
     muted: '#859289',
     sprite: flowers({ sprout: '#a7c080', bud: '#83c092', blooms: ['#d699b6', '#e67e80', '#dbbc7f'] }),
-    word: overdrive(sunlit('#a7c080', '#dbbc7f', '#d3c6aa'), ['#e69875', '#d699b6']),
+    word: overdrive(sunlit('#a7c080', '#dbbc7f', '#d3c6aa'), ['#dbbc7f', '#d3c6aa']),
     words: [
       'FORAGING FEROCIOUSLY', 'Rooting', 'Sprouting', 'Hiking', 'Mossing', 'Branching', 'Switchbacking', 'Trailblazing',
       'Pitching camp', 'Summiting',

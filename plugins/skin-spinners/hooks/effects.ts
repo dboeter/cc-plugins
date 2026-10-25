@@ -37,15 +37,19 @@ export const blink = (t: Tick, runs: Run[]): Run[] =>
 
 // Words
 
-// Letters flash bold in a spark colour, more of them the longer the turn runs, and at full heat the whole word strobes bold.
+// Letters flash bold, more of them the longer the turn runs, and at full heat the whole word strobes bold. A flash blends the letter's
+// own colour toward one of the theme's accents and holds it for the flash, so it reads as the word glowing, not as confetti.
 // Style only, so the word keeps its letters and its width.
 export const overdrive = (word: Word, sparks: readonly string[]): Word => (text, t) => {
   const h = heat(t)
   const isStrobe = h >= 1 && t.frame % 8 < 2
+  const flash = Math.floor(t.frame / 2)
   const each = word(text, t).flatMap(run => letters(run.text).map((letter): Run => ({ ...run, text: letter })))
   return merge(each.map((run, i): Run => {
     if (run.text === ' ' || run.color === undefined) return run
-    if (rand(t.seed, Math.floor(t.frame / 2), i, 11) < 0.04 + 0.3 * h) return { ...run, color: cycle(sparks, i + t.frame), bold: true }
+    if (rand(t.seed, flash, i, 11) < 0.04 + 0.3 * h) {
+      return { ...run, color: mix(run.color, cycle(sparks, Math.floor(rand(t.seed, flash, i, 16) * sparks.length)), 0.7), bold: true }
+    }
     return isStrobe ? { ...run, bold: true } : run
   }))
 }

@@ -39,7 +39,17 @@ export const rand = (seed: number, ...ns: number[]): number => {
   return (h >>> 0) / 4294967296
 }
 
-const rgb = (color: string) => [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16))
+// Cached, as a word effect mixes the same few colours for every letter of every frame; blends are rounded, so the set stays small.
+const parsed = new Map<string, number[]>()
+const rgb = (color: string) => {
+  let out = parsed.get(color)
+  if (out === undefined) {
+    if (parsed.size > 4000) parsed.clear()
+    out = [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16))
+    parsed.set(color, out)
+  }
+  return out
+}
 
 export const mix = (a: string, b: string, t: number): string => {
   const [from, to] = [rgb(a), rgb(b)]

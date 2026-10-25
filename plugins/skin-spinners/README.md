@@ -1,6 +1,6 @@
 # skin-spinners
 
-Gives every skins skin its own spinner row and turn footer, turned up loud. Each skin gets a sprite that loops, an effect on the spinner word, a themed clock or tag, and, for 11 of them, themed done words in the footer. For those 11 the row escalates as a turn runs: letters of the word flash bold in spark colours, more of them each minute, the sprite gets busier, and at 3 minutes the word strobes and the tag turns to an alarm that blinks.
+Gives every skins skin its own spinner row and turn footer, turned up loud. Each skin gets a sprite that loops, an effect on the spinner word, a themed clock or tag, and, for 11 of them, themed done words in the footer. For those 11 the row escalates as a turn runs: letters of the word flash bold, glowing toward the skin's own accent colours, more of them each minute, the sprite gets busier, and at 3 minutes the word strobes and the tag turns to an alarm that blinks.
 
 ## Install
 
