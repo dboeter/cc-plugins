@@ -213,5 +213,22 @@ own agent-of-subagent "$p/substop" '.agent == "agent-1"' -- "$h/guard.sh"
 own agent-null-in-main "$p/pre" '.agent == null' -- "$h/guard.sh"
 own name-skips-dotfile "$p/pre" '.name == "guard"' -- bash -c ". $h/.vars.sh && $h/guard.sh"
 
+# prune <name> <gone|kept> [seed]: this version alone. A session's first run deletes the files untouched for 14 days, in the
+# background; a run whose session file is there already (seed) starts none
+prune() {
+  local name=$1 want=$2 d=$tmp/runs/$1.prune t i why=()
+  rundir "$d"; t=$d/home/.claude/hook-times; mkdir -p "$t"
+  : >"$t/fresh.jsonl"; touch -d '15 days ago' "$t/stale.jsonl"
+  [[ -n ${3-} ]] && echo '{}' >"$t/s-1.jsonl"
+  env XDG_RUNTIME_DIR="$d/xdg" HOME="$d/home" HT_IN="$d/in" "$tmp/new/hook-timer" "$h/guard.sh" <"$p/pre" >/dev/null 2>&1
+  for i in $(seq 20); do [[ -e $t/stale.jsonl ]] || break; sleep 0.1; done
+  [[ $([[ -e $t/stale.jsonl ]] && echo kept || echo gone) == "$want" ]] || why+=("stale file not $want")
+  [[ -e $t/fresh.jsonl ]] || why+=("fresh file deleted")
+  grep -q '"name":"guard"' "$t/s-1.jsonl" || why+=("no record")
+  report "$name" "${why[@]}"
+}
+prune prune-on-first-run gone
+prune no-prune-on-later-runs kept seed
+
 echo "$pass passed, $fails failed"
 ((fails == 0))

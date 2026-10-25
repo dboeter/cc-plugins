@@ -9,6 +9,7 @@
 # agent: the subagent's agent_id, null in the main loop
 # say: the first line of what the hook handed back (an exit-2 reason, additionalContext, systemMessage, a block reason, or
 # stdout on the events where plain stdout is context), cut to 80 code points; null when it said nothing.
+# A session's first run deletes the files there not written to for 14 days (several first runs at once may each start that).
 # No file extension on purpose: agent-log names a hook by the first `<name>.sh|py|js|…` in its command that starts a word
 # or path segment and is no dotfile (the regex below), which must stay the wrapped script, not this one.
 # stdin as $(cat) gave it, trailing newlines dropped. A builtin read forks nothing but reads a pipe a byte per syscall, so
@@ -53,6 +54,11 @@ dir="$HOME/.claude/hook-times"
   | (.session_id // ""),
     ({name: $name, event: .hook_event_name, use: (.tool_use_id // null), agent: (.agent_id // null), t0: $t0, t1: $t1, exit: $exit, say: ($said | if . then line else null end)} | tojson)
   ' <<<"$input" 2>/dev/null)
-# one short line per append: concurrent hooks of one event write whole lines
-[[ $sid =~ ^[[:alnum:]-]+$ && -n $line ]] && printf '%s\n' "$line" >>"$dir/$sid.jsonl" 2>/dev/null
+if [[ $sid =~ ^[[:alnum:]-]+$ && -n $line ]]; then
+  # a session's first record prunes the files untouched for 14 days, in the background: one fork per session, none per run (an
+  # `a || b &` would fork the whole list every run). Its stdio is closed so the engine, reading the hook's pipes to EOF, need not wait
+  if [[ ! -e $dir/$sid.jsonl ]]; then find "$dir" -name '*.jsonl' -mtime +14 -delete </dev/null >/dev/null 2>&1 & fi
+  # one short line per append: concurrent hooks of one event write whole lines
+  printf '%s\n' "$line" >>"$dir/$sid.jsonl" 2>/dev/null
+fi
 exit $rc
