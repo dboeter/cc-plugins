@@ -1779,6 +1779,7 @@ export const register: Register = (on, options) => {
       const usual = !!away?.every(routine)
       const there = away?.length ? ` ${usual ? '' : '↗ '}${lfit(away[0]!, 24)}${away.length > 1 ? ` +${away.length - 1}` : ''}` : ''
       const room = cols - 2 - rail.length - who.length - tail.length - there.length - END - 1
+      if (link?.endsWith('─') && who.startsWith(' ')) who = `─${who.slice(1)}` // a bracket's end (`╭─`) runs on into its row's indent: `╭── guard`
       return (
         <Box key={k} flexDirection="row" overflow="hidden">
           <Box flexShrink={0} width={2 + rail.length}><Text dimColor>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : link ? <Text dimColor>{link}</Text> : <Text>{mark}</Text>}</Box>
@@ -1860,8 +1861,9 @@ export const register: Register = (on, options) => {
     // another call and its own. Turn ends draw nothing: the turn header carries the time. A group is keyed by its entry's id (idOf).
     // link: its row's place on the bracket; wait, server: a call's own rows' places (partsOf)
     type Group = { kind: 'one' | 'agent'; xs: [Entry]; link?: string; wait?: string; server?: string[] }
-    // n rows on a call's bracket, the call at `at`: `╭` opens it, `╰` closes it, `├` marks the call between, `│` the rest
-    const bracket = (n: number, at: number) => Array.from({ length: n }, (_, i) => n < 2 ? undefined : i === 0 ? '╭' : i === n - 1 ? '╰' : i === at ? '├' : '│')
+    // n rows on a call's bracket, the call at `at`: `╭` opens it, `╰` closes it, `├` marks the call between, `│` the rest. An end
+    // that is not the call reaches toward its indented row (`╭─`), so the bracket holds the hooks and the call stands apart
+    const bracket = (n: number, at: number) => Array.from({ length: n }, (_, i) => n < 2 ? undefined : i === 0 ? (at === 0 ? '╭' : '╭─') : i === n - 1 ? (at === i ? '╰' : '╰─') : i === at ? '├' : '│')
     const groupsOf = (xs: Entry[]) => {
       const there = new Set(xs)
       const linked = (x: Entry) => x.kind !== 'tool' && !!x.use && there.has(callRow.get(x.use)!)
@@ -2024,8 +2026,8 @@ export const register: Register = (on, options) => {
       'other, in a turn\'s split: the engine\'s and plugins\' own work between steps']
     const KEYS: [string, string][] = [['a m h u', 'views: all, what the model did, the harness, outside the root'], ['l', 'level: info or notice (/agentlog level sets debug and error)'],
       ['o', 'open or close every Agent fold'], ['s', 'the setup page'], ['i', 'this page'], ['j k', 'the row cursor down, up, over rows and turn headers; in the inspector, the next or previous row'], ['↓ ↑', 'the row cursor too'],
-      ['enter', 'open the row under the cursor'], ['e', 'the newest row'], ['^↑ ^↓', 'ctrl+↑ ↓: the previous or next prompt'], ['b', 'back'], ['n p', 'in the inspector: the next or previous row'],
-      ['f', 'in an Agent row\'s inspector: only its agent\'s rows; elsewhere, clear that filter'], ['ctrl+x tab', 'give the pane the keys: until then none of these reach it'], ['tab', 'move the focus over the buttons; enter presses one']]
+      ['enter', 'open the row under the cursor'], ['e', 'the newest row'], ['^↑ ^↓', 'ctrl+↑ ↓: the previous or next prompt, the row cursor on its header'], ['b', 'back'], ['n p', 'in the inspector: the next or previous row'],
+      ['f', 'in an Agent row\'s inspector: only its agent\'s rows; elsewhere, clear that filter'], ['click', 'give the pane the keys: until then none of these reach it'], ['tab', 'move the focus over the buttons; enter presses one']]
     // `no agent entries for scout at notice or above · /agentlog level debug: every row · a: all views · main: clear the filter`; only the filters set
     const empty = () => {
       if (!entries.length) return 'no entries yet'
@@ -2033,12 +2035,15 @@ export const register: Register = (on, options) => {
       const tips = [level > 0 && '/agentlog level debug: every row', view !== 'all' && 'a: all views', only && `${only === 'main' ? 'main' : nameOf(only)}: clear the filter`].filter(Boolean)
       return [`no ${view === 'all' ? '' : `${view} `}entries${of}${level > 0 ? ` at ${LEVELS[level]} or above` : ''}`, ...tips].join(' · ')
     }
-    // the window's top to the previous or next prompt's turn header (`#3`); past the last, the end. From the inspector or a page, back to the log first
+    // the window's top to the previous or next prompt's turn header (`#3`), the row cursor with it; past the last, the end. From the
+    // inspector or a page, back to the log first
     const heads = rows.flatMap((r, i) => String(r.props?.key).startsWith('turn') ? [i] : [])
     const toTurn = (dir: -1 | 1) => {
       leave()
       const to = dir < 0 ? heads.filter(i => i < win).at(-1) ?? 0 : heads.find(i => i > win)
       if (to === undefined) follow = true; else { win = to; follow = false } // the draw clamps win and decides follow again
+      const k = to === undefined ? undefined : String(rows[to]?.props?.key)
+      if (k && pressable.has(k)) { sel = k; $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: `b${k}` }).catch(() => {}) }) } // a header with no turn end yet is no stop
       $.ui.invalidate('ui.render')
     }
     // Bright in the controls means active, nothing else: the view shown, the page open, the loop filtered to. The active view also
@@ -2190,8 +2195,8 @@ export const register: Register = (on, options) => {
       </Box>, ...tree.slice(0, most).map(agentRow)] : []),
       ...(treeOn && (done || more) ? [<Box key="done" flexDirection="row"><Text>  </Text><Button key="fdone" label={toggle} plain dimColor onPress={() => { showDone = !showDone; $.ui.invalidate('ui.render') }} /></Box>] : []),
       // unfocused, the rule says how to give the pane the keys (its hotkeys and j k press nothing until then); in the rule, so the
-      // header keeps its height either way
-      <Text key="rule" dimColor>{e.props.isFocused === false && cols > 24 ? `── ctrl+x tab: keys ${'─'.repeat(cols - 21)}` : '─'.repeat(Math.max(1, cols - 1))}</Text>,
+      // header keeps its height either way. A click, not ctrl+x tab: that chord focuses a band above the prompt first when one has buttons
+      <Text key="rule" dimColor>{e.props.isFocused === false && cols > 24 ? `── click to focus ${'─'.repeat(cols - 19)}` : '─'.repeat(Math.max(1, cols - 1))}</Text>,
     ]
     // taken before the inspector draws: `o` pressed there must not move the window that back is about to centre
     const held = anchor; anchor = undefined

@@ -43,7 +43,7 @@ const frame = async (m: any, cols: number, label: string): Promise<string[]> => 
   return lines
 }
 const plainOf = (l: string) => l.replace(/[*]|‹\w+:|›/g, '')
-const ruleAt = (lines: string[]) => lines.findIndex(l => /^──( ctrl\+x tab: keys ─+|─*)$/.test(plainOf(l))) // the header's last row
+const ruleAt = (lines: string[]) => lines.findIndex(l => /^──( click to focus ─+|─*)$/.test(plainOf(l))) // the header's last row
 
 // the review's session: setup hooks, a turn of calls with their hooks (a failed test run that waited on you, a refusal, a lint
 // block, calls outside the root), then a turn with a subagent, the engine's own request, a model switch and two problems

@@ -4,16 +4,16 @@ Why was that turn slow, and who allowed that call? A live pane that splits each 
 
 ```
 #1 · tools 17.2s · model 12.3s · 4 hidden ▸                                           39.6s
-╭   context-mode context
+╭── context-mode context
 │   Waiting for you to answer the permission prompt                                     4.2s
 ╰ Run the tests                                                                     ✗ 18.4s
-╭   guard                                                                           ⊘ <0.1s
+╭── guard                                                                           ⊘ <0.1s
 ╰ Clean the build output                                                          ⊘ denied
 ╭ Edit agent-log.tsx                                                                    0.1s
-╰   lint-feedback                                                                   ↩ 1.3s
+╰── lint-feedback                                                                   ↩ 1.3s
   Read index.ts ↗ ~/other-project/src                                                <0.1s
 ╭ Reply: The test fails because the header grew a row.                                 6.1s
-╰   Advisor                                                                             3.2s
+╰── Advisor                                                                             3.2s
 ```
 
 agent-log is the interpreted view of a session. [event-log](../event-log) is the raw record, every event with its full payload on disk. The two work as a pair.
@@ -60,7 +60,7 @@ The pane never opens by itself. While it is closed, a turn that ended unusually 
 
 Turns under 10 seconds never get a line, and time spent waiting on you never counts as unusual. `/agentlog` shows or hides the pane, `/agentlog all|model|harness|outside` picks a view (`agent` still works for `model`), `/agentlog level debug|info|notice|error` sets the least important row shown, and `/agentlog clear` empties the log. No `/agentlog` enters the conversation: its line is dropped and its reply is a toast, so the model reads neither.
 
-In the pane, `a` `m` `h` `u` switch views: all, what the model did, the harness, outside the root. `l` toggles the level between info and notice. `o` opens or closes every Agent fold. `s` opens the setup page and `i` the keys page. `j` and `k` (or ↓ and ↑) move a row cursor over the rows and the turn headers, and Enter opens its row. `e` jumps to the newest row, ctrl+↑↓ (`^↑↓ turn`) to the previous or next prompt, and `b` goes back. A view, level or filter key pressed in an inspector or on a page goes back to the log it changed. In a row's inspector, `n` and `p` step to the next and previous row; an Agent row's inspector has `f` to keep only that agent's rows, and `f` outside it clears that filter. These keys reach the pane only while it has the focus: ctrl+x tab gives it, and the line under the controls says so while it does not. Tab moves the focus over the buttons, and Enter presses one. While an agent runs, a tree of the main loop and its agents sits at the top, and pressing one filters the log to it.
+In the pane, `a` `m` `h` `u` switch views: all, what the model did, the harness, outside the root. `l` toggles the level between info and notice. `o` opens or closes every Agent fold. `s` opens the setup page and `i` the keys page. `j` and `k` (or ↓ and ↑) move a row cursor over the rows and the turn headers, and Enter opens its row. `e` jumps to the newest row, ctrl+↑↓ (`^↑↓ turn`) to the previous or next prompt with the row cursor on its header, and `b` goes back. A view, level or filter key pressed in an inspector or on a page goes back to the log it changed. In a row's inspector, `n` and `p` step to the next and previous row; an Agent row's inspector has `f` to keep only that agent's rows, and `f` outside it clears that filter. These keys reach the pane only while it has the focus: a click in the pane gives it, and the line under the controls says so while it does not. Tab moves the focus over the buttons, and Enter presses one. While an agent runs, a tree of the main loop and its agents sits at the top, and pressing one filters the log to it.
 
 ## What it does on your machine
 

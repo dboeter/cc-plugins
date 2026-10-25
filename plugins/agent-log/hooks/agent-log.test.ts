@@ -507,6 +507,11 @@ test('a turn header that opens its turn is a stop for the row cursor', async ($,
   expect(await m.find({ text: /^Step 3$/ })).toBe(undefined) // the window's top is `#2`, the cursor's row
   await m.press({ key: 'cup' })
   expect(await m.find({ text: /^Step 3$/ })).toBeDefined()
+  // ^↑ (tprev) puts the cursor on the header it scrolls to: k goes on from `#2`, to the row just above it
+  await m.press({ key: 'jump' }); await m.press({ key: 'tprev' })
+  expect(await m.find({ text: /^Step 3$/ })).toBe(undefined)
+  await m.press({ key: 'cup' })
+  expect(await m.find({ text: /^Step 3$/ })).toBeDefined()
 })
 
 test('a view, level or filter key pressed in the inspector goes back to the log it changed', async ($, on) => {
