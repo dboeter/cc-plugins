@@ -31,9 +31,11 @@ const lettersOf = (word: string) => letters(word).length
 // 0 when the turn starts, 1 at 3 minutes: how loud the row has got. Every escalation reads this one number.
 export const heat = (t: Tick) => clamp(t.elapsedMs / 180000)
 
-// After 3 minutes the text blinks; the blank half keeps its width, so the parts after it stay put.
-export const blink = (t: Tick, runs: Run[]): Run[] =>
-  heat(t) < 1 || Math.floor(t.frame / 4) % 2 === 0 ? runs : [{ text: ' '.repeat(cells(runs.map(r => r.text).join(''))) }]
+// At full heat a colour pulses toward `hot` and back every 2 s; below it, it stays `color`.
+export const glow = (t: Tick, color: string, hot: string) => (heat(t) < 1 ? color : mix(color, hot, breath(2 * t.elapsedMs)))
+
+// From 3 minutes, `color` fades in from `from` over 2 s, then holds; the full show's text arrives once and stays still.
+export const fadeIn = (t: Tick, from: string, color: string) => mix(from, color, (t.elapsedMs - 180000) / 2000)
 
 // Words
 

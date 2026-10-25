@@ -1,5 +1,5 @@
 import {
-  batMoon, band, blink, blinds, blinker, breathing, crest, flat, flowers, glint, grove, harbour, heat, hexDecode, mirrored, modem, orbit,
+  batMoon, band, blinds, blinker, breathing, crest, flat, flowers, fadeIn, glint, glow, grove, harbour, heat, hexDecode, mirrored, modem, orbit,
   overdrive, packet, signal, skyline, spin, splitFlap, sunlit, sunrise, tape, typewriter, waves, type Sprite, type Word,
 } from './effects'
 import { cycle, mix, mmss, merge, pad2, pixels, rand, timer, type Run, type Tick } from './runs'
@@ -40,10 +40,10 @@ const GRAPH = ['#161b22', '#0e4429', '#006d32', '#26a641', '#39d353']
 const STRIPES = [['#fabd2f', '#fe8019'], ['#fb4934', '#d3869b'], ['#83a598', '#8ec07c']] as const
 const stripe = (j: number, t: Tick) => cycle(STRIPES, j + Math.floor(t.frame / 3))
 
-// a bar of `n` cells that fills with heat, in `on` over `off`
-const gauge = (t: Tick, n: number, on: string, off: string): Run[] => {
+// a bar of `n` cells that fills with heat, in `on` over `off`; once full it pulses toward `hot`
+const gauge = (t: Tick, n: number, on: string, off: string, hot: string): Run[] => {
   const at = Math.round(n * heat(t))
-  return merge([{ text: '▰'.repeat(at), color: on }, { text: '▱'.repeat(n - at), color: off }])
+  return merge([{ text: '▰'.repeat(at), color: glow(t, on, hot) }, { text: '▱'.repeat(n - at), color: off }])
 }
 
 export const THEMES: Readonly<Record<string, Theme>> = {
@@ -60,7 +60,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
     // the C64's start-up line, losing 16 bytes a second
     tag: t => {
       const free = 38911 - 16 * Math.floor(t.elapsedMs / 1000)
-      return free > 0 ? say(`${free} BYTES FREE`, heat(t) >= 1 ? '#ffff66' : '#74b386') : blink(t, say('?OUT OF MEMORY', '#ff5050', { bold: true }))
+      return free > 0 ? say(`${free} BYTES FREE`, glow(t, '#74b386', '#c2f5cc')) : say('?OUT OF MEMORY', '#ff5050')
     },
     done: {
       ok: '#66ff99', err: '#ff5050',
@@ -80,10 +80,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
       'Decrypting the mainframe', 'Ghosting the daemons', 'Burning chrome',
     ],
     clock: t => say(`t+0x${Math.floor(t.elapsedMs / 1000).toString(16).padStart(2, '0')}`, '#8f93bf'),
-    tag: t =>
-      heat(t) < 1
-        ? merge([{ text: 'TRACE ', color: '#8f93bf' }, ...gauge(t, 6, '#ff3860', '#3a3d5c')])
-        : blink(t, say('!! TRACE COMPLETE !!', '#ff3860', { bold: true })),
+    tag: t => merge([{ text: 'TRACE ', color: '#8f93bf' }, ...gauge(t, 6, '#ff2bd6', '#3a3d5c', '#ff3860')]),
     done: {
       ok: '#39ff88', err: '#ff3860',
       mark: mark('#ff2bd6'),
@@ -102,10 +99,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
       'Clearing the ring plane', 'Main engine burn', 'Awaiting reply from Voyager', 'Engaging warp',
     ],
     clock: t => say(`T+${mmss(t.elapsedMs)}`, '#9aa0ab'),
-    tag: t =>
-      heat(t) < 1
-        ? merge([{ text: 'ΔV ', color: '#9aa0ab' }, ...gauge(t, 6, '#3ddcff', '#34363c')])
-        : blink(t, say('MASTER ALARM', '#ff4d5e', { bold: true })),
+    tag: t => merge([{ text: 'ΔV ', color: '#9aa0ab' }, ...gauge(t, 6, '#3ddcff', '#34363c', '#ffb020')]),
     done: {
       ok: '#3dff8b', err: '#ff4d5e',
       mark: mark('#ff6eb3'),
@@ -156,7 +150,6 @@ export const THEMES: Readonly<Record<string, Theme>> = {
         { text: `${Math.floor(left / 3600)}h ${pad2(Math.floor(left / 60) % 60)}m ${pad2(left % 60)}s`, color: '#f1fa8c' },
       ]
     },
-    tag: t => (heat(t) < 1 ? [] : blink(t, say('THE BLOOD MOON RISES', '#ff5555', { bold: true }))),
     done: {
       ok: '#50fa7b', err: '#ff5555',
       mark: mark('#bd93f9'),
@@ -175,11 +168,10 @@ export const THEMES: Readonly<Record<string, Theme>> = {
       'Rising and shipping', 'Catching first light', 'Going supernova',
     ],
     tag: t => {
-      if (heat(t) >= 1) return blink(t, say('☼ HIGH NOON ☼', '#ff8f40', { bold: true }))
       const at = Math.min(8, Math.floor(t.elapsedMs / 30000))
       return merge([
         { text: '━'.repeat(at), color: '#e6b450' },
-        { text: '●', color: '#ff8f40' },
+        { text: '●', color: glow(t, '#ff8f40', '#fff3d6') },
         { text: '┄'.repeat(8 - at), color: '#626a73' },
       ])
     },
@@ -245,7 +237,6 @@ export const THEMES: Readonly<Record<string, Theme>> = {
       'Keeping watch', 'Trimming the wick', 'Sounding the horn',
     ],
     tag: t => {
-      if (heat(t) >= 1) return blink(t, say('WHITEOUT', '#eceff4', { bold: true }))
       const ship = Math.max(0, 5 - Math.floor(t.elapsedMs / 15000))
       return merge([
         { text: '─'.repeat(ship), color: '#3b4252' },
@@ -272,7 +263,7 @@ export const THEMES: Readonly<Record<string, Theme>> = {
     ],
     suffix: '⁓',
     clock: t => (t.elapsedMs < 30000 ? [] : timer(t.elapsedMs, '#6e6a86')),
-    tag: t => (heat(t) < 1 ? [] : blink(t, say('✿ FULL BLOOM ✿', '#eb6f92', { bold: true }))),
+    tag: t => (heat(t) < 1 ? [] : say('in full bloom', fadeIn(t, '#6e6a86', '#eb6f92'), { italic: true })),
     done: {
       ok: '#9ccfd8', err: '#eb6f92',
       mark: mark('#c4a7e7'),

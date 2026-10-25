@@ -112,14 +112,13 @@ test('dracula: a bat 5 pixels wide crosses the moon', () => {
   ])
 })
 
-test('dracula: past 3 minutes a colony of bats crosses a blood moon, under a blinking tag', () => {
+test('dracula: past 3 minutes a colony of bats crosses a blood moon, and no tag says so', () => {
   const sprite = (ms: number) => Array.from({ length: 36 }, (_, frame) => theme('dracula').sprite(tick('dracula', ms, frame)))
   const batCells = (ms: number) => Math.max(...sprite(ms).map(runs => runs.filter(r => r.color === '#6272a4').reduce((n, r) => n + r.text.length, 0)))
   const isBlood = (ms: number) => sprite(ms).some(runs => runs.some(r => r.color === '#ff5555'))
-  const tag = (ms: number, frame: number) => text(theme('dracula').tag?.(tick('dracula', ms, frame)) ?? [])
   expect([isBlood(2 * MINUTE), isBlood(3 * MINUTE)]).toEqual([false, true])
   expect(batCells(3 * MINUTE)).toBeGreaterThan(batCells(0))
-  expect([tag(2 * MINUTE, 0), tag(3 * MINUTE, 0), tag(3 * MINUTE, 4).trim()]).toEqual(['', 'THE BLOOD MOON RISES', ''])
+  expect(theme('dracula').tag).toBeUndefined()
 })
 
 test('overdrive: the word keeps its letters at any heat, sparks more letters bold as the turn runs, and strobes at full heat', () => {
@@ -131,10 +130,19 @@ test('overdrive: the word keeps its letters at any heat, sparks more letters bol
   expect(runs(3 * MINUTE, 0).filter(r => r.text.trim() !== '').every(r => r.bold)).toBe(true)
 })
 
-test('cyberpunk-neon and space-gray: a gauge fills, then the tag turns to an alarm at 3 minutes', () => {
-  const tag = (name: string, ms: number) => text(theme(name).tag?.(tick(name, ms)) ?? [])
-  expect([tag('cyberpunk-neon', 0), tag('cyberpunk-neon', 90 * SECOND), tag('cyberpunk-neon', 3 * MINUTE)]).toEqual(['TRACE ▱▱▱▱▱▱', 'TRACE ▰▰▰▱▱▱', '!! TRACE COMPLETE !!'])
-  expect([tag('space-gray', 0), tag('space-gray', 3 * MINUTE)]).toEqual(['ΔV ▱▱▱▱▱▱', 'MASTER ALARM'])
+test('cyberpunk-neon and space-gray: a gauge fills over 3 minutes, then pulses in place, never turning to words', () => {
+  const tag = (name: string, ms: number) => theme(name).tag?.(tick(name, ms)) ?? []
+  const colors = (name: string, ms: number) => new Set(Array.from({ length: 30 }, (_, i) => tag(name, ms + 100 * i)[1]?.color))
+  expect([0, 90 * SECOND, 3 * MINUTE, 10 * MINUTE].map(ms => text(tag('cyberpunk-neon', ms)))).toEqual(['TRACE ▱▱▱▱▱▱', 'TRACE ▰▰▰▱▱▱', 'TRACE ▰▰▰▰▰▰', 'TRACE ▰▰▰▰▰▰'])
+  expect([0, 3 * MINUTE].map(ms => text(tag('space-gray', ms)))).toEqual(['ΔV ▱▱▱▱▱▱', 'ΔV ▰▰▰▰▰▰'])
+  expect([colors('cyberpunk-neon', 2 * MINUTE).size, colors('cyberpunk-neon', 3 * MINUTE).size > 5]).toEqual([1, true])
+})
+
+test('rose-pine: from 3 minutes, in full bloom fades in once and holds still', () => {
+  const tag = (ms: number, frame = 0) => theme('rose-pine').tag?.(tick('rose-pine', ms, frame)) ?? []
+  expect(text(tag(179 * SECOND))).toBe('')
+  expect([tag(3 * MINUTE)[0]?.color, tag(3 * MINUTE + 2 * SECOND)[0]?.color, tag(5 * MINUTE, 7)[0]?.color]).toEqual(['#6e6a86', '#eb6f92', '#eb6f92'])
+  expect(text(tag(5 * MINUTE, 4))).toBe('in full bloom')
 })
 
 test('dracula: the clock counts down to sunrise', () => {
