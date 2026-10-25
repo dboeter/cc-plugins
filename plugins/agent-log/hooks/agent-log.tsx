@@ -1,4 +1,4 @@
-import type { AgentInfo, EngineInterface, HookFailure, ModelUsage, Register, SettingsSource, Timer, TurnStepResult } from 'claude-code'
+import type { AgentInfo, EngineInterface, HookFailure, ModelUsage, Register, SettingsSource, Timer, TraceEntry, TurnStepResult } from 'claude-code'
 import { scrub } from './scrub'
 
 // Deliberately single-file: every hook and the pane read and mutate the module-level state (entries, seen, owed, chain, the
@@ -414,6 +414,7 @@ const EVENT_WHAT: Record<string, string> = {
   'task created': 'A task joined the team\'s list', 'task completed': 'A task on the team\'s list was completed', 'teammate idle': 'A teammate is waiting for work',
   notification: 'Claude Code notified you', 'file changed': 'A file a hook watches changed', setup: 'Claude Code ran its setup', mode: 'The permission mode changed',
   'MCP connected': 'An MCP server connected; the time is how long it took', 'MCP failed': 'An MCP server failed to connect', 'MCP disconnected': 'An MCP server closed its connection: at the session\'s end, or a server that stopped', 'API error': 'A model request failed; the engine may have retried it',
+  'hook skipped': 'A plugin\'s hook did not run: the plugin named after `by` runs first and sent the event on past it',
 }
 const QUIET_EVENTS = new Set(['notification']) // Claude Code telling you it waits: the call's wait line and the turn's end already say so
 // The collector's records that report what no hook sees: a permission mode change, an MCP server connecting or failing, a failed
@@ -817,7 +818,7 @@ async function loadNow($: EngineInterface): Promise<void> {
   seen = v?.seen && !Array.isArray(v) ? v.seen : seed(entries)
   names = { ...(v?.names && !Array.isArray(v) ? v.names : {}), ...names } // merged: a fresh instance can name a loop before its first load. Ids are unique, and saved() drops the ones no entry shows
   owed = entries.length || Object.keys(seen).length ? { ...seen } : undefined // /clear's empty session owes nothing
-  blind = false; closed.clear(); lead.clear(); rerun.clear(); pre.clear(); recent.clear(); composed.clear(); checks.clear(); inherited.clear(); took.clear(); postCtx = [] // the old session's calls
+  blind = false; closed.clear(); lead.clear(); rerun.clear(); pre.clear(); recent.clear(); composed.clear(); checks.clear(); inherited.clear(); took.clear(); skipSeen.clear(); postCtx = [] // the old session's calls
   // every new key prunes the others: a session's start, and /clear and resume, which add a key. Queued, not awaited: prompt.submit
   // awaits this load before its next, and a prune reads every other session
   mutate(() => pruneOthers($)).catch(() => {})
@@ -920,11 +921,12 @@ export const markAgain = (xs: Entry[], x: Entry) => {
 // fire-and-forget: callers never await the log, so logging cannot cost a hook its budget
 // opt.ahead: on a tool row, its PreToolUse context attachments to come. opt.above: on such an attachment, the tool it goes with.
 // opt.after: on a PostToolUse attachment, the tool it followed (its newest call of that name in the loop, by start)
-// opt.start: on a tool row, when its call began
-function push($: EngineInterface, e: Omit<Entry, 't'>, opt: { ahead?: number; above?: string; after?: string; start?: number } = {}): void {
+// opt.start: on a tool row, when its call began. opt.once: left out when the session holds a row of the same kind, name, detail and outcome
+function push($: EngineInterface, e: Omit<Entry, 't'>, opt: { ahead?: number; above?: string; after?: string; start?: number; once?: boolean } = {}): void {
   const t = opt.start ?? Date.now() // when it happened, not when the chain gets to it: rows are placed by it
   mutate(async () => {
     await loadNow($)
+    if (opt.once && entries.some(y => y.kind === e.kind && y.name === e.name && y.detail === e.detail && y.outcome === e.outcome)) return
     const x: Entry = { t, turn: turnNo, ...e }
     // A call's row is pushed once the call is over, after everything that happened while it ran: its own hooks (they run inside
     // it), parallel calls that finished first, a foreground agent's whole run. So it goes in where it began: before the first
@@ -990,6 +992,7 @@ const problemsOf = (xs: Entry[]): string[] => {
   const runs = [...setup.runs.values()].reduce((a, r) => a + r.errors + r.cancelled, 0)
   return [
     many(runs || n(x => x.kind === 'hook' && stat(x) === 'failed'), 'hook run failed', 'hook runs failed'),
+    many(n(x => x.kind === 'event' && x.name === 'hook skipped'), 'hook skipped', 'hooks skipped'),
     many(n(x => x.kind === 'event' && x.name === 'API error'), 'API error'),
     many(n(x => x.kind === 'event' && x.name === 'turn failed'), 'turn failed', 'turns failed'),
     unsaved ? 'log not saved' : '',
@@ -1006,6 +1009,24 @@ const failed = new Set<string>()
 const logFailure = ($: EngineInterface, hook: string, why: HookFailure) => {
   $.ui.log(`agent-log's ${hook} hook failed and was passed over: ${why.message ?? why.kind}`, failed.has(hook) ? { to: 'debug' } : undefined)
   failed.add(hook)
+}
+
+// A hook another plugin's `next.to` sent the event past: above agent-log, from the engine's task-notification (once per hook and
+// event); beneath it, from `next.trace` (every dispatch). SKIP_NOTICE is the wording Claude Code 2.1.310 sends, read from the
+// binary and documented nowhere, so a rewording stops it matching. One row per hook, event and plugin a session: `once` checks the store
+const skipSeen = new Set<string>() // spares a dispatch the store check
+const SKIP_NOTICE = /^([^\s:]+): its (\S+) hook was skipped\. "([^"]+)" runs first and sent the event on past it\.$/gm
+const logSkip = ($: EngineInterface, plugin: string, event: string, by: string) => {
+  const k = `${plugin}|${event}|${by}`
+  if (skipSeen.has(k)) return
+  skipSeen.add(k)
+  push($, { kind: 'event', name: 'hook skipped', detail: `${plugin} ${event}`, outcome: `by ${by}`, status: 'failed' }, { once: true })
+}
+const logSkipsIn = ($: EngineInterface, trace: readonly TraceEntry[]) => {
+  for (const link of trace) {
+    const by = link.outcome === 'skipped' ? link.reason?.match(/^bypassed by (.+)/)?.[1] : undefined
+    if (by) logSkip($, link.plugin, link.event, by)
+  }
 }
 
 export const register: Register = (on, options) => {
@@ -1036,6 +1057,7 @@ export const register: Register = (on, options) => {
   // the verdict and the rule behind it; tool.call reads it after its next, inside which this fires
   on('tool.check', async ($, e, next) => {
     const r = await next(e)
+    logSkipsIn($, next.trace)
     if (e.tool_use_id) { checks.set(e.tool_use_id, { check: r.decision, rule: r.rule, reason: r.reason }); checkedAt.set(e.tool_use_id, Date.now()) }
     return r
   }).catch(($, e, next) => { logFailure($, 'tool.check', next.error); return next(e) })
@@ -1101,6 +1123,7 @@ export const register: Register = (on, options) => {
     // ahead of it. Unanswered, the row is not tagged
     const place = Promise.all([$.session.root(), $.session.cwd(), homeOf($)]).catch(() => undefined)
     const r = await next(e).finally(() => { if (e.tool_use_id) loopOf.delete(e.tool_use_id); liveNow.delete(now) })
+    logSkipsIn($, next.trace)
     const v = e.tool_use_id ? checks.get(e.tool_use_id) : undefined
     const pre = e.tool_use_id ? preCtx.get(e.tool_use_id) : undefined // classic.PreToolUse ran inside next
     const hookBlocked = !!e.tool_use_id && blockedUse.delete(e.tool_use_id)
@@ -1229,6 +1252,7 @@ export const register: Register = (on, options) => {
     }
     const t0 = Date.now()
     const r: any = await next(e)
+    logSkipsIn($, next.trace)
     const ms = Date.now() - t0
     // $HOME shortened to ~ in the paths a row shows
     const home = e.file_path || e.directory || e.worktree_path ? await $.env.get('HOME').catch(() => undefined) : undefined
@@ -1284,6 +1308,7 @@ export const register: Register = (on, options) => {
   // attachments. The other core blocks reach it as attachments (SENT_AS_ATTACHMENT) and log there
   on('prompt.context', async ($, e, next) => {
     const r = await next(e)
+    logSkipsIn($, next.trace)
     await ready($)
     for (const b of r.blocks) try {
       if (SENT_AS_ATTACHMENT.has(b.name)) continue // before replayed: never counted in `seen`
@@ -1294,6 +1319,7 @@ export const register: Register = (on, options) => {
   })
   on('prompt.attachment', async ($, e, next) => {
     const r = await next(e)
+    logSkipsIn($, next.trace)
     // a PostToolUse hook's context takes the first call waiting for one, even when left out of the request: its place in the
     // queue is spent either way, or the next attachment of that tool would go with this one's call. Not a copy or a replay
     const isPost = e.origin.kind === 'hook' && e.origin.event === 'PostToolUse'
@@ -1322,6 +1348,7 @@ export const register: Register = (on, options) => {
   // the system prompt: one row for the engine's sections (ids and sizes, no text), one per plugin-added section; again only when its shape changes
   on('prompt.compose', async ($, e, next) => {
     const r = await next(e)
+    logSkipsIn($, next.trace)
     await load($).catch(() => {}) // switch to a /clear'd or resumed session first: its load empties `composed`
     const sig = r.sections.map(s => `${s.id}:${s.text.length}`).join() + `|${e.outputStyle?.name ?? ''}`
     if (composed.has(sig)) return r
@@ -1337,17 +1364,20 @@ export const register: Register = (on, options) => {
 
   on('skill.prompt', async ($, e, next) => {
     const r = await next(e)
+    logSkipsIn($, next.trace)
     try { push($, { kind: 'prompt', name: `skill ${e.skill}`, type: 'skill_prompt', detail: '', outcome: kb(r.text.length), src: 'engine', bytes: r.text.length, peek: peek(r.text) }) } catch {}
     return r
   })
 
   on('prompt.submit', async ($, e, next) => {
     if (e.command?.name === 'agentlog') return { drop: 'agentlog: kept out of the conversation' } // not a turn either
+    if (e.origin.kind === 'task-notification') for (const [, plugin, event, by] of e.text.matchAll(SKIP_NOTICE)) logSkip($, plugin!, event!, by!)
     if (!OWN.has(e.origin.kind)) return next(e)
-    if (e.turnId) { const r = await next(e); if (!('drop' in r && r.drop)) { pending++; queued.push(wordsOf(e)) } return r }
+    if (e.turnId) { const r = await next(e); logSkipsIn($, next.trace); if (!('drop' in r && r.drop)) { pending++; queued.push(wordsOf(e)) } return r }
     const t = Date.now() // the turn's start: its UserPromptSubmit hooks run inside next
     await mutate(async () => { await loadNow($); turnNo++; words.set(turnNo, wordsOf(e)); touch($) }).catch(() => {}) // before next: the UserPromptSubmit hooks it runs belong to the new number
     const r = await next(e)
+    logSkipsIn($, next.trace)
     if ('drop' in r && r.drop) mutate(async () => { words.delete(turnNo); turnNo--; touch($) }).catch(() => {}) // a dropped prompt never entered
     else { busy = true; turnAt = t }
     return r
@@ -1380,6 +1410,7 @@ export const register: Register = (on, options) => {
   // and its lead: a replay starts at the first ask after the compaction
   on('session.compact', async ($, e, next) => {
     const r = await next(e)
+    logSkipsIn($, next.trace)
     if (!('skip' in r)) {
       await ready($)
       const a = e.agentId ?? ''
@@ -1442,6 +1473,7 @@ export const register: Register = (on, options) => {
 
   on('agent.spawn', async ($, e, next) => {
     const r = await next(e)
+    logSkipsIn($, next.trace)
     if (r.agentId) {
       names[r.agentId] = tagOf(names, e.subagentType, id => id !== r.agentId && linked(id)); started.set(r.agentId, Date.now()); if (e.fork) forks.add(r.agentId)
       if (e.tool_use_id) spawned = [...spawned.slice(-19), { use: e.tool_use_id, id: r.agentId }]
@@ -1455,6 +1487,7 @@ export const register: Register = (on, options) => {
   on('model.complete', async ($, e, next) => {
     const t0 = Date.now()
     const r: any = await next(e)
+    logSkipsIn($, next.trace)
     try {
       const by = next.origin.plugin.replace(/^cc-plugin-/, '')
       const v = r?.value ?? r, u = v?.usage
@@ -1469,6 +1502,7 @@ export const register: Register = (on, options) => {
   on('model.fork', async ($, e, next) => {
     const t0 = Date.now()
     const r: any = await next(e)
+    logSkipsIn($, next.trace)
     try {
       const v = r?.value
       if (!v || v.reason === 'nothing-to-fork') return r // denied, or no request made
@@ -1486,6 +1520,7 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
+    logSkipsIn($, next.trace)
     await ready($)
     close(e.agentId ?? 'main')
     const status: Status = e.isAborted ? 'aborted' : e.reason === 'answer' ? 'ok' : 'failed' // an API error or a refusal ended it

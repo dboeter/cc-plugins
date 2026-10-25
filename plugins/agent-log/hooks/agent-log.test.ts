@@ -1274,6 +1274,41 @@ test('a plugin\'s own model call is a row named by the plugin, with the start of
   expect((await flushed($, 'MC', db)).find(x => x.kind === 'side')).toMatchObject({ name: 'titler', src: 'plugin', detail: 'claude-haiku-5-5', status: 'ok', tok: [10, 0, 0, 5], peek: 'Fix the agent log\nmore' })
 })
 
+// the engine's notice, as it queued it on 2026-10-25 for every person's hook cc-plugin-sec-default sent an event past
+const skipNotice = (plugin: string, event: string) => `<task-notification>\n${plugin}: its ${event} hook was skipped. "cc-plugin-sec-default" runs first and sent the event on past it.\n</task-notification>`
+
+test('a hook a plugin above sent the event past logs once from the engine\'s notice, naming that plugin; the notice is no turn', async ($, on) => {
+  const db = capture(on, 'SK')
+  on('prompt.submit', (_$: any, e: any) => ({ text: e.text }))
+  for (const [p, ev] of [['skins', 'classic.SessionStart'], ['skins', 'classic.SessionStart'], ['agent-log', 'prompt.context']])
+    await $.prompt.submit({ text: skipNotice(p!, ev!), origin: { kind: 'task-notification' }, wait: false } as any)
+  const xs = (await flushed($, 'SK', db)).filter(x => x.name === 'hook skipped')
+  expect(xs.map(x => [x.detail, x.outcome, x.status, x.turn])).toEqual([
+    ['skins classic.SessionStart', 'by cc-plugin-sec-default', 'failed', 0], ['agent-log prompt.context', 'by cc-plugin-sec-default', 'failed', 0],
+  ])
+})
+
+test('a hook beneath that a managed plugin sent the event past logs once from the trace, naming that plugin, a reload adding none', {
+  plugins: [
+    // the kit's answers sit beneath every plugin, so a jump to core passes them too: the gate answers itself
+    { name: 'gate', tier: 'append', register: on => { on('tool.call', async (_$: any, e: any, next: any) => { await next.to(e, 'core').catch(() => {}); return { result: 'ok', text: 'ok' } }) } },
+    { name: 'lint', tier: 'builtin', register: on => { on('tool.call', (_$: any, e: any, next: any) => next(e)) } },
+  ],
+}, async ($, on) => {
+  const db = capture(on, 'SB')
+  db['r:SB'] = { entries: [{ t: Date.now() - 1000, turn: 0, kind: 'event', name: 'hook skipped', detail: 'lint tool.call', outcome: 'by gate', status: 'failed' }], turn: 0 } // logged before a reload
+  await $.tool.call(ls('sb1'))
+  await $.tool.call(ls('sb2'))
+  const xs = (await flushed($, 'SB', db)).filter(x => x.name === 'hook skipped')
+  expect(xs.map(x => [x.detail, x.outcome])).toEqual([['lint tool.call', 'by gate']])
+})
+
+test('a skipped hook is a problem the controls show, its row the hook, event and plugin', async ($, on) => {
+  const m = await mountWith($, on, 'PS', [{ t: Date.now() - 1000, turn: 1, kind: 'event', name: 'hook skipped', detail: 'skins classic.SessionStart', outcome: 'by cc-plugin-sec-default', status: 'failed' }])
+  expect(await m.find({ type: 'Text', text: /^✗ 1 hook skipped$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /^Hook skipped: skins classic\.SessionStart \(by cc-plugin-sec-default\)$/ })).toBeDefined()
+})
+
 test('an event row reads what happened, a failure red; the engine\'s frequent requests hide; the harness view keeps them', async ($, on) => {
   const T = Date.now() - 60000
   const ev = (t: number, name: string, detail: string, extra: object = {}) => ({ t: T + t, turn: 1, kind: 'event', name, detail, outcome: '', ...extra })
