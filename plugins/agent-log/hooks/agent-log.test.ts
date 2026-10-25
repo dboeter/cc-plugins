@@ -1512,7 +1512,7 @@ test('a hook of a row of several opens alone: its own text, time and exit; prev 
 test('hook-timer lines count for the event, call and span they ran in', () => {
   const l = (o: object) => JSON.stringify({ event: 'PreToolUse', use: 'u1', t0: 1000, t1: 1050, say: null, ...o })
   const text = [
-    l({ name: 'old', t0: 100, t1: 200 }), // ended before the chain began: reading stops there
+    l({ name: 'old', t0: -4200, t1: -4100 }), // ended over 5 s before the chain began: reading stops there
     l({ name: 'guard' }), l({ name: 'other-call', use: 'u2' }), l({ name: 'post', event: 'PostToolUse' }),
     'not json', l({ name: 'test-gate', t0: 1010, t1: 1210, say: 'test-gate: run the tests first' }), '',
   ].join('\n')
@@ -1617,6 +1617,11 @@ test('an enabled plugin\'s hooks.json names its hooks by the plugin', async ($, 
   await ($ as any).classic.Stop({ stop_hook_active: false })
   expect((await flushed($, 'PL', db)).filter(x => x.origin === 'Stop').map(x => x.name)).toEqual(['tidy'])
   await reset()
+})
+
+test('a run appended after this chain\'s, though it ended well before, does not hide this chain\'s run', () => {
+  const text = [{ name: 'mine', event: 'Stop', t0: 1010, t1: 1050 }, { name: 'other', event: 'Notification', t0: 600, t1: 700 }].map(r => JSON.stringify(r)).join('\n') + '\n'
+  expect(pickRuns(text, r => r.event === 'Stop', 1000).map(r => r.name)).toEqual(['mine'])
 })
 
 test('overlapping SubagentStop chains of two agents keep their own runs', () => {

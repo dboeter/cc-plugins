@@ -159,19 +159,25 @@ export const targetOf = (e: any, event: string): string | undefined => e.tool ??
 // agent, t0, t1, exit, say}` per run, one file per session; say is the first line of what the hook handed back. The engine times an
 // event's chain whole and merges its hooks' text, so these are what name a wrapped hook, time it and credit its text to it;
 // hooks it does not wrap (a plugin's) are still read from the settings and their text (hookName).
-// keep: the runs that count; reading goes newest first and stops at the first run that ended before `from`
+// keep: the runs that count; reading goes newest first, line by line from the end (the file reaches 1 MB and is read on every
+// hooked event), and stops at the first run that ended LAG before `from`
 type Run = { name: string; ms: number; say?: string; exit?: number }
 export const pickRuns = (text: string, keep: (r: any) => boolean, from: number): Run[] => {
-  const out: Run[] = [], lines = text.split('\n')
-  for (let i = lines.length - 1; i >= 0; i--) {
+  const out: Run[] = []
+  for (let end = text.length; end > 0;) {
+    const i = text.lastIndexOf('\n', end - 1), line = text.slice(i + 1, end)
+    end = i
     let r: any
-    try { r = JSON.parse(lines[i]!) } catch { continue }
-    if (r.t1 < from - SKEW) break
+    try { r = JSON.parse(line) } catch { continue }
+    if (r.t1 < from - LAG) break
     if (keep(r)) out.unshift({ name: String(r.name), ms: r.t1 - r.t0, say: r.say ?? undefined, exit: r.exit ?? undefined })
   }
   return out
 }
 const SKEW = 100 // ms: the wrapper's clock read sits a process start inside the engine's
+// ms: hook-timer appends a run only once its jq has run, so a run that ended before this chain began (another event's hook, a
+// jq slowed by a busy machine) can land after this chain's runs; a run this far back stops the reading. keepRun picks by SKEW
+const LAG = 5000
 // a hook-timer run of this event's chain (t0..now): a call's by its tool_use_id; others by loop too, so two agents' overlapping
 // SubagentStop chains keep their own. A run recorded before hook-timer wrote `agent` has no such key and still counts
 export const keepRun = (e: any, event: string, t0: number, now: number) => (r: any) =>
