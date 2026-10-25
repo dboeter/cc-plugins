@@ -184,8 +184,18 @@ export const keepRun = (e: any, event: string, t0: number, now: number) => (r: a
   r.event === event && (r.use ?? undefined) === e.tool_use_id && (!!e.tool_use_id || !('agent' in r) || (r.agent ?? undefined) === e.agent_id) &&
   r.t0 >= t0 - SKEW && r.t1 <= now + SKEW
 const LATE = 30 * 60_000 // ms: how far back a hook's text can have been said: a PreToolUse hook's goes out with the request after its call
+let bigTimes: string | undefined // the session whose hook-times file outgrew what $.fs.read takes (4 MiB): its per-hook times stopped (problemsOf)
 const runsOf = async ($: any, keep: (r: any) => boolean, from: number) => {
-  try { return pickRuns(await $.fs.read(`${await $.env.get('HOME')}/.claude/hook-times/${await $.session.id()}.jsonl`), keep, from) } catch { return [] } // no file yet
+  let sid: string | undefined, f: string | undefined
+  try {
+    sid = await $.session.id()
+    if (sid === bigTimes) return []
+    f = `${await $.env.get('HOME')}/.claude/hook-times/${sid}.jsonl`
+    return pickRuns(await $.fs.read(f!), keep, from)
+  } catch { // no file yet, or one past the read's 4 MiB
+    if (f && ((await $.fs.stat(f).catch(() => undefined))?.size ?? 0) > 4 * 1024 * 1024) bigTimes = sid
+    return []
+  }
 }
 const timed = (h: { cmd?: string }) => !!h.cmd?.includes('hook-timer')
 // the setup page's per-hook times line: how many of your distinct settings hook commands run through hook-timer (a plugin's can't)
@@ -981,6 +991,7 @@ const problemsOf = (xs: Entry[]): string[] => {
     many(n(x => x.kind === 'event' && x.name === 'API error'), 'API error'),
     many(n(x => x.kind === 'event' && x.name === 'turn failed'), 'turn failed', 'turns failed'),
     unsaved ? 'log not saved' : '',
+    bigTimes && key === `r:${bigTimes}` ? 'per-hook times stopped: the hook-times file is over 4 MiB' : '',
     many([...setup.mcp.values()].filter(m => m.status !== 'connected' && m.status !== 'disconnected').length || n(x => x.kind === 'event' && x.name === 'MCP failed'), 'MCP server down', 'MCP servers down'),
   ].filter(Boolean)
 }

@@ -1587,6 +1587,19 @@ test('the setup page shows per-hook times off, then on once a settings hook runs
   await reset()
 })
 
+test('a hook-times file over the 4 MiB a read takes shows on the setup page as per-hook times stopped', async ($, on) => {
+  session(on, 'BG')
+  on('fs.stat', () => ({ value: { kind: 'file', size: 5 * 1024 * 1024, mtimeMs: 0, isLink: false } }))
+  const reset = await hooksFrom($, on, () => ({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: '$HOME/.claude/hooks/hook-timer $HOME/.claude/hooks/plan.sh' }] }] } }),
+    { '/home/u/.claude/hook-times/BG.jsonl': () => { throw new Error('over 4 MiB') } })
+  await ($ as any).classic.Stop({ stop_hook_active: false })
+  const m = await pane($, 60, 160)
+  await m.press({ key: 'fsetup' })
+  expect(await m.find({ text: /per-hook times stopped: the hook-times file is over 4 MiB/ })).toBeDefined()
+  await m.press({ key: 'back' })
+  await reset()
+})
+
 test('a SubagentStop row keeps its own agent\'s hook-timer run when another agent\'s chain overlaps it', async ($, on) => {
   const db = capture(on, 'SA')
   const T = '$HOME/.claude/hooks/hook-timer $HOME/.claude/hooks/'
