@@ -109,7 +109,7 @@ function insightOf(cmd: string | undefined, raw: string): { exit?: number; quiet
 // A hook's name, from settings and the enabled plugins' hooks.json: the engine says which event ran but merges every hook on it,
 // so the name is inferred. Candidates are the event's hooks whose matcher fits the target. With no text, every candidate ran and
 // said nothing, so all are named. A settings hook names itself in its text's first line (hooks/CLAUDE.md), a plugin's hook maybe
-// anywhere; text is credited to the candidates it names that way. Text naming none is a plugin hook's, or with one candidate that
+// anywhere; text is credited to the candidates it names that way, to the settings hook named first in that line. Text naming none is a plugin hook's, or with one candidate that
 // one's. Else the event's, as a guess
 type HookCfg = Record<string, { matcher: string; name: string; plugin?: boolean; cmd?: string }[]> // cmd: the command as written, so one script on several events or matchers counts once
 let hookCfg: HookCfg | undefined
