@@ -1838,3 +1838,21 @@ test('a hook that fails after next leaves the call\'s result as next returned it
   expect(await $.tool.call(read('fo2'))).toEqual({ result: 'ok', text: 'read it' })
   expect(logs.filter(l => /tool\.call hook failed/.test(l.text)).map(l => l.to ?? 'transcript')).toEqual(['transcript', 'debug'])
 })
+
+test('after a /clear, the new session\'s first system prompt logs under it rather than hanging on the switch', async ($, on) => {
+  const db: Record<string, any> = {}, ids = { id: 'CL1' }
+  on('session.id', () => ({ value: ids.id }))
+  on('agent.list', () => ({ value: [] }))
+  on('config.list', () => ({ value: [] }))
+  on('store.get', (_$: any, e: any) => ({ value: db[e.key] }))
+  on('store.set', (_$: any, e: any) => { db[e.key] = e.value; return { value: undefined } })
+  on('store.delete', (_$: any, e: any) => { delete db[e.key]; return { value: undefined } })
+  on('store.keys', () => ({ value: Object.keys(db) }))
+  on('session.end', (_$: any, e: any) => ({ sessionId: e.sessionId }))
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  on('prompt.compose', (_$: any, e: any) => ({ sections: e.sections }))
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'cl1', command: 'ls', description: 'Before clear' } as any)
+  ids.id = 'CL2' // /clear: a new session id in this process
+  await ($ as any).prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: [], tools: [], outputStyle: null, traits: [], sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' }] })
+  expect((await flushed($, 'CL2', db)).map(x => x.name)).toEqual(['system prompt'])
+})
