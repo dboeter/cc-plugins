@@ -16,7 +16,17 @@ Why was that turn slow, and who allowed that call? A live pane that splits each 
 ╰── Advisor                                                                             3.2s
 ```
 
+It is for people who stack hooks, plugins, MCP servers and subagents, for the moment a turn took 40 s for no clear reason, a call was denied, or injected text showed up and no one can say which hook wrote it.
+
 agent-log is the interpreted view of a session. [event-log](../event-log) is the raw record, every event with its full payload on disk. The two work as a pair.
+
+## Why not the built-ins or other tools
+
+- **ctrl+o transcript**: shows what the model and tools said, not where the time went or which rule, hook or answer let a call through.
+- **`/hooks`**: lists the hooks that are configured. agent-log shows which ones ran on each call, what they injected and, with hook-timer, how long each took.
+- **`/cost` and `/context`**: session totals for spend and context. agent-log splits a single turn's time and prices each request.
+- **ccusage**: reads the transcripts afterwards for token and cost totals per day or session.
+- **An OTEL dashboard**: needs telemetry export and a collector, and charts metrics across sessions. agent-log needs no telemetry setup and stays on the turn in front of you.
 
 ## What it shows
 
