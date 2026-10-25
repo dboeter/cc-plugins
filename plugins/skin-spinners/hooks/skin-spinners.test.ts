@@ -101,15 +101,40 @@ test('retro-terminal: the send light stays dark while the model answers, the rec
 })
 
 test('dracula: a bat 5 pixels wide crosses the moon', () => {
-  // frame 10: wings down, the bat's left edge on column 0, its right wing over the moon's columns 3 and 4
-  const cells = theme('dracula').sprite(tick('dracula', 0, 10)).flatMap(r => [...r.text].map(ch => [ch, r.color ?? null, r.bg ?? null]))
-  expect(cells.slice(0, 5)).toEqual([
+  // frame 14: wings down, the bat's left edge on column 2, its right wing over the moon's columns 5 and 6
+  const cells = theme('dracula').sprite(tick('dracula', 0, 14)).flatMap(r => [...r.text].map(ch => [ch, r.color ?? null, r.bg ?? null]))
+  expect(cells.slice(2, 7)).toEqual([
     ['▄', '#6272a4', null],
     ['▄', '#6272a4', null],
     ['▀', '#6272a4', null],
     ['▀', '#8a6ad1', '#282a36'],
     ['▀', '#bd93f9', '#282a36'],
   ])
+})
+
+test('dracula: past 3 minutes a colony of bats crosses a blood moon, under a blinking tag', () => {
+  const sprite = (ms: number) => Array.from({ length: 36 }, (_, frame) => theme('dracula').sprite(tick('dracula', ms, frame)))
+  const batCells = (ms: number) => Math.max(...sprite(ms).map(runs => runs.filter(r => r.color === '#6272a4').reduce((n, r) => n + r.text.length, 0)))
+  const isBlood = (ms: number) => sprite(ms).some(runs => runs.some(r => r.color === '#ff5555'))
+  const tag = (ms: number, frame: number) => text(theme('dracula').tag?.(tick('dracula', ms, frame)) ?? [])
+  expect([isBlood(2 * MINUTE), isBlood(3 * MINUTE)]).toEqual([false, true])
+  expect(batCells(3 * MINUTE)).toBeGreaterThan(batCells(0))
+  expect([tag(2 * MINUTE, 0), tag(3 * MINUTE, 0), tag(3 * MINUTE, 4).trim()]).toEqual(['', 'THE BLOOD MOON RISES', ''])
+})
+
+test('overdrive: the word keeps its letters at any heat, sparks more letters bold as the turn runs, and strobes at full heat', () => {
+  const runs = (ms: number, frame: number) => theme('nord').word('Keeping watch', tick('nord', ms, frame))
+  const bold = (ms: number) =>
+    Array.from({ length: 200 }, (_, frame) => runs(ms, frame).filter(r => r.bold).reduce((n, r) => n + r.text.length, 0)).reduce((a, b) => a + b, 0)
+  for (const ms of [0, MINUTE, 3 * MINUTE]) for (let frame = 0; frame < 40; frame++) expect(text(runs(ms, frame))).toBe('Keeping watch')
+  expect(bold(0)).toBeLessThan(bold(MINUTE))
+  expect(runs(3 * MINUTE, 0).filter(r => r.text.trim() !== '').every(r => r.bold)).toBe(true)
+})
+
+test('cyberpunk-neon and space-gray: a gauge fills, then the tag turns to an alarm at 3 minutes', () => {
+  const tag = (name: string, ms: number) => text(theme(name).tag?.(tick(name, ms)) ?? [])
+  expect([tag('cyberpunk-neon', 0), tag('cyberpunk-neon', 90 * SECOND), tag('cyberpunk-neon', 3 * MINUTE)]).toEqual(['TRACE ▱▱▱▱▱▱', 'TRACE ▰▰▰▱▱▱', '!! TRACE COMPLETE !!'])
+  expect([tag('space-gray', 0), tag('space-gray', 3 * MINUTE)]).toEqual(['ΔV ▱▱▱▱▱▱', 'MASTER ALARM'])
 })
 
 test('dracula: the clock counts down to sunrise', () => {
@@ -135,7 +160,7 @@ test('cyberpunk-neon and space-gray: the clocks read in hex and in T+', () => {
 test('a row is the sprite, the word, the suffix, then the clock and the tag, each part only when it draws', () => {
   const row = (name: string, ms: number) => text(spinnerRow(theme(name), tick(name, ms), 'Rising', '…'))
   expect(row('mono', 5 * SECOND)).toMatch(/^\S Rising…  5s$/)
-  expect(row('rose-pine', 5 * SECOND)).toMatch(/^░▒▲▒░ Rising⁓$/)
+  expect(row('rose-pine', 5 * SECOND)).toMatch(/^░▲▒▲░▲▒ Rising⁓$/)
   expect(row('tokyo-night', 5 * SECOND)).toMatch(/ Rising…  5s  ON TIME$/)
 })
 

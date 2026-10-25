@@ -1,6 +1,6 @@
 # skin-spinners
 
-Gives every skins skin its own spinner row and turn footer. Each skin gets a small sprite that loops, an effect on the spinner word, a themed clock or tag, and, for 11 of them, themed done words in the footer.
+Gives every skins skin its own spinner row and turn footer, turned up loud. Each skin gets a sprite that loops, an effect on the spinner word, a themed clock or tag, and, for 11 of them, themed done words in the footer. For those 11 the row escalates as a turn runs: letters of the word flash bold in spark colours, more of them each minute, the sprite gets busier, and at 3 minutes the word strobes and the tag turns to an alarm that blinks.
 
 ## Install
 
@@ -18,17 +18,17 @@ Nothing to switch on. Pick a skin with `/skin` and the spinner row and the foote
 
 | Skin | Sprite | Word | Clock and tag | Footer |
 | --- | --- | --- | --- | --- |
-| retro-terminal | modem lights that follow the turn | typed out in glowing phosphor, a blinking cursor, a refresh beam | `[mm:ss]`, then `38911 BYTES FREE` counting down | `READY.` |
-| cyberpunk-neon | a packet along a trace | decoding from hex | `t+0x0c` | yes |
-| space-gray | a moon orbiting, a pulse on the path | signal that drops letters | `T+mm:ss` | yes |
-| tokyo-night | a skyline with lit windows and rain | split-flap board | `ON TIME`, then minutes late, then the last train | yes |
-| dracula | a bat across the moon | a red band | countdown to sunrise | yes |
-| ayu | the sun rising between ripples | warming, with glints | a day bar | yes |
-| gruvbox | a tape reel and its button | scrolling gradient | `m:ss · side A`, then `side B`; a conveyor | yes |
-| kanagawa | waves toward Fuji | a crest | lines that arrive at 20, 40 and 60 s | yes |
-| nord | a lighthouse and snow | a slow wide band | a ship coming in | yes |
-| rose-pine | a breathing pine | breathing colour | clock after 30 s | yes |
-| everforest | three flowers blooming | sunlit gradient | trail distance and climb | yes |
+| retro-terminal | modem lights that follow the turn, and line noise that spikes higher | typed out in glowing phosphor, a blinking cursor, a refresh beam | `[mm:ss]`, then `38911 BYTES FREE` counting down, then a blinking `?OUT OF MEMORY` | `READY.` |
+| cyberpunk-neon | packets racing into a port that flashes, one at first, three at full heat | decoding from hex | `t+0x0c`; a `TRACE` gauge, then a blinking `!! TRACE COMPLETE !!` | yes |
+| space-gray | a moon orbiting, a pulse on the path, stars streaking past faster | signal that drops letters | `T+mm:ss`; a `ΔV` gauge, then a blinking `MASTER ALARM` | yes |
+| tokyo-night | a wide skyline with lit windows and rain, and lightning past 90 s | split-flap board | `ON TIME`, then minutes late, then the last train | yes |
+| dracula | bats across the moon, a colony of three and a blood moon at full heat | a red band | countdown to sunrise; then a blinking `THE BLOOD MOON RISES` | yes |
+| ayu | the sun rising between ripples and twinkling glints | warming, with glints | a day bar, then a blinking `☼ HIGH NOON ☼` | yes |
+| gruvbox | two tape reels, the button, and a VU meter that peaks into the red | scrolling gradient | `m:ss · side A`, then `side B`; a conveyor | yes |
+| kanagawa | waves toward Fuji, calm, then a storm swell | a crest | lines that arrive at 20, 40 and 60 s | yes |
+| nord | a lighthouse and snow under an aurora that brightens | a slow wide band | a ship coming in, then a blinking `WHITEOUT` | yes |
+| rose-pine | three breathing pines, with petals falling among them | breathing colour | clock after 30 s; then a blinking `✿ FULL BLOOM ✿` | yes |
+| everforest | seven flowers blooming, faster as the turn runs | sunlit gradient | trail distance and climb | yes |
 | catppuccin, night-owl, github, solarized, one-dark, noir, mono | one each | skins' shimmer band (noir: blinds) | the default | skins' own |
 
 These keep skins' own row instead of this mod's:

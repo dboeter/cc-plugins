@@ -65,7 +65,17 @@ export const timer = (ms: number, color: string): Run[] => [{ text: formatDurati
 const graphemes = new Intl.Segmenter()
 
 // what a person reads as one letter: an emoji with its modifiers, or a letter with its accents, is one, however many code points it has
-export const letters = (text: string): string[] => Array.from(graphemes.segment(text), s => s.segment)
+// Cached, as every frame splits the same few words again; the cache starts over past 1000 texts, so a long session's words do not pile up.
+const split = new Map<string, readonly string[]>()
+export const letters = (text: string): string[] => {
+  let out = split.get(text)
+  if (out === undefined) {
+    if (split.size > 1000) split.clear()
+    out = Array.from(graphemes.segment(text), s => s.segment)
+    split.set(text, out)
+  }
+  return [...out]
+}
 
 // East Asian wide and fullwidth letters, and emoji drawn as emoji, take two terminal cells
 const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{20000}-\u{3fffd}]|\p{Emoji_Presentation}|\p{Regional_Indicator}|️/u
