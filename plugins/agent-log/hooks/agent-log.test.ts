@@ -1556,12 +1556,16 @@ test('the setup page says whether hook-timer times your settings hooks; plugins\
 })
 
 // settings whose hooks hooksOf reads afresh: a ConfigChange drops the one read before (module state). The function it returns
-// sets that back: a read that fails, as with no settings.read fake, so the next test's hooksOf reads again
-const hooksFrom = async ($: any, on: any, settings: () => object, files: Record<string, () => string> = {}) => {
+// sets that back: a read that fails, as with no settings.read fake, so the next test's hooksOf reads again. settings is the user
+// source, more the others by name; the merged read takes each top-level key from the last source that has it, as the engine's does
+const hooksFrom = async ($: any, on: any, settings: () => object, files: Record<string, () => string> = {}, more: Record<string, () => object> = {}) => {
   let live = true
   on('classic.*', () => ({}) as any)
   on('env.get', () => ({ value: '/home/u' }))
-  on('settings.read', () => { if (!live) throw new Error('no settings'); return { value: settings() } })
+  on('settings.read', (_$: any, e: any) => {
+    if (!live) throw new Error('no settings')
+    return { value: !e?.source ? Object.assign({}, settings(), ...Object.values(more).map(f => f())) : e.source === 'user' ? settings() : more[e.source]?.() ?? {} }
+  })
   on('fs.read', (_$: any, e: any) => ({ value: files[e.path]?.() ?? '{}' })) // no plugin installed
   await $.classic.ConfigChange({ source: 'user_settings' })
   return async () => { live = false; await $.classic.ConfigChange({ source: 'user_settings' }) }
@@ -1592,6 +1596,26 @@ test('a SubagentStop row keeps its own agent\'s hook-timer run when another agen
   await ($ as any).classic.SubagentStop({ agent_id: 'a1', agent_type: 'Explore', stop_hook_active: false })
   const rows = (await flushed($, 'SA', db)).filter(x => x.origin === 'SubagentStop')
   expect(rows.map(x => x.name)).toEqual(['stop-check'])
+  await reset()
+})
+
+test('your hooks and a project\'s on one event are both named, though the project\'s settings carry hooks too', async ($, on) => {
+  const db = capture(on, 'US')
+  const hook = (script: string) => ({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: `$HOME/.claude/hooks/${script}` }] }] } })
+  const reset = await hooksFrom($, on, () => hook('format.sh'), {}, { project: () => hook('lint.sh') })
+  await ($ as any).classic.Stop({ stop_hook_active: false })
+  expect((await flushed($, 'US', db)).filter(x => x.origin === 'Stop').map(x => x.name)).toEqual(['format, lint'])
+  await reset()
+})
+
+test('an enabled plugin\'s hooks.json names its hooks by the plugin', async ($, on) => {
+  const db = capture(on, 'PL')
+  const reset = await hooksFrom($, on, () => ({ enabledPlugins: { 'tidy@market': true } }), {
+    '/home/u/.claude/plugins/installed_plugins.json': () => JSON.stringify({ plugins: { 'tidy@market': [{ installPath: '/plugins/tidy' }] } }),
+    '/plugins/tidy/hooks/hooks.json': () => JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'node stop.mjs' }] }] } }),
+  })
+  await ($ as any).classic.Stop({ stop_hook_active: false })
+  expect((await flushed($, 'PL', db)).filter(x => x.origin === 'Stop').map(x => x.name)).toEqual(['tidy'])
   await reset()
 })
 

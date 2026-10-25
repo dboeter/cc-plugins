@@ -1,4 +1,4 @@
-import type { AgentInfo, EngineInterface, HookFailure, ModelUsage, Register, Timer, TurnStepResult } from 'claude-code'
+import type { AgentInfo, EngineInterface, HookFailure, ModelUsage, Register, SettingsSource, Timer, TurnStepResult } from 'claude-code'
 import { scrub } from './scrub'
 
 // Deliberately single-file: every hook and the pane read and mutate the module-level state (entries, seen, owed, chain, the
@@ -113,7 +113,8 @@ function insightOf(cmd: string | undefined, raw: string): { exit?: number; quiet
 // one's. Else the event's, as a guess
 type HookCfg = Record<string, { matcher: string; name: string; plugin?: boolean; cmd?: string }[]> // cmd: the command as written, so one script on several events or matchers counts once
 let hookCfg: HookCfg | undefined
-let hookFresh = false // hookCfg came from a settings read that worked and no ConfigChange has fired since: else read again
+let hookFresh = false // hookCfg came from a settings read that worked and no ConfigChange or plugin load has come since: else read again
+const SOURCES: SettingsSource[] = ['user', 'project', 'local', 'flag', 'policy']
 let enabled: string[] = [] // the plugins settings enable (`name@marketplace`): the setup's plugin list where no plugin_loaded record came
 export const scriptName = (h: any): string => {
   const cmd = String(h?.command ?? '')
@@ -126,13 +127,14 @@ async function hooksOf($: any): Promise<HookCfg> {
   const add = (hooks: any, plugin?: string) => {
     for (const [ev, groups] of Object.entries<any>(hooks ?? {})) for (const g of Array.isArray(groups) ? groups : []) for (const h of g?.hooks ?? []) (cfg[ev] ??= []).push({ matcher: String(g?.matcher ?? ''), name: plugin ?? scriptName(h), plugin: !!plugin, cmd: String(h?.command ?? h?.prompt ?? h?.type ?? '') })
   }
-  let s: any
-  let ok = false
-  try { s = await $.settings.read(); ok = true; add(s?.hooks); enabled = Object.entries(s?.enabledPlugins ?? {}).filter(([, on]) => on).map(([id]) => id) } catch {}
+  let ok = false, plugins: Record<string, unknown> = {}
+  // each source's hooks, which all run: the merged read takes `hooks` whole from the last source that has it, so a project's hid yours
+  for (const source of SOURCES) try { add((await $.settings.read({ source }))?.hooks); ok = true } catch {}
+  try { plugins = (await $.settings.read())?.enabledPlugins ?? {}; enabled = Object.entries(plugins).filter(([, on]) => on).map(([id]) => id) } catch {}
   // a plugin's command hooks run in the same classic chain; named by the plugin (`context-mode`), not their scripts (`pretooluse`)
   try {
     const installed = JSON.parse(await $.fs.read(`${await $.env.get('HOME')}/.claude/plugins/installed_plugins.json`))?.plugins ?? {}
-    for (const [id, on] of Object.entries(s?.enabledPlugins ?? {})) if (on) for (const i of installed[id] ?? []) try { add(JSON.parse(await $.fs.read(`${i.installPath}/hooks/hooks.json`))?.hooks, id.split('@')[0]) } catch {}
+    for (const [id, on] of Object.entries(plugins)) if (on) for (const i of installed[id] ?? []) try { add(JSON.parse(await $.fs.read(`${i.installPath}/hooks/hooks.json`))?.hooks, id.split('@')[0]) } catch {}
   } catch {}
   hookFresh = ok
   return hookCfg = cfg
@@ -1041,6 +1043,7 @@ export const register: Register = (on, options) => {
       const r = setup.runs.get(run.event) ?? { n: 0, ms: 0, errors: 0, cancelled: 0 }
       setup.runs.set(run.event, { n: r.n + 1, ms: r.ms + (Number(a.total_duration_ms) || 0), errors: r.errors + run.errors, cancelled: r.cancelled + run.cancelled })
     }
+    if (e.event === 'plugin_loaded') hookFresh = false // its hooks.json may name hooks the last read did not have
     if (e.event === 'plugin_loaded' && a['plugin.name']) setup.plugins.set(String(a['plugin.name']), { version: a['plugin.version'], scope: a['plugin.scope'], hooks: a.has_hooks === true || a.has_hooks === 'true', mcp: a.has_mcp === true || a.has_mcp === 'true' })
     // each server's last status, for the problems' `MCP server down`; the server list itself is /mcp's
     if (e.event === 'mcp_server_connection' && a.server_name) setup.mcp.set(String(a.server_name), { status: String(a.status ?? '') })
