@@ -21,12 +21,16 @@ const speed = Number(value('speed') ?? 1)
 const frames = flag('frames') ? Number(value('frames')) : undefined
 const nameWidth = Math.max(...skins.map(name => name.length))
 
-const hex = (color: string) => [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16)).join(';')
+// '#rrggbb' as 24-bit colour, 'ansi256(n)' (the terminal theme) as the terminal's own colour n
+const sgr = (layer: 38 | 48, color: string) => {
+  const ansi = /^ansi256\((\d+)\)$/.exec(color)
+  return ansi ? `${layer};5;${ansi[1]}` : `${layer};2;${[1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16)).join(';')}`
+}
 const paint = (runs: Run[], isColor: boolean) =>
   runs
     .map(r => {
       if (!isColor) return r.text
-      const codes = [r.bold ? '1' : '', r.italic ? '3' : '', r.color ? `38;2;${hex(r.color)}` : '', r.bg ? `48;2;${hex(r.bg)}` : ''].filter(Boolean)
+      const codes = [r.bold ? '1' : '', r.italic ? '3' : '', r.color ? sgr(38, r.color) : '', r.bg ? sgr(48, r.bg) : ''].filter(Boolean)
       return codes.length === 0 ? r.text : `\x1b[${codes.join(';')}m${r.text}\x1b[0m`
     })
     .join('')

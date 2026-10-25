@@ -30,6 +30,7 @@ Nothing to switch on. Pick a skin with `/skin` and the spinner row and the foote
 | rose-pine | three breathing pines, with petals falling among them | breathing colour | clock after 30 s; at 3 minutes `in full bloom` fades in | yes |
 | everforest | seven flowers blooming, faster as the turn runs | sunlit gradient | trail distance and climb | yes |
 | catppuccin, night-owl, github, solarized, one-dark, noir, mono | one each | skins' shimmer band (noir: blinds) | the default | skins' own |
+| terminal | a shell prompt with a blinking cursor, in the terminal's own colours | skins' shimmer band, in the terminal's own colours | the default | skins' own |
 
 These keep skins' own row instead of this mod's:
 

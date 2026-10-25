@@ -46,8 +46,8 @@ for (const [name, th] of Object.entries(THEMES)) {
   })
 }
 
-test('there is a theme for each of the 18 skins, 11 of them with a footer', () => {
-  expect(Object.keys(THEMES).length).toBe(18)
+test('there is a theme for each of the 19 skins, 11 of them with a footer', () => {
+  expect(Object.keys(THEMES).length).toBe(19)
   expect(Object.values(THEMES).filter(th => th.done !== undefined).length).toBe(11)
 })
 

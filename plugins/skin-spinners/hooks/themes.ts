@@ -354,6 +354,13 @@ export const THEMES: Readonly<Record<string, Theme>> = {
     word: blinds('#ededed', '#8c8c8c'),
   },
 
+  // The terminal's own colours, as the skin uses them: ansi256 names, so no effect here may mix() them.
+  terminal: plain(
+    { user: 'ansi256(12)', fg: 'ansi256(15)', muted: 'ansi256(8)' },
+    t => [{ text: '$ ', color: 'ansi256(2)' }, { text: Math.floor(t.frame / 6) % 2 === 0 ? '█' : ' ', color: 'ansi256(7)' }],
+    ['Thinking', 'Working', 'Composing', 'Considering', 'Weighing', 'Piping', 'Grepping', 'Sourcing'],
+  ),
+
   mono: {
     ...plain(
       { user: '#e0e0e0', fg: '#e0e0e0', muted: '#7a7a7a' },
