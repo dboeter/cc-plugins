@@ -2035,15 +2035,19 @@ export const register: Register = (on, options) => {
       const tips = [level > 0 && '/agentlog level debug: every row', view !== 'all' && 'a: all views', only && `${only === 'main' ? 'main' : nameOf(only)}: clear the filter`].filter(Boolean)
       return [`no ${view === 'all' ? '' : `${view} `}entries${of}${level > 0 ? ` at ${LEVELS[level]} or above` : ''}`, ...tips].join(' · ')
     }
-    // the window's top to the previous or next prompt's turn header (`#3`), the row cursor with it; past the last, the end. From the
-    // inspector or a page, back to the log first
+    // the row cursor and the window's top to the previous or next prompt's turn header (`#3`); past the last, the end. From the
+    // inspector or a page, back to the log first. Counted from the cursor's row while the window shows it, else from the window's
+    // top: near the end the window cannot put a late header at its top, so its top alone would skip back past that header
     const heads = rows.flatMap((r, i) => String(r.props?.key).startsWith('turn') ? [i] : [])
     const toTurn = (dir: -1 | 1) => {
       leave()
-      const to = dir < 0 ? heads.filter(i => i < win).at(-1) ?? 0 : heads.find(i => i > win)
+      const at = sel ? rowAt(sel) : -1
+      const from = at >= winStart && at <= winEnd ? at : win
+      const to = dir < 0 ? heads.filter(i => i < from).at(-1) ?? 0 : heads.find(i => i > from)
       if (to === undefined) follow = true; else { win = to; follow = false } // the draw clamps win and decides follow again
       const k = to === undefined ? undefined : String(rows[to]?.props?.key)
-      if (k && pressable.has(k)) { sel = k; $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: `b${k}` }).catch(() => {}) }) } // a header with no turn end yet is no stop
+      // a header with no turn end yet is no stop: the cursor starts over, so the next ^↑ counts from the window, not a row left behind
+      if (k && pressable.has(k)) { sel = k; $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: `b${k}` }).catch(() => {}) }) } else sel = undefined
       $.ui.invalidate('ui.render')
     }
     // Bright in the controls means active, nothing else: the view shown, the page open, the loop filtered to. The active view also

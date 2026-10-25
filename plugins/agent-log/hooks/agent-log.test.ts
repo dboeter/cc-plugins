@@ -514,6 +514,19 @@ test('a turn header that opens its turn is a stop for the row cursor', async ($,
   expect(await m.find({ text: /^Step 3$/ })).toBeDefined()
 })
 
+test('^↑ steps one turn header at a time from the cursor, also near the end, where the window cannot put a late header at its top', async ($, on) => {
+  const T = Date.now() - 60000
+  const end = (turn: number, t: number) => ({ t, turn, kind: 'turn', name: 'turn', detail: '', outcome: '', status: 'ok', ms: 1000 })
+  session(on, 'CP', [...steps().slice(0, 24).map((x, i) => ({ ...x, turn: i < 20 ? 1 : i < 22 ? 2 : 3 })), end(1, T + 20), end(2, T + 22), end(3, T + 24)], { turn: 3 })
+  const m = await pane($, 12, 100) // the end: `#2` and `#3` both in the window, its top in turn 1
+  await m.press({ key: 'cup' }) // the cursor on Step 24, in turn 3
+  await m.press({ key: 'tprev' }) // `#3`
+  await m.press({ key: 'tprev' }) // `#2`, not `#1`: the window's top is still in turn 1
+  expect(await m.find({ text: /^Step 1$/ })).toBe(undefined)
+  await m.press({ key: 'tprev' })
+  expect(await m.find({ text: /^Step 1$/ })).toBeDefined()
+})
+
 test('a view, level or filter key pressed in the inspector goes back to the log it changed', async ($, on) => {
   session(on, 'IV', steps().slice(0, 3), { agents: [{ id: 'A', type: 'Explore', description: 'map the hooks', status: 'running' }] }) // a running agent: the tree and its `main` draw
   const m = await pane($)
