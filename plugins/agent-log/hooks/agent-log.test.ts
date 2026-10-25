@@ -497,6 +497,32 @@ test('k and j move a row cursor the window keeps in view; e goes back to the new
   expect(await m.find({ text: /^Step 24$/ })).toBeDefined() // the page's way back follows the newest again
 })
 
+test('a turn header that opens its turn is a stop for the row cursor', async ($, on) => {
+  const T = Date.now() - 60000
+  const end = (turn: number, t: number) => ({ t, turn, kind: 'turn', name: 'turn', detail: '', outcome: '', status: 'ok', ms: 1000 })
+  session(on, 'CH', [...steps().map((x, i) => ({ ...x, turn: i < 3 ? 1 : 2 })), end(1, T + 2), end(2, T + 30)], { turn: 2 })
+  const m = await pane($, 12, 100)
+  for (let i = 0; i < 28; i++) await m.press({ key: 'cup' }) // Step 30 (k starts on the window's last row) up to Step 4, then `#2`
+  expect(await m.find({ type: 'Button', text: /^#2$/ })).toBeDefined()
+  expect(await m.find({ text: /^Step 3$/ })).toBe(undefined) // the window's top is `#2`, the cursor's row
+  await m.press({ key: 'cup' })
+  expect(await m.find({ text: /^Step 3$/ })).toBeDefined()
+})
+
+test('a view, level or filter key pressed in the inspector goes back to the log it changed', async ($, on) => {
+  session(on, 'IV', steps().slice(0, 3))
+  const m = await pane($)
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Step 2$/ }))!.key! })
+  expect(await m.find({ key: 'back' })).toBeDefined()
+  await m.press({ key: 'vmodel' })
+  expect(await m.find({ key: 'back' })).toBe(undefined)
+  await m.press({ key: 'vmodel' })
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Step 2$/ }))!.key! })
+  await m.press({ key: 'lvl' })
+  expect(await m.find({ key: 'back' })).toBe(undefined)
+  await m.press({ key: 'lvl' })
+})
+
 test('ctrl+↑↓ (the turn ↑↓ buttons) put the previous or next prompt\'s turn header at the top', async ($, on) => {
   on('session.id', () => ({ value: 'T' }))
   on('agent.list', () => ({ value: [] }))
@@ -1163,7 +1189,7 @@ test('a request that wrote text is a row; one that only called tools hides at in
   expect(await m.find({ text: /Thought: Checking the hooks/ })).toBe(undefined)
   expect(await m.find({ text: /model 10\.4s · other 5\.1s/ })).toBeDefined() // the header's split: the reads take under 0.1s
   expect(await m.find({ type: 'Button', text: /^2 hidden ▸$/ })).toBeDefined()
-  await m.press({ key: 'th1' }) // `#1` opens the turn: its whole split, which the header cuts to two parts
+  await m.press({ key: 'bturn1' }) // `#1` opens the turn: its whole split, which the header cuts to two parts
   expect(await m.find({ text: 'A turn of the main loop ended' })).toBeDefined()
   expect(await m.find({ text: /^model 10\.4s · other 5\.1s/ })).toBeDefined()
   await m.press({ key: 'back' })
@@ -1176,7 +1202,7 @@ test('a request that wrote text is a row; one that only called tools hides at in
   expect(await m.find({ text: 'The hooks read the store.\nMore' })).toBeDefined()
   await m.press({ key: 'back' })
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read a\.ts$/ }))!.key! }) // a call's inspector names the request before it
-  expect(await m.find({ text: 'by Opus 5.5 in a 4.2s request: Checking the hooks' })).toBeDefined()
+  expect(await m.find({ text: 'Opus 5.5 in a 4.2s request: Checking the hooks' })).toBeDefined()
   await m.press({ key: 'back' })
   await toLevel($, m, 'debug') // every request a row: what it thought, else the calls it made
   expect(await m.find({ type: 'Button', text: /^Thought: Checking the hooks$/ })).toBeDefined()
@@ -1390,7 +1416,7 @@ test('the setup button reads what the session runs on, and the controls what bro
   await ($ as any).session.measure({ context: { tokens: 41000, window: 200000, percent: 20.5 }, rateLimits: [{ kind: 'five_hour', percentUsed: 42 }], cost: { usd: 1.234 }, changed: ['context', 'rateLimits', 'cost'] })
   const m = await pane($, 60, 160)
   expect(await m.find({ type: 'Text', text: /^✗ 1 hook run failed \+2$/ })).toBeDefined() // the first problem, the rest counted: the page lists them
-  expect(await m.find({ type: 'Button', text: /^setup Opus 5\.5 high$/ })).toBeDefined() // named for what it opens; the rest is on the page; a limit under 80% says nothing here
+  expect(await m.find({ type: 'Button', text: /^setup · Opus 5\.5 high$/ })).toBeDefined() // named for what it opens; the rest is on the page; a limit under 80% says nothing here
   await m.press({ key: 'fsetup' })
   expect(await m.find({ text: 'Opus 5.5 (claude-opus-5-5) · effort high' })).toBeDefined()
   // context, cost, rate limits and the MCP server list are /context, /cost, /status and /mcp's: the page leaves them out

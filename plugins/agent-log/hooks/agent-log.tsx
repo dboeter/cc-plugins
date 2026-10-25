@@ -534,7 +534,8 @@ const action = (x: Entry, bare = false): string => {
     return bare ? who : `${who} on ${x.origin ?? 'event'}${d ? ` ${d}` : ''}`
   }
   if (x.kind === 'prompt') {
-    if (x.src && x.src !== 'engine') return `${x.name} ${label(x.type ?? '')}${!bare && x.origin && !x.name.includes(x.origin) ? ` on ${x.origin}` : ''}` // `context-mode context on PreToolUse`, `PreToolUse hook context`; a hook or plugin name is an identifier: never recased
+    // `context-mode context on PreToolUse Bash`, `PreToolUse hook context on Bash`: the tool, so text whose call is not drawn still says which call it was for. A hook or plugin name is an identifier: never recased
+    if (x.src && x.src !== 'engine') { const on = [x.origin && !x.name.includes(x.origin) && x.origin, x.detail].filter(Boolean).join(' '); return `${x.name} ${label(x.type ?? '')}${!bare && on ? ` on ${on}` : ''}` }
     const [k, tail = ''] = ctxOf(x)
     return cap(k) + tail
   }
@@ -1343,7 +1344,7 @@ export const register: Register = (on, options) => {
       : origin ? `${origin} ${label(e.type)}` : label(e.type)
     // a queued prompt is the person's own typing. session_context carries their email (EMAIL)
     const text = e.type === 'queued_command' ? undefined : peek(e.type === 'session_context' ? r.text.replace(EMAIL, '***') : r.text)
-    try { push($, { kind: 'prompt', name, type: e.type, origin, detail: '', outcome: kb(r.text.length), src: e.origin.kind, bytes: r.text.length, agent: e.agentId, peek: text, use: post }, { above: e.origin.kind === 'hook' && e.origin.event === 'PreToolUse' ? target : undefined, after: e.origin.kind === 'hook' && e.origin.event === 'PostToolUse' ? target : undefined }) } catch {}
+    try { push($, { kind: 'prompt', name, type: e.type, origin, detail: target ?? '', outcome: kb(r.text.length), src: e.origin.kind, bytes: r.text.length, agent: e.agentId, peek: text, use: post }, { above: e.origin.kind === 'hook' && e.origin.event === 'PreToolUse' ? target : undefined, after: e.origin.kind === 'hook' && e.origin.event === 'PostToolUse' ? target : undefined }) } catch {}
     return r
   })
 
@@ -1564,10 +1565,10 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => { logFailure($, 'ui.scroll', next.error); return next(e) })
 
   // the ring moved by the person (Tab, the arrows, a click) onto a row's Button: the cursor is there now, so j and k go on from
-  // it. A row Button's key is `b` and its line's (`bg12`, `bg12s0` an advisor's, `be12w` a wait's); the plugin's own moves
-  // (show, a cursor move) are ours already
+  // it. A row Button's key is `b` and its line's (`bg12`, `bg12s0` an advisor's, `be12w` a wait's, `bturn3` a turn header's); the
+  // plugin's own moves (show, a cursor move) are ours already
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
-    if (e.origin.kind === 'person' && e.element && /^b(g\d+(s\d+)?|e\d+w)$/.test(e.element)) sel = e.element.slice(1)
+    if (e.origin.kind === 'person' && e.element && /^b(g\d+(s\d+)?|e\d+w|turn\d+)$/.test(e.element)) sel = e.element.slice(1)
     return next(e)
   }).catch(($, e, next) => { logFailure($, 'ui.focus', next.error); return next(e) })
 
@@ -1622,22 +1623,22 @@ export const register: Register = (on, options) => {
             {x.child && <Button key="fonly" label={only === x.child ? 'every agent' : 'only this agent'} hotkey="f" plain onPress={only1} />}
           </Box>
           <Text> </Text>
-          <Box flexDirection="row"><Text weight="semibold">{action(x)}</Text><Text dimColor>  {x.kind === 'tool' ? x.name : toolOf(x)}</Text>{out(cell(x))}</Box>
+          <Box flexDirection="row"><Text weight="semibold">{action(x)}</Text><Text dimColor>  {x.kind === 'tool' ? x.name : toolOf(x)}</Text>{out(x.child ? ran(x) : cell(x))}</Box>{/* an Agent row's time as its row shows it: the agent's run, not the call's */}
           <Text dimColor wrap="wrap">{what}</Text>
           <Text> </Text>
           {kv('when', `${x.turn != null ? `${x.turn ? `turn ${x.turn}` : 'session start'} · ` : ''}${new Date(x.t).toLocaleTimeString()} (${ago(Date.now() - x.t)} ago)`)}
-          {kv('agent', who)}
-          {x.src === 'hook' && x.origin && kv('trigger', [x.origin, x.detail].filter(Boolean).join(' · '))}
+          {kv('agent', x.agent ? who : 'main')}
+          {x.src === 'hook' && !!x.origin && kv('trigger', [x.origin, x.detail].filter(Boolean).join(' · '))}
           {/* a hook's input: the call it ran on, as its row stores it; its command as your settings or the plugin's hooks.json write it */}
           {x.kind === 'hook' && x.use && (c => c && kv('input', `${c.name}: ${c.cmd ?? c.detail}`))(entries.find(y => y.kind === 'tool' && y.use === x.use))}
           {x.kind === 'hook' && (cs => cs.length > 0 && kv('command', cs.join('\n')))([...new Set((hookCfg?.[x.origin ?? ''] ?? []).filter(h => h.name === x.name && fits(h.matcher, x.detail || undefined)).map(h => h.cmd ?? ''))].filter(Boolean))}
-          {x.cmd ? kv('command', x.cmd) : x.detail && x.src !== 'hook' && kv(x.name === 'Bash' ? 'command' : 'input', x.detail)}
-          {x.cmd && kv('what', x.detail)}
-          {x.pat && kv('pattern', x.pat)}
-          {x.out && kv('where', `${x.out}, outside the session's project root`)}
+          {x.cmd ? kv('command', x.cmd) : !!x.detail && x.src !== 'hook' && kv(x.name === 'Bash' ? 'command' : 'input', x.detail)}
+          {!!x.cmd && !!x.detail && kv('what', x.detail)}
+          {!!x.pat && kv('pattern', x.pat)}
+          {!!x.out && kv('where', `${x.out}, outside the session's project root`)}
           {x.exit != null && kv('exit', String(x.exit))}
           {/* the check's verdict, then who settled an ask: `asked you; you allowed it once`, `allowed by rule Bash(git push:*)` */}
-          {x.check && kv('decided', x.check === 'ask'
+          {!!x.check && kv('decided', x.check === 'ask'
             ? `asked${x.via?.startsWith('user_') ? ' you' : ''}${x.rule ? ` (rule ${x.rule})` : ''}; ${VIA[x.via ?? ''] ?? (x.via ? `${x.via} decided` : 'the mode or you decided')}`
             : `${x.check === 'allow' ? 'allowed' : 'denied'} by ${x.rule ? `rule ${x.rule}` : 'the mode, a hook or the tool itself'}`)}
           {x.ms != null && kv(x.child ? 'call' : 'took', exact(x.ms))}
@@ -1645,20 +1646,20 @@ export const register: Register = (on, options) => {
           {/* the wait came before the call ran, so took leaves it out */}
           {x.wait != null && kv('waited', `${exact(x.wait)} for ${x.waitFor ?? 'the decision'}, before it ran`)}
           {x.kind === 'step' && kv('model', `${x.name}${x.effort != null ? ` · effort ${x.effort}` : ''}`)}
-          {x.kind === 'side' && x.detail && kv('model', x.detail)}
+          {x.kind === 'side' && !!x.detail && kv('model', x.detail)}
           {x.ttft != null && kv('first', `${exact(x.ttft)} to the first token`)}
           {x.think != null && kv('think', exact(x.think))}
           {x.tok && kv('tokens', tokLine(x.tok))}
           {x.cost != null && kv('cost', `$${x.cost.toFixed(4)}`)}
           {x.asked && kv('calls', counted(x.asked))}
           {x.server && kv('server', x.server.map(([n, ms]) => `${n} ${exact(ms ?? undefined)}`).join(', '))}
-          {x.stop && kv('stop', x.stop)}
-          {x.req && kv('request', x.req)}
-          {/* a call's request: the model's time before it, which the call's own row leaves out */}
-          {x.kind === 'tool' && x.step && (s => s && kv('asked', `by ${modelName(s.name)} in a ${exact(s.ms)} request${s.thought ? `: ${s.thought}` : ''}`))(entries.find(y => y.kind === 'step' && y.step === x.step))}
-          {x.child && kv('ran', ran(x)[0])}
+          {!!x.stop && kv('stop', x.stop)}
+          {!!x.req && kv('request', x.req)}
+          {/* a call's request: the model's time before it, which the call's own row leaves out. Not `asked`: decided's `asked you` is the permission prompt */}
+          {x.kind === 'tool' && !!x.step && (s => s && kv('model', `${modelName(s.name)} in a ${exact(s.ms)} request${s.thought ? `: ${s.thought}` : ''}`))(entries.find(y => y.kind === 'step' && y.step === x.step))}
+          {!!x.child && kv('ran', ran(x)[0])}
           {/* each hook once, what it did in brackets: what it said back (blocked, feedback), whether its text went to the model */}
-          {x.kind === 'tool' && x.use && (hs => hs.length > 0 && kv('hooks', [...new Set(hs.map(y => y.name))].map(n => {
+          {x.kind === 'tool' && !!x.use && (hs => hs.length > 0 && kv('hooks', [...new Set(hs.map(y => y.name))].map(n => {
             const ys = hs.filter(y => y.name === n), said = ys.find(loud)
             const did = [said && stat(said), ys.some(y => y.kind === 'prompt') && 'added text'].filter(Boolean)
             return `${n}${did.length ? ` (${did.join(', ')})` : ''}`
@@ -1695,11 +1696,13 @@ export const register: Register = (on, options) => {
     }
     const jump = () => { follow = true; sel = undefined; $.ui.invalidate('ui.render') } // following, the draw pins the window to the end; the cursor starts over
     // folds stay as they were: a fold's id is its first entry's, the same in every view, level and filter that draws it
-    const pick = (id: string) => { only = only === id ? undefined : id; $.ui.invalidate('ui.render') }
-    const setView = (v: View) => { view = view === v ? 'all' : v; follow = true; $.ui.invalidate('ui.render') }
+    // back to the log from the inspector or a page, for a key that changes the log: changed behind them, it would act unseen
+    const leave = () => { if (inspect || page) { inspect = undefined; page = undefined; pageBack = false; backTo = undefined; $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}) } } // the engine's window, which the inspector or page may have moved
+    const pick = (id: string) => { leave(); only = only === id ? undefined : id; $.ui.invalidate('ui.render') }
+    const setView = (v: View) => { leave(); view = view === v ? 'all' : v; follow = true; $.ui.invalidate('ui.render') }
     // `l` toggles the two levels a log is read at: info, notice. Debug's rows open per turn in place (openTurns), error is
     // the setup page's problems; `/agentlog level` still sets all four. From debug or error, back to info
-    const nextLevel = () => { level = level === 1 ? 2 : 1; follow = true; $.ui.invalidate('ui.render') }
+    const nextLevel = () => { leave(); level = level === 1 ? 2 : 1; follow = true; $.ui.invalidate('ui.render') }
     const agents: AgentInfo[] = await $.agent.list().catch(() => [])
     // a numbered name (tagOf) wins over the list's type; else the list's, so a teammate still reads `teammate`. ||: an empty type names nothing
     const nameOf = (id: string) => id === 'main' ? 'main' : / #\d+$/.test(names[id] ?? '') ? names[id]! : agents.find(a => a.id === id)?.type || names[id] || 'subagent'
@@ -1836,7 +1839,7 @@ export const register: Register = (on, options) => {
       const said = words.get(n), split = n ? splitText(n, m, 2) : ''
       return (
         <Box key={k} flexDirection="row" overflow="hidden">
-          <Box flexShrink={0}>{m.ends.length ? <Button key={`th${n}`} label={n ? `#${n}` : 'start'} plain onPress={() => show(m.ends.at(-1)!)} /> : <Text weight="semibold">{n ? `#${n}` : 'start'}</Text>}</Box>
+          <Box flexShrink={0}>{m.ends.length ? <Button key={`b${k}`} label={n ? `#${n}` : 'start'} plain onPress={() => show(m.ends.at(-1)!)} /> : <Text weight="semibold">{n ? `#${n}` : 'start'}</Text>}</Box>
           <Box flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end" dimColor>{`${said ? ` ${said}` : ''}${split ? ` · ${split}` : ''}`}</Text></Box>
           {hid ? <Box flexShrink={0}><Text dimColor> · </Text><Button key={`hid${n}`} label={openTurns.has(n) ? `hide ${hid} ▾` : `${hid} hidden ▸`} plain dimColor onPress={() => {
             if (!openTurns.delete(n)) openTurns.add(n)
@@ -1912,7 +1915,7 @@ export const register: Register = (on, options) => {
     // only a wait on a decision: one on the model finishing the message that holds the call is the model's time (splitOf counts
     // it so), and would draw a row for every call. The inspector still says it
     const waits = (y: Entry) => y.wait != null && y.waitFor !== STREAMING
-    const waitLine = (y: Entry, rail: string, link?: string) => line({ k: `e${idOf(y)}w`, act: `Waiting for ${y.waitFor ?? 'the decision'}`, press: () => show(y), st: [secs(y.wait)], rail, link })
+    const waitLine = (y: Entry, rail: string, link?: string) => line({ k: `e${idOf(y)}w`, act: `Waiting for ${y.waitFor ?? 'the decision'}`, press: () => show(y), st: [secs(y.wait)], who: '  ', rail, link })
     // A group's parts, from the one switch on its kind:
     // - head: its own row, given the press (its fold's toggle when it has one, else the inspector on target) and that disclosure
     // - members: the entries a closed fold stands for, which back lands on
@@ -1938,8 +1941,10 @@ export const register: Register = (on, options) => {
       } else {
         // a call's wait above it, where it happened, and a request's calls the API ran itself (the advisor) below it: rows of
         // their own, on the row's link. What broke stays in its inspector
-        const server = (x.server ?? []).map(([sn, ms], j) => (rail: string) => line({ k: `${k}s${j}`, act: cap(sn.replace(/_/g, ' ')), press: () => show(x), st: [secs(ms ?? undefined)], rail, link: g.server?.[j] }))
+        const server = (x.server ?? []).map(([sn, ms], j) => (rail: string) => line({ k: `${k}s${j}`, act: cap(sn.replace(/_/g, ' ')), press: () => show(x), st: [secs(ms ?? undefined)], who: '  ', rail, link: g.server?.[j] }))
         // a hook's row on its call's bracket names just the hook: the call beside it names the tool, the side names the event.
+        // Every row on a bracket but the call sits two cells in (a hook's, a wait's, a server call's): on a bracket of two, `╭ ╰`
+        // alone would not say which row is the call.
         // Dim unless its cell has a colour: a hook that blocked or broke stays as loud as the call. A row with no use is no
         // call's hook: a model request sits on a bracket only for its server rows (the advisor), and keeps its own name
         const hooked = x.kind !== 'tool' && !!x.use && !!g.link
@@ -1954,7 +1959,7 @@ export const register: Register = (on, options) => {
           head: (rail, who, press) => {
             const rs = [
               ...(waits(x) ? [(r: string) => waitLine(x, r, g.wait)] : []),
-              (r: string) => line({ k, act: hooked ? action(x, true) : actOf(x), tail: byOf(x), press, st: c, who, rail: r, link: g.link, dim, away: awayOf([x]) }),
+              (r: string) => line({ k, act: hooked ? action(x, true) : actOf(x), tail: byOf(x), press, st: c, who: hooked ? `  ${who}` : who, rail: r, link: g.link, dim, away: awayOf([x]) }),
               ...server,
             ], mid = rail.endsWith('└ ') ? `${rail.slice(0, -2)}├ ` : rail
             return rs.map((f, i) => f(i < rs.length - 1 ? mid : rail))
@@ -1994,10 +1999,11 @@ export const register: Register = (on, options) => {
         if (cur !== undefined) rows.push(<Text key={`gap${rows.length}`}> </Text>) // a row of its own, not a margin: the window counts elements as rows
         const hk = `turn${n}` // by its turn, not its place: folds opening above it must not rename it, or an anchor on it is lost
         rows.push(header(n, hk)); cur = n; tops.add(hk)
+        if (turnIn(n).ends.length) pressable.add(hk) // its `#N` opens the turn: a stop for the row cursor as a row is
         for (const y of hidden.get(n) ?? []) if (!where.has(y)) where.set(y, hk) // back from a hidden row: its turn's header
       }
       tops.add(keyOf(g))
-      rows.push(...drawGroup(g, '', '', x.agent && turns.get(n)!.agents.size > 1 ? whoOf(x.agent) : ''))
+      rows.push(...drawGroup(g, '', '', x.agent && !only && turns.get(n)!.agents.size > 1 ? whoOf(x.agent) : '')) // filtered, every row is one loop's: no prefix
     })
     // What streams or runs right now, below the rows: each loop's model request and each call in flight, ● counting up (tick
     // redraws while a turn or an agent runs). Not entries yet, so nothing to open: plain lines, under the running turn's header
@@ -2013,7 +2019,7 @@ export const register: Register = (on, options) => {
     const MARKS = ['✗ red: broke', '⊘ cyan: refused, by a hook, a rule, the classifier, you or the model', '⚠ yellow: ended early (interrupted, cut off, an agent killed)',
       '■ yellow: a hook stopped the session', '◷ yellow: a slow hook', '↩ blue: a hook\'s feedback to the model', '● green: running now', '✓ an agent finished', '? an agent in a state agent-log does not know',
       '↗ magenta: a place in another project; a dim path with no ↗: ~/.claude or /tmp', '+ a hook added context', '· a hook changed nothing', '∅ found nothing', '≈ estimated',
-      '╭ │ ├ ╰ a call bracketed with its hooks: those above it ran before it, those below after', '│ ├ └ an open Agent fold\'s rows, and the agent tree\'s branches', '› the agent the log is filtered to',
+      '╭ │ ├ ╰ a call bracketed with its hooks and waits, which sit two cells in: those above it ran before it, those below after', '│ ├ └ an open Agent fold\'s rows, and the agent tree\'s branches', '› the agent the log is filtered to',
       'bright: a row that did something; dim: routine, or below the level', '▸ ▾ open, close an Agent fold or a turn\'s hidden rows',
       'other, in a turn\'s split: the engine\'s and plugins\' own work between steps']
     const KEYS: [string, string][] = [['a m h u', 'views: all, what the model did, the harness, outside the root'], ['l', 'level: info or notice (/agentlog level sets debug and error)'],
@@ -2030,7 +2036,7 @@ export const register: Register = (on, options) => {
     // the window's top to the previous or next prompt's turn header (`#3`); past the last, the end. From the inspector or a page, back to the log first
     const heads = rows.flatMap((r, i) => String(r.props?.key).startsWith('turn') ? [i] : [])
     const toTurn = (dir: -1 | 1) => {
-      if (inspect || page) { inspect = undefined; page = undefined; pageBack = false; backTo = undefined; $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}) } // the engine's window, which the inspector or page may have moved
+      leave()
       const to = dir < 0 ? heads.filter(i => i < win).at(-1) ?? 0 : heads.find(i => i > win)
       if (to === undefined) follow = true; else { win = to; follow = false } // the draw clamps win and decides follow again
       $.ui.invalidate('ui.render')
@@ -2087,8 +2093,8 @@ export const register: Register = (on, options) => {
     const plugins = setup.plugins.size || enabled.length
     const bgN = setup.bg?.tasks.length ?? 0, cronN = setup.bg?.crons.length ?? 0
     // the row itself says only what needs the eye: the model, and a rate limit once it nears (80%); the rest is on the page
-    // led by `setup`, so the button says what it opens: `s: setup Opus 5.5 · limit 85%`
-    const setupText = ['setup', [setup.model && `${modelName(setup.model)}${setup.effort != null ? ` ${setup.effort}` : ''}`, peak && peak.percentUsed >= 80 && `limit ${Math.round(peak.percentUsed)}%`].filter(Boolean).join(' · ')].filter(Boolean).join(' ')
+    // led by `setup`, so the button says what it opens: `s: setup · Opus 5.5 · limit 85%`
+    const setupText = ['setup', [setup.model && `${modelName(setup.model)}${setup.effort != null ? ` ${setup.effort}` : ''}`, peak && peak.percentUsed >= 80 && `limit ${Math.round(peak.percentUsed)}%`].filter(Boolean).join(' · ')].filter(Boolean).join(' · ')
     // a page in place of the log; its own key pressed on it again, back to the log
     const openPage = (p: NonNullable<typeof page>) => {
       if (page === p && !inspect) return back()
@@ -2183,7 +2189,9 @@ export const register: Register = (on, options) => {
         {only ? <Button key="fclear" label={fit(`filter: ${nameOf(only)} ✕`, cols - 8)} hotkey="f" plain onPress={() => pick(only!)} /> : null}
       </Box>, ...tree.slice(0, most).map(agentRow)] : []),
       ...(treeOn && (done || more) ? [<Box key="done" flexDirection="row"><Text>  </Text><Button key="fdone" label={toggle} plain dimColor onPress={() => { showDone = !showDone; $.ui.invalidate('ui.render') }} /></Box>] : []),
-      <Text key="rule" dimColor>{'─'.repeat(Math.max(1, cols - 1))}</Text>,
+      // unfocused, the rule says how to give the pane the keys (its hotkeys and j k press nothing until then); in the rule, so the
+      // header keeps its height either way
+      <Text key="rule" dimColor>{e.props.isFocused === false && cols > 24 ? `── ctrl+x tab: keys ${'─'.repeat(cols - 21)}` : '─'.repeat(Math.max(1, cols - 1))}</Text>,
     ]
     // taken before the inspector draws: `o` pressed there must not move the window that back is about to centre
     const held = anchor; anchor = undefined

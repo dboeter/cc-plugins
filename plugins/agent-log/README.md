@@ -4,16 +4,16 @@ Why was that turn slow, and who allowed that call? A live pane that splits each 
 
 ```
 #1 · tools 17.2s · model 12.3s · 4 hidden ▸                                           39.6s
-╭ context-mode context
-│ Waiting for you to answer the permission prompt                                       4.2s
+╭   context-mode context
+│   Waiting for you to answer the permission prompt                                     4.2s
 ╰ Run the tests                                                                     ✗ 18.4s
-╭ guard                                                                             ⊘ <0.1s
+╭   guard                                                                           ⊘ <0.1s
 ╰ Clean the build output                                                          ⊘ denied
 ╭ Edit agent-log.tsx                                                                    0.1s
-╰ lint-feedback                                                                     ↩ 1.3s
+╰   lint-feedback                                                                   ↩ 1.3s
   Read index.ts ↗ ~/other-project/src                                                <0.1s
 ╭ Reply: The test fails because the header grew a row.                                 6.1s
-╰ Advisor                                                                               3.2s
+╰   Advisor                                                                             3.2s
 ```
 
 agent-log is the interpreted view of a session. [event-log](../event-log) is the raw record, every event with its full payload on disk. The two work as a pair.
@@ -24,7 +24,7 @@ Prices, request ids, who decided a call, permission waits, hook run counts and A
 
 - **Turns**: each prompt's header gives the turn's time and its two largest parts. `#N` opens the full split: model, tools, agents, hooks, compaction, permission prompts and you.
 - **Model requests**: one row per request of the main loop or a subagent, with time to first token, thinking time, tokens and the start of the reply. Price and request id.
-- **Tool calls**: each call with its run time, and its hooks bracketed around it (`╭ ├ ╰`). The inspector says who decided it: a settings rule, you, a hook or the auto-mode classifier. A call that waited for that decision gets a `Waiting for …` row above it.
+- **Tool calls**: each call with its run time, and its hooks bracketed around it (`╭ ├ ╰`), two cells in so the call is the row flush with the bracket. The inspector says who decided it: a settings rule, you, a hook or the auto-mode classifier. A call that waited for that decision gets a `Waiting for …` row above it.
 - **Outside the project root**: a call that reached another project is marked `↗` with the place, and the controls count them (`↗ 2 other project`). A routine place (`~/.claude`, `/tmp`) shows as a dim path without the `↗`. The `outside` view keeps all of these calls.
 - **The harness**: hook runs and what they injected, plugins' model calls, compactions, model switches and MCP failures. Claude Code's own requests (titles, suggestions) and API errors.
 - **Skipped hooks**: a plugin hook that another plugin's `next.to` sent the event past is a `Hook skipped: <plugin> <event> (by <plugin>)` row, once per session, and a problem on the setup page. A skipper that runs before agent-log is known from Claude Code's notice, which arrives as a prompt. If that plugin also skips agent-log's `prompt.submit` hook, nothing shows. A skipper that runs after agent-log is read from the hook chain's trace.
@@ -60,7 +60,7 @@ The pane never opens by itself. While it is closed, a turn that ended unusually 
 
 Turns under 10 seconds never get a line, and time spent waiting on you never counts as unusual. `/agentlog` shows or hides the pane, `/agentlog all|model|harness|outside` picks a view (`agent` still works for `model`), `/agentlog level debug|info|notice|error` sets the least important row shown, and `/agentlog clear` empties the log. No `/agentlog` enters the conversation: its line is dropped and its reply is a toast, so the model reads neither.
 
-In the pane, `a` `m` `h` `u` switch views: all, what the model did, the harness, outside the root. `l` toggles the level between info and notice. `o` opens or closes every Agent fold. `s` opens the setup page and `i` the keys page. `j` and `k` (or ↓ and ↑) move a row cursor, and Enter opens its row. `e` jumps to the newest row, ctrl+↑↓ (`^↑↓ turn`) to the previous or next prompt, and `b` goes back. In a row's inspector, `n` and `p` step to the next and previous row; an Agent row's inspector has `f` to keep only that agent's rows, and `f` outside it clears that filter. Tab moves the focus over the buttons, and Enter presses one. While an agent runs, a tree of the main loop and its agents sits at the top, and pressing one filters the log to it.
+In the pane, `a` `m` `h` `u` switch views: all, what the model did, the harness, outside the root. `l` toggles the level between info and notice. `o` opens or closes every Agent fold. `s` opens the setup page and `i` the keys page. `j` and `k` (or ↓ and ↑) move a row cursor over the rows and the turn headers, and Enter opens its row. `e` jumps to the newest row, ctrl+↑↓ (`^↑↓ turn`) to the previous or next prompt, and `b` goes back. A view, level or filter key pressed in an inspector or on a page goes back to the log it changed. In a row's inspector, `n` and `p` step to the next and previous row; an Agent row's inspector has `f` to keep only that agent's rows, and `f` outside it clears that filter. These keys reach the pane only while it has the focus: ctrl+x tab gives it, and the line under the controls says so while it does not. Tab moves the focus over the buttons, and Enter presses one. While an agent runs, a tree of the main loop and its agents sits at the top, and pressing one filters the log to it.
 
 ## What it does on your machine
 

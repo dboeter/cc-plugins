@@ -43,7 +43,7 @@ const frame = async (m: any, cols: number, label: string): Promise<string[]> => 
   return lines
 }
 const plainOf = (l: string) => l.replace(/[*]|‹\w+:|›/g, '')
-const ruleAt = (lines: string[]) => lines.findIndex(l => /^─+$/.test(plainOf(l))) // the header's last row
+const ruleAt = (lines: string[]) => lines.findIndex(l => /^──( ctrl\+x tab: keys ─+|─*)$/.test(plainOf(l))) // the header's last row
 
 // the review's session: setup hooks, a turn of calls with their hooks (a failed test run that waited on you, a refusal, a lint
 // block, calls outside the root), then a turn with a subagent, the engine's own request, a model switch and two problems
@@ -65,12 +65,12 @@ const seed = () => {
     ctx(60001, 1, 'question-mode', 'UserPromptSubmit', { type: 'hook_success' }),
     step(60100, 1, 5200, { thought: 'Looking at the pane code', asked: ['Read', 'Grep'], ttft: 1100, think: 2400, step: 's1', tok: [3, 40000, 200, 300] }),
     { ...tool(65400, 1, 'Read', '/home/u/cc-plugins/plugins/agent-log/README.md', { step: 's1' }), use: 'r1' },
-    { ...ctx(65380, 1, 'context-mode', 'PreToolUse'), use: 'r1' },
+    { ...ctx(65380, 1, 'context-mode', 'PreToolUse', { detail: 'Read' }), use: 'r1' },
     tool(65500, 1, 'Grep', '/home/u/cc-plugins/plugins/agent-log/hooks', { step: 's1', pat: 'secs\\(' }),
     step(65600, 1, 3100, { asked: ['Bash'], step: 's2' }),
     { ...tool(72900, 1, 'Bash', 'Run the tests', { cmd: 'claude plugin test plugins/agent-log', ms: 18400, wait: 4200, waitFor: 'you to answer the permission prompt', outcome: 'error', status: 'failed', exit: 1, insight: 'agent-log.test.ts:412 expected 12 rows, got 13', check: 'ask', via: 'user_temporary', step: 's2' }), use: 'b1' },
     { ...hook(68750, 1, 'guard', 'PreToolUse', 'Bash', { ms: 30 }), use: 'b1' },
-    { ...ctx(68760, 1, 'context-mode', 'PreToolUse'), use: 'b1' },
+    { ...ctx(68760, 1, 'context-mode', 'PreToolUse', { detail: 'Bash' }), use: 'b1' },
     { ...tool(91500, 1, 'Bash', 'Clean the build output', { cmd: 'rm -rf dist', outcome: 'error', status: 'denied', ms: undefined, peek: 'guard.sh blocked this command: rm -rf' }), use: 'b2' },
     { ...hook(91490, 1, 'guard', 'PreToolUse', 'Bash', { outcome: 'block', peek: 'guard.sh blocked this command: rm -rf', ms: 25 }), use: 'b2' },
     { ...tool(92000, 1, 'Edit', '/home/u/cc-plugins/plugins/agent-log/hooks/agent-log.tsx', { ms: 120 }), use: 'e1' },
@@ -130,7 +130,7 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   expect(all.some(l => /‹blue:↩ 1\.3s›/.test(l))).toBe(true)
   // the header: the controls, what broke and the setup packed in two rows, then the rule; no agent tree while none runs
   expect(ruleAt(all)).toBe(2)
-  expect(all.some(l => /^k: ↑  ‹red:✗ 1 API error \+1›  ‹magenta:↗ 1 other project›  s: setup Opus 5\.5/.test(l))).toBe(true)
+  expect(all.some(l => /^k: ↑  ‹red:✗ 1 API error \+1›  ‹magenta:↗ 1 other project›  s: setup · Opus 5\.5/.test(l))).toBe(true)
   expect(all.some(l => /^\*?main\*?\s*$|done ▸/.test(plainOf(l)))).toBe(false)
   // a turn's hidden rows open in place under its header, dim
   await m.press({ key: 'hid0' })
@@ -155,7 +155,10 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   expect(open.some(l => /Haiku 5\.5 · /.test(l))).toBe(true) // a subagent on another model than main's at the time
   expect(open.some(l => /input & result|reply: /.test(l))).toBe(false) // the Agent row's inspector holds them
   await m.press({ key: fold!.key! })
-  await m.press({ key: 'vharness' }); await frame(m, 100, 'harness view'); await m.press({ key: 'vharness' })
+  await m.press({ key: 'vharness' })
+  const harness = await frame(m, 100, 'harness view')
+  expect(harness.some(l => /^  context-mode context on PreToolUse Bash +$/.test(plainOf(l)))).toBe(true) // its call not drawn: the text names the tool
+  await m.press({ key: 'vharness' })
   await m.press({ key: 'vmodel' })
   const model = await frame(m, 100, 'model view')
   expect(model.some(l => /context-mode|lint-feedback/.test(l))).toBe(false) // what the model did: no hooks
@@ -173,13 +176,18 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   expect(ruleAt(await frame(m, 100, 'back from the keys page'))).toBe(2)
   // an Agent row opens its inspector, whose f filters the log to its agent
   await m.press({ key: (await m.find({ type: 'Button', text: /^Explore: map how hooks are named$/ }))!.key! })
+  const agentRow = await frame(m, 100, 'inspector: Agent row')
+  expect(agentRow.some(l => /^Explore: map how hooks are named  Agent +4\.9s/.test(l))).toBe(true) // the agent's run, as its row shows it, not the call's 0.3s
   await m.press({ key: 'fonly' })
   const onlyA = await frame(m, 100, 'filtered to Explore, from its Agent row')
   expect(onlyA.some(l => /filter: Explore ✕/.test(l))).toBe(true)
   expect(onlyA.some(l => /Run the tests/.test(l))).toBe(false)
+  expect(onlyA.some(l => /Explore · /.test(l))).toBe(false) // one loop's rows: none names it
   await m.press({ key: 'fclear' })
   await m.press({ key: (await m.find({ type: 'Button', text: /^Run the tests/ }))!.key! }); await frame(m, 100, 'inspector: failed Bash'); await m.press({ key: 'back' })
-  await m.press({ key: 'th1' }); await frame(m, 100, 'inspector: turn #1'); await m.press({ key: 'back' })
+  await m.press({ key: 'bturn1' })
+  expect((await frame(m, 100, 'inspector: turn #1')).some(l => /^agent +main$/.test(l))).toBe(true)
+  await m.press({ key: 'back' })
   await m.press({ key: 'fsetup' }); await frame(m, 100, 'setup page'); await m.press({ key: 'back' })
 })
 
