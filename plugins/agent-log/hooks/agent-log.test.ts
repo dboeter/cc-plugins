@@ -569,13 +569,13 @@ test('ctrl+↑↓ (the turn ↑↓ buttons) put the previous or next prompt\'s t
   await m.press({ key: 'tnext' }) // past the last prompt: the end, following
   expect(await m.find({ text: /^Step 30$/ })).toBeDefined()
   expect(await m.find({ key: 'jump' })).toBe(undefined)
-  // a cursor the window left behind starts over in the window: j after ^↑ stays at #2, not back at Step 30
+  // ^↑ counts from the cursor and puts it on the turn's first line (Step 11: these turns have no end, so `#2` opens nothing); j goes on from there
   await m.press({ key: 'cup' }) // the cursor on Step 30
   await m.press({ key: 'tprev' }); await m.press({ key: 'tprev' })
   await m.press({ key: 'cdown' })
   expect(await m.find({ text: /^#2$/ })).toBeDefined()
   expect(await m.find({ text: /^Step 30$/ })).toBe(undefined)
-  // and j after ^↓ starts in the window ^↓ moved to, not on from the cursor on #2
+  // and ^↓ from Step 12 to turn 3's first line
   await m.press({ key: 'tnext' })
   await m.press({ key: 'cdown' })
   expect(await m.find({ text: /^#3$/ })).toBeDefined()
