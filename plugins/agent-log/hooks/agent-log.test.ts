@@ -1303,6 +1303,18 @@ test('a hook beneath that a managed plugin sent the event past logs once from th
   expect(xs.map(x => [x.detail, x.outcome])).toEqual([['lint tool.call', 'by gate']])
 })
 
+test('a hook whose event agent-log only passes on (telemetry.log) is traced too', {
+  plugins: [
+    { name: 'gate', tier: 'append', register: on => { on('telemetry.log', { to: 'collector' } as any, async (_$: any, e: any, next: any) => { await next.to(e, 'core').catch(() => {}); return { value: undefined } }) } },
+    { name: 'otel', tier: 'builtin', register: on => { on('telemetry.log', { to: 'collector' } as any, (_$: any, e: any, next: any) => next(e)) } },
+  ],
+}, async ($, on) => {
+  const db = capture(on, 'ST')
+  await ($ as any).telemetry.log({ to: 'collector', event: 'permission_mode_changed', attributes: { from_mode: 'default', to_mode: 'plan', trigger: 'shift_tab' } })
+  const xs = (await flushed($, 'ST', db)).filter(x => x.name === 'hook skipped')
+  expect(xs.map(x => [x.detail, x.outcome])).toEqual([['otel telemetry.log', 'by gate']])
+})
+
 test('a skipped hook is a problem the controls show, its row the hook, event and plugin', async ($, on) => {
   const m = await mountWith($, on, 'PS', [{ t: Date.now() - 1000, turn: 1, kind: 'event', name: 'hook skipped', detail: 'skins classic.SessionStart', outcome: 'by cc-plugin-sec-default', status: 'failed' }])
   expect(await m.find({ type: 'Text', text: /^✗ 1 hook skipped$/ })).toBeDefined()

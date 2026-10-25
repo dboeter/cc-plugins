@@ -1101,7 +1101,9 @@ export const register: Register = (on, options) => {
         mutate(async () => { const y = entries.findLast(y => y.kind === 'step' && y.step === s.key); if (y) { y.cost = bill.cost; y.req = bill.req; touch($) } }).catch(() => {})
       }
     } catch {}
-    return next(e)
+    const r = await next(e)
+    logSkipsIn($, next.trace)
+    return r
   }).catch(($, e, next) => { logFailure($, 'telemetry.log', next.error); return next(e) })
 
   on('tool.call', async ($, e, next) => {
@@ -1372,7 +1374,7 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     if (e.command?.name === 'agentlog') return { drop: 'agentlog: kept out of the conversation' } // not a turn either
     if (e.origin.kind === 'task-notification') for (const [, plugin, event, by] of e.text.matchAll(SKIP_NOTICE)) logSkip($, plugin!, event!, by!)
-    if (!OWN.has(e.origin.kind)) return next(e)
+    if (!OWN.has(e.origin.kind)) { const r = await next(e); logSkipsIn($, next.trace); return r }
     if (e.turnId) { const r = await next(e); logSkipsIn($, next.trace); if (!('drop' in r && r.drop)) { pending++; queued.push(wordsOf(e)) } return r }
     const t = Date.now() // the turn's start: its UserPromptSubmit hooks run inside next
     await mutate(async () => { await loadNow($); turnNo++; words.set(turnNo, wordsOf(e)); touch($) }).catch(() => {}) // before next: the UserPromptSubmit hooks it runs belong to the new number
@@ -1387,7 +1389,9 @@ export const register: Register = (on, options) => {
   // /context, /cost and /status's; the setup page leaves them out
   on('session.measure', async ($, e, next) => {
     setup.limits = [...e.rateLimits]
-    return next(e)
+    const r = await next(e)
+    logSkipsIn($, next.trace)
+    return r
   })
 
   on('session.start', async ($, e, next) => {
@@ -1403,7 +1407,9 @@ export const register: Register = (on, options) => {
       if (!again) await $.state.set(started, true).catch(() => {})
       push($, again ? { kind: 'session', name: 'reload', detail: '', outcome: '' } : { kind: 'session', name: 'start', detail: e.cwd, outcome: '' })
     } catch {}
-    return next(e)
+    const r = await next(e)
+    logSkipsIn($, next.trace)
+    return r
   })
 
   // compaction drops a loop's past attachments from its history, so a later replay no longer asks them: forget their counts,
@@ -1435,7 +1441,7 @@ export const register: Register = (on, options) => {
   on('session.end', async ($, e, next) => {
     owed = undefined
     try { await flush($) } catch {} // the last second of entries, before the process goes
-    return next(e)
+    return next(e) // its trace goes unread: a row pushed after the flush is never saved
   })
 
   // /agentlog stays out of the conversation: its reply is a toast, and prompt.submit drops its line
