@@ -53,6 +53,16 @@ bun plugins/skin-spinners/preview.ts [--skin a,b] [--mode <mode>] [--at <seconds
 
 Draws every theme in 24-bit colour, one row per skin, redrawn every 90 ms until Ctrl-C. `--at` starts at an elapsed time, `--speed` runs the clock faster to see effects that take minutes, `--frames` prints that many frames per skin as lines and exits, `--footer` adds each footer.
 
+## Banners
+
+`banners/` holds a boot banner per skin, all 19: `<skin>.txt`, and a larger `<skin>@2x.txt` for terminals of 120 columns or more, with 24-bit colour baked in (terminal's uses the terminal's own colours). The mod does not draw them. A `claude` wrapper in `~/.bashrc` cats the active skin's file before Claude Code starts, from `~/.config/claude-banners`, a symlink you make by hand:
+
+```
+ln -sfn ~/cc-plugins/plugins/skin-spinners/banners ~/.config/claude-banners
+```
+
+The `.txt` files are committed build output. Edit the art in `banners/make-banners.py` and run `python3 banners/make-banners.py`, which writes next to itself.
+
 ## Develop
 
 A theme is an entry of `THEMES` in `hooks/themes.ts`, built from the helpers in `hooks/effects.ts`; no code outside that file branches on a skin's name. `runs.ts`, `effects.ts`, `themes.ts` and `row.ts` import nothing from Claude Code, so the tests and the preview call them directly. `hooks/register.tsx` is the only file that reads skins' state and draws.
