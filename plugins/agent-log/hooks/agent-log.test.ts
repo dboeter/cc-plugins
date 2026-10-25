@@ -510,7 +510,7 @@ test('a turn header that opens its turn is a stop for the row cursor', async ($,
 })
 
 test('a view, level or filter key pressed in the inspector goes back to the log it changed', async ($, on) => {
-  session(on, 'IV', steps().slice(0, 3))
+  session(on, 'IV', steps().slice(0, 3), { agents: [{ id: 'A', type: 'Explore', description: 'map the hooks', status: 'running' }] }) // a running agent: the tree and its `main` draw
   const m = await pane($)
   await m.press({ key: (await m.find({ type: 'Button', text: /^Step 2$/ }))!.key! })
   expect(await m.find({ key: 'back' })).toBeDefined()
@@ -521,6 +521,11 @@ test('a view, level or filter key pressed in the inspector goes back to the log 
   await m.press({ key: 'lvl' })
   expect(await m.find({ key: 'back' })).toBe(undefined)
   await m.press({ key: 'lvl' })
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Step 2$/ }))!.key! })
+  await m.press({ key: 'fmain' })
+  expect(await m.find({ key: 'back' })).toBe(undefined)
+  expect(await m.find({ type: 'Button', text: /^Step 3$/ })).toBeDefined() // main's rows, at the newest
+  await m.press({ key: 'fclear' }) // the filter is module state
 })
 
 test('ctrl+↑↓ (the turn ↑↓ buttons) put the previous or next prompt\'s turn header at the top', async ($, on) => {

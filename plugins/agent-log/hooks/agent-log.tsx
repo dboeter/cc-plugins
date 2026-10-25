@@ -1698,7 +1698,7 @@ export const register: Register = (on, options) => {
     // folds stay as they were: a fold's id is its first entry's, the same in every view, level and filter that draws it
     // back to the log from the inspector or a page, for a key that changes the log: changed behind them, it would act unseen
     const leave = () => { if (inspect || page) { inspect = undefined; page = undefined; pageBack = false; backTo = undefined; $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}) } } // the engine's window, which the inspector or page may have moved
-    const pick = (id: string) => { leave(); only = only === id ? undefined : id; $.ui.invalidate('ui.render') }
+    const pick = (id: string) => { if (inspect || page) follow = true; leave(); only = only === id ? undefined : id; $.ui.invalidate('ui.render') } // from the inspector, the filtered log at its newest, as only1 lands
     const setView = (v: View) => { leave(); view = view === v ? 'all' : v; follow = true; $.ui.invalidate('ui.render') }
     // `l` toggles the two levels a log is read at: info, notice. Debug's rows open per turn in place (openTurns), error is
     // the setup page's problems; `/agentlog level` still sets all four. From debug or error, back to info
@@ -2019,13 +2019,13 @@ export const register: Register = (on, options) => {
     const MARKS = ['✗ red: broke', '⊘ cyan: refused, by a hook, a rule, the classifier, you or the model', '⚠ yellow: ended early (interrupted, cut off, an agent killed)',
       '■ yellow: a hook stopped the session', '◷ yellow: a slow hook', '↩ blue: a hook\'s feedback to the model', '● green: running now', '✓ an agent finished', '? an agent in a state agent-log does not know',
       '↗ magenta: a place in another project; a dim path with no ↗: ~/.claude or /tmp', '+ a hook added context', '· a hook changed nothing', '∅ found nothing', '≈ estimated',
-      '╭ │ ├ ╰ a call bracketed with its hooks and waits, which sit two cells in: those above it ran before it, those below after', '│ ├ └ an open Agent fold\'s rows, and the agent tree\'s branches', '› the agent the log is filtered to',
+      '╭ │ ├ ╰ a call bracketed with its hooks, waits and server calls, which sit two cells in: those above it ran before it, those below after', '│ ├ └ an open Agent fold\'s rows, and the agent tree\'s branches', '› the agent the log is filtered to',
       'bright: a row that did something; dim: routine, or below the level', '▸ ▾ open, close an Agent fold or a turn\'s hidden rows',
       'other, in a turn\'s split: the engine\'s and plugins\' own work between steps']
     const KEYS: [string, string][] = [['a m h u', 'views: all, what the model did, the harness, outside the root'], ['l', 'level: info or notice (/agentlog level sets debug and error)'],
-      ['o', 'open or close every Agent fold'], ['s', 'the setup page'], ['i', 'this page'], ['j k', 'the row cursor down, up; in the inspector, the next or previous row'], ['↓ ↑', 'the row cursor too'],
+      ['o', 'open or close every Agent fold'], ['s', 'the setup page'], ['i', 'this page'], ['j k', 'the row cursor down, up, over rows and turn headers; in the inspector, the next or previous row'], ['↓ ↑', 'the row cursor too'],
       ['enter', 'open the row under the cursor'], ['e', 'the newest row'], ['^↑ ^↓', 'ctrl+↑ ↓: the previous or next prompt'], ['b', 'back'], ['n p', 'in the inspector: the next or previous row'],
-      ['f', 'in an Agent row\'s inspector: only its agent\'s rows; elsewhere, clear that filter'], ['tab', 'move the focus over the buttons; enter presses one']]
+      ['f', 'in an Agent row\'s inspector: only its agent\'s rows; elsewhere, clear that filter'], ['ctrl+x tab', 'give the pane the keys: until then none of these reach it'], ['tab', 'move the focus over the buttons; enter presses one']]
     // `no agent entries for scout at notice or above · /agentlog level debug: every row · a: all views · main: clear the filter`; only the filters set
     const empty = () => {
       if (!entries.length) return 'no entries yet'
