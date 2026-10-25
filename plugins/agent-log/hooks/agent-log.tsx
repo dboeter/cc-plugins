@@ -121,13 +121,13 @@ export const scriptName = (h: any): string => {
   // a name starts a path segment or word and is no dotfile: `source ~/.vars.sh && ~/hooks/guard.sh` is guard. hook-timer's matches
   return cmd.match(/(?:^|[\s\/"'=;&|(])([\w-][\w.-]*)\.(sh|py|js|mjs|ts|rb|pl)\b/)?.[1] ?? cmd.split(/\s+/)[0]?.split('/').pop() ?? String(h?.type ?? 'hook')
 }
-async function hooksOf($: any): Promise<HookCfg> {
+async function hooksOf($: EngineInterface): Promise<HookCfg> {
   if (hookCfg && hookFresh) return hookCfg
   const cfg: HookCfg = {}
   const add = (hooks: any, plugin?: string) => {
     for (const [ev, groups] of Object.entries<any>(hooks ?? {})) for (const g of Array.isArray(groups) ? groups : []) for (const h of g?.hooks ?? []) (cfg[ev] ??= []).push({ matcher: String(g?.matcher ?? ''), name: plugin ?? scriptName(h), plugin: !!plugin, cmd: String(h?.command ?? h?.prompt ?? h?.type ?? '') })
   }
-  let ok = false, plugins: Record<string, unknown> = {}
+  let ok = false, plugins: object = {} // enabledPlugins as settings types it
   // each source's hooks, which all run: the merged read takes `hooks` whole from the last source that has it, so a project's hid yours
   for (const source of SOURCES) try { add((await $.settings.read({ source }))?.hooks); ok = true } catch {}
   try { plugins = (await $.settings.read())?.enabledPlugins ?? {}; enabled = Object.entries(plugins).filter(([, on]) => on).map(([id]) => id) } catch {}
@@ -185,7 +185,7 @@ export const keepRun = (e: any, event: string, t0: number, now: number) => (r: a
   r.t0 >= t0 - SKEW && r.t1 <= now + SKEW
 const LATE = 30 * 60_000 // ms: how far back a hook's text can have been said: a PreToolUse hook's goes out with the request after its call
 let bigTimes: string | undefined // the session whose hook-times file outgrew what $.fs.read takes (4 MiB): its per-hook times stopped (problemsOf)
-const runsOf = async ($: any, keep: (r: any) => boolean, from: number) => {
+const runsOf = async ($: EngineInterface, keep: (r: any) => boolean, from: number) => {
   let sid: string | undefined, f: string | undefined
   try {
     sid = await $.session.id()
@@ -326,13 +326,13 @@ type Setup = { model?: string; effort?: string | number; mode?: string; limits: 
   runs: Map<string, { n: number; ms: number; errors: number; cancelled: number }>; runsOf?: string } // runsOf: the session id the runs count for
 const setup: Setup = { limits: [], plugins: new Map(), mcp: new Map(), runs: new Map() }
 // what the API alone answers: asked once at session.start (a reload's included), and by the first draw where none ran
-async function refreshSetup($: any): Promise<void> {
+async function refreshSetup($: EngineInterface): Promise<void> {
   setup.asked = true
   try { setup.model ??= await $.session.model() } catch {}
   try { await hooksOf($) } catch {}
 }
 let homeDir: string | undefined // HOME, kept once an answer came: the `~` of the places calls reach
-const homeOf = async ($: any): Promise<string | undefined> => homeDir ??= await $.env.get('HOME').catch(() => undefined)
+const homeOf = async ($: EngineInterface): Promise<string | undefined> => homeDir ??= await $.env.get('HOME').catch(() => undefined)
 // a row's id, stable while its entry lives: an index into the log shifts each time a full log evicts its oldest row
 const ids = new WeakMap<Entry, number>()
 let seq = 0
@@ -716,7 +716,7 @@ let turnAt: number | undefined // when main's running turn began: your prompt's 
 const ahead = new WeakMap<Entry, number>()
 const composed = new Set<string>() // system prompt shapes logged this session; a set, since main and subagents render different prompts in turn. A hot reload empties it, so each logs once more then
 let timer: Timer | undefined // lives while the pane is open
-async function tick($: any): Promise<void> {
+async function tick($: EngineInterface): Promise<void> {
   try {
     if (!(await $.ui.panes()).some((p: any) => p.id === PANE)) { timer?.cancel(); timer = undefined; return } // closed by Esc / ctrl+x x, which bypasses command.run
     const agents: AgentInfo[] = await $.agent.list()
@@ -728,7 +728,7 @@ async function tick($: any): Promise<void> {
 }
 
 // ponytail: 2s poll while pane open, replace if an agent-status event lands in the API
-const startPoll = ($: any) => { timer ??= $.clock.every(2000, () => { tick($) }); note = undefined } // the pane is open: the band's note is read
+const startPoll = ($: EngineInterface) => { timer ??= $.clock.every(2000, () => { tick($) }); note = undefined } // the pane is open: the band's note is read
 // the band's line above the prompt while the pane is closed: the last turn's unusualOf, until the next turn ends or the pane opens
 let note: string | undefined
 
@@ -775,7 +775,7 @@ const track = (at: string, sig: string, via: 'att' | 'ctx', t?: number) => {
 const forks = new Set<string>()
 const inherited = new Map<string, Record<string, number>>() // fork id -> main's counts not yet matched
 const took = new Map<string, Record<string, number>>() // fork id -> the copies it matched, under its own signatures
-async function copied($: any, agent: string | undefined, type: string, origin: string | undefined, bytes: number): Promise<boolean> {
+async function copied($: EngineInterface, agent: string | undefined, type: string, origin: string | undefined, bytes: number): Promise<boolean> {
   if (!agent || closed.has(agent)) return false
   if (!forks.has(agent) && (started.has(agent) || ((await $.agent.list().catch(() => [])) as AgentInfo[]).some(a => a.id === agent))) return false
   let left = inherited.get(agent)
@@ -800,14 +800,14 @@ const saved = () => ({ entries, seen: Object.fromEntries(Object.entries(seen).fi
 
 // session id changes on /clear and resume; a failed load is retried next call. Outside the chain, so a load during a session
 // switch cannot interleave with a push's: loadNow runs only inside mutate, which is why it checks the key again
-const load = async ($: any): Promise<void> => { if (key && `r:${await $.session.id()}` === key) return; return mutate(() => loadNow($)) }
-async function loadNow($: any): Promise<void> {
+const load = async ($: EngineInterface): Promise<void> => { if (key && `r:${await $.session.id()}` === key) return; return mutate(() => loadNow($)) }
+async function loadNow($: EngineInterface): Promise<void> {
   const id = await $.session.id()
   const k = `r:${id}` // r: = redacted format (scrubbed, PEEK-capped text only); older s: keys hold unredacted text and pruneOthers() deletes them
   if (k === key) return
   if (dirty && key) { const tail = { key, value: saved() }; if (!await save($, tail.key, tail.value)) pendingTail = tail } // the old session's unflushed tail, before its key is dropped
   dirty = false
-  const v = await $.store.get(k)
+  const v: any = await $.store.get(k) // any shape a past version saved: checked field by field below
   if (key) { stepOf.clear(); bills = []; unbilled = [] } // the old session's requests; not on the first load, which a step's push can trigger after its pairing was queued
   if (setup.runsOf !== id) { setup.runs.clear(); setup.runsOf = id } // the old session's hook runs; ones the new session's records counted before this load stay
   key = k
@@ -822,7 +822,7 @@ async function loadNow($: any): Promise<void> {
   // awaits this load before its next, and a prune reads every other session
   mutate(() => pruneOthers($)).catch(() => {})
 }
-const ready = ($: any) => key ? Promise.resolve() : load($).catch(() => {}) // a fresh instance loads before the replay window is read
+const ready = ($: EngineInterface) => key ? Promise.resolve() : load($).catch(() => {}) // a fresh instance loads before the replay window is read
 
 function mutate(fn: () => Promise<void>): Promise<void> {
   const run = chain.then(fn)
@@ -841,7 +841,7 @@ let retryTimer: Timer | undefined
 let unsaved = false
 let pendingTail: { key: string; value: unknown } | undefined
 const RETRY = 5000
-async function save($: any, k: string, v: unknown): Promise<boolean> {
+async function save($: EngineInterface, k: string, v: unknown): Promise<boolean> {
   try { await $.store.set(k, v); return true } catch {}
   unsaved = true
   await pruneOthers($).catch(() => {})
@@ -859,7 +859,7 @@ const fit = () => {
   // the rows are gone and it is still over: `seen` alone, a session that logged thousands of signatures. Its rarest go first
   if (n > BUDGET) for (const [g] of Object.entries(seen).sort((a, b) => a[1] - b[1])) { if (JSON.stringify(saved()).length <= BUDGET) break; delete seen[g] }
 }
-function flush($: any): Promise<void> {
+function flush($: EngineInterface): Promise<void> {
   flushTimer?.cancel(); flushTimer = undefined
   return mutate(async () => {
     if (pendingTail && await save($, pendingTail.key, pendingTail.value)) pendingTail = undefined
@@ -867,15 +867,15 @@ function flush($: any): Promise<void> {
     if (unsaved && !pendingTail && !dirty) { unsaved = false; retryTimer?.cancel(); retryTimer = undefined; $.ui.invalidate('ui.render') } // all written
   })
 }
-const touch = ($: any) => { dirty = true; flushTimer ??= $.clock.after(1000, () => { flushTimer = undefined; flush($).catch(() => {}) }) }
+const touch = ($: EngineInterface) => { dirty = true; flushTimer ??= $.clock.after(1000, () => { flushTimer = undefined; flush($).catch(() => {}) }) }
 
 // true when this ask re-reads history already counted (see `seen`); otherwise counts it. Call after ready()
-function replayed($: any, sig: string, agent?: string, via: 'att' | 'ctx' = 'att'): boolean {
+function replayed($: EngineInterface, sig: string, agent?: string, via: 'att' | 'ctx' = 'att'): boolean {
   const at = `${agent ?? 'main'}|${via}`, again = recounted($, sig, agent, at)
   track(at, sig, via, again ? undefined : Date.now())
   return again
 }
-function recounted($: any, sig: string, agent: string | undefined, at: string): boolean {
+function recounted($: EngineInterface, sig: string, agent: string | undefined, at: string): boolean {
   const loop = agent ?? 'main', back = lead.get(at) === sig
   if (owed && !closed.has(loop)) {
     if (blind) return true
@@ -899,7 +899,7 @@ function recounted($: any, sig: string, agent: string | undefined, at: string): 
   return false
 }
 // takes away the row logged at t or later for an ask that turned out to be a replay's. The newest that matches: the replay's copy
-function unlog($: any, sig: string, t: number): void {
+function unlog($: EngineInterface, sig: string, t: number): void {
   mutate(async () => {
     const i = entries.findLastIndex(y => y.kind === 'prompt' && y.t >= t && sigOf(y.type ?? '', y.origin, y.agent, y.bytes ?? 0) === sig)
     if (i < 0) return // counted but never logged (a skipped kind)
@@ -921,7 +921,7 @@ export const markAgain = (xs: Entry[], x: Entry) => {
 // opt.ahead: on a tool row, its PreToolUse context attachments to come. opt.above: on such an attachment, the tool it goes with.
 // opt.after: on a PostToolUse attachment, the tool it followed (its newest call of that name in the loop, by start)
 // opt.start: on a tool row, when its call began
-function push($: any, e: Omit<Entry, 't'>, opt: { ahead?: number; above?: string; after?: string; start?: number } = {}): void {
+function push($: EngineInterface, e: Omit<Entry, 't'>, opt: { ahead?: number; above?: string; after?: string; start?: number } = {}): void {
   const t = opt.start ?? Date.now() // when it happened, not when the chain gets to it: rows are placed by it
   mutate(async () => {
     await loadNow($)
@@ -968,14 +968,14 @@ function evictOne(): Entry {
 }
 
 // called from loadNow on each key change (session.start's first load among them), and when a write is refused
-async function pruneOthers($: any): Promise<void> {
+async function pruneOthers($: EngineInterface): Promise<void> {
   // keep the SESSIONS - 1 other sessions whose newest entry is newest. Insertion order pruned live sessions: every hot reload
   // prunes in every running session, and a long-lived session's key is the oldest. A session idle behind 9 busier ones still goes.
   // And by bytes: keys written before BUDGET can be larger, so the oldest kept ones also go until this session's share is free
   const others: string[] = (await $.store.keys()).filter((k: string) => k !== key)
   const redacted = others.filter(k => k.startsWith('r:'))
   const last = new Map<string, number>(), size = new Map<string, number>()
-  for (const k of redacted) { const v = await $.store.get(k); const es = Array.isArray(v) ? v : v?.entries; last.set(k, Array.isArray(es) ? es.at(-1)?.t ?? 0 : 0); size.set(k, JSON.stringify(v ?? null).length) }
+  for (const k of redacted) { const v: any = await $.store.get(k); const es = Array.isArray(v) ? v : v?.entries; last.set(k, Array.isArray(es) ? es.at(-1)?.t ?? 0 : 0); size.set(k, JSON.stringify(v ?? null).length) }
   const kept = [...redacted].sort((a, b) => last.get(b)! - last.get(a)!).slice(0, SESSIONS - 1)
   let total = kept.reduce((n, k) => n + size.get(k)!, 0)
   while (kept.length && total > 4 * 1024 * 1024 - 256 * 1024 - BUDGET) total -= size.get(kept.pop()!)!
