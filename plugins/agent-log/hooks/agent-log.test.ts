@@ -1759,3 +1759,14 @@ test('a store filled by older, larger sessions frees room for this one on the fi
   expect(db['r:fat0']).toBe(undefined) // the oldest went
   expect(db['r:fat8']).toBeDefined() // the newest stayed
 })
+
+test('a hook that fails after next leaves the call\'s result as next returned it, and says so once in the transcript', async ($, on) => {
+  capture(on, 'FO'); at(on, '/p')
+  const logs: any[] = []
+  on('ui.log', (_$: any, e: any) => { logs.push(e); return { value: undefined } })
+  on('tool.call', () => ({ result: 'ok', text: 'read it' }))
+  const read = (use: string) => ({ tool: 'Read', tool_use_id: use, file_path: 42 }) as any // no string: tool.call's place check throws past next
+  expect(await $.tool.call(read('fo1'))).toEqual({ result: 'ok', text: 'read it' })
+  expect(await $.tool.call(read('fo2'))).toEqual({ result: 'ok', text: 'read it' })
+  expect(logs.filter(l => /tool\.call hook failed/.test(l.text)).map(l => l.to ?? 'transcript')).toEqual(['transcript', 'debug'])
+})

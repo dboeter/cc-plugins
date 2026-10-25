@@ -1,4 +1,4 @@
-import type { AgentInfo, ModelUsage, Register, Timer, TurnStepResult } from 'claude-code'
+import type { AgentInfo, EngineInterface, HookFailure, ModelUsage, Register, Timer, TurnStepResult } from 'claude-code'
 import { scrub } from './scrub'
 
 // Deliberately single-file: every hook and the pane read and mutate the module-level state (entries, seen, owed, chain, the
@@ -978,6 +978,15 @@ const problemsOf = (xs: Entry[]): string[] => {
 }
 
 // === HOOKS ===
+// a hook that throws or overruns fails open: its .catch returns next(e), which is replay-safe, so it is what the call beneath
+// settled to, run once (the engine takes only a function literal there). The first failure of each hook in the process goes to the
+// transcript, the rest to the debug log: one failing on every call must not flood it
+const failed = new Set<string>()
+const logFailure = ($: EngineInterface, hook: string, why: HookFailure) => {
+  $.ui.log(`agent-log's ${hook} hook failed and was passed over: ${why.message ?? why.kind}`, failed.has(hook) ? { to: 'debug' } : undefined)
+  failed.add(hook)
+}
+
 export const register: Register = (on, options) => {
   keep = Math.min(300, Math.max(1, Number(options.keep) || 300)) // the most a session keeps, as plugin.json says; fit() keeps fewer when its rows are large (step rows run to 2 KB)
 
@@ -1008,7 +1017,7 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     if (e.tool_use_id) { checks.set(e.tool_use_id, { check: r.decision, rule: r.rule, reason: r.reason }); checkedAt.set(e.tool_use_id, Date.now()) }
     return r
-  })
+  }).catch(($, e, next) => { logFailure($, 'tool.check', next.error); return next(e) })
 
   // read-only: when a call was decided, and when main's model request closed, for the wait tool.call logs; each request's price
   on('telemetry.log', { to: 'collector' }, async ($, e: any, next) => {
@@ -1049,7 +1058,7 @@ export const register: Register = (on, options) => {
       }
     } catch {}
     return next(e)
-  })
+  }).catch(($, e, next) => { logFailure($, 'telemetry.log', next.error); return next(e) })
 
   on('tool.call', async ($, e, next) => {
     const began = Date.now() // before ready: a fresh instance's first load can take longer than the gap to a parallel call
@@ -1097,7 +1106,7 @@ export const register: Register = (on, options) => {
     const out = pl ? outsideOf(e.tool, { path: a.file_path ?? a.notebook_path ?? a.path, cmd }, ...pl) : undefined
     try { push($, { kind: 'tool', name: e.tool, detail, outcome, status, agent: e.agentId, ms: r.deny ? undefined : Date.now() - t0 - (wait ?? 0), wait, waitFor, peek: why, cmd, pat, check: v?.check, rule: v?.rule, exit: ins?.exit, insight: ins?.text || undefined, child: sp?.id, use: e.tool_use_id, step, via: classified ? 'classifier' : d?.source, out }, { ahead: pre, start: began }) } catch {} // logger never breaks the call
     return r
-  })
+  }).catch(($, e, next) => { logFailure($, 'tool.call', next.error); return next(e) })
 
   // Each model request as it streams: when the first thinking, text or call arrived, how long it thought, the start of what it
   // wrote and thought, the calls it asked for. One `step` row at its end, placed at its start. Chunks pass on untouched, and a
@@ -1247,7 +1256,7 @@ export const register: Register = (on, options) => {
     const exits = name.includes(', ') && runs.some(r => r.exit) ? Object.fromEntries(runs.filter(r => r.exit).map(r => [r.name, r.exit!])) : undefined
     try { push($, { kind: 'hook', name: name || `${event} hook`, origin: event, detail, outcome, status: failed ? 'failed' : undefined, src: 'hook', agent: e.agent_id ?? (e.tool_use_id ? loopOf.get(e.tool_use_id) : undefined), ms, peek: peek(failed && said !== broke ? `${broke}\n${said}` : said), use: e.tool_use_id, each, spoke: spokeN, errs, says, exits }) } catch {}
     return r
-  })
+  }).catch(($, e, next) => { logFailure($, 'classic.*', next.error); return next(e) })
 
   // what reaches the model outside the typed prompt: first-message context blocks (claudeMd, a plugin's own) and engine-injected
   // attachments. The other core blocks reach it as attachments (SENT_AS_ATTACHMENT) and log there
@@ -1320,7 +1329,7 @@ export const register: Register = (on, options) => {
     if ('drop' in r && r.drop) mutate(async () => { words.delete(turnNo); turnNo--; touch($) }).catch(() => {}) // a dropped prompt never entered
     else { busy = true; turnAt = t }
     return r
-  })
+  }).catch(($, e, next) => { logFailure($, 'prompt.submit', next.error); return next(e) })
 
   // rate limits as the engine measures them, for the setup button's `limit 80%`. Context, cost and the limits in full are
   // /context, /cost and /status's; the setup page leaves them out
@@ -1358,7 +1367,7 @@ export const register: Register = (on, options) => {
       touch($)
     }
     return r
-  })
+  }).catch(($, e, next) => { logFailure($, 'session.compact', next.error); return next(e) })
 
   // The band above the prompt, shared with other mods: theirs stays, ours goes on top. Between turns, while the pane is closed
   // (timer lives only while it is open) and the last turn ended unusually
@@ -1417,7 +1426,7 @@ export const register: Register = (on, options) => {
       $.ui.invalidate('ui.render')
     }
     return r
-  })
+  }).catch(($, e, next) => { logFailure($, 'agent.spawn', next.error); return next(e) })
 
   // A plugin's own model call ($.model.complete): one row, under main, named by the plugin; its reply's start, never its prompt.
   // The collector records none of these (none of 100 in the event log carried an api_request), so nothing logs it twice
@@ -1431,7 +1440,7 @@ export const register: Register = (on, options) => {
         tok: u ? [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens, u.output_tokens] : undefined, peek: peek(v.isAnswered ? v.text : [v.reason, v.status, v.error?.message].filter(Boolean).join(' ')) }, { start: t0 })
     } catch {}
     return r
-  })
+  }).catch(($, e, next) => { logFailure($, 'model.complete', next.error); return next(e) })
 
   // A plugin's $.model.fork runs a loop of its own (rows under its id, then a SubagentStop) and raises no agent.spawn. One row for the
   // fork, under main; the fork's id is the SubagentStop that came in while it ran, its last message the reply
@@ -1451,7 +1460,7 @@ export const register: Register = (on, options) => {
       push($, { kind: 'fork', name: by, detail: '', outcome: cost, status, ms: Date.now() - t0, peek: peek(v.isAnswered ? v.text : [v.reason, v.status, v.error].filter(Boolean).join(' ')) })
     } catch {}
     return r
-  })
+  }).catch(($, e, next) => { logFailure($, 'model.fork', next.error); return next(e) })
 
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
@@ -1489,7 +1498,7 @@ export const register: Register = (on, options) => {
       return {}
     }
     return next({ ...e, offset: 0 }) // back's reset of the window the inspector moved: to the top, where it stays
-  })
+  }).catch(($, e, next) => { logFailure($, 'ui.scroll', next.error); return next(e) })
 
   // the ring moved by the person (Tab, the arrows, a click) onto a row's Button: the cursor is there now, so j and k go on from
   // it. A row Button's key is `b` and its line's (`bg12`, `bg12s0` an advisor's, `be12w` a wait's); the plugin's own moves
@@ -1497,7 +1506,7 @@ export const register: Register = (on, options) => {
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     if (e.origin.kind === 'person' && e.element && /^b(g\d+(s\d+)?|e\d+w)$/.test(e.element)) sel = e.element.slice(1)
     return next(e)
-  })
+  }).catch(($, e, next) => { logFailure($, 'ui.focus', next.error); return next(e) })
 
   // === PANE ===
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
