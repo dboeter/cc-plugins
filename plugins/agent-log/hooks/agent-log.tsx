@@ -234,12 +234,14 @@ export const hookName =(cfg: HookCfg, event: string, target?: string, text?: str
   const fit = (cfg[event] ?? []).filter(h => fits(h.matcher, target))
   const names = (hs: typeof fit) => [...new Set(hs.map(h => h.name))]
   if (!text?.trim()) return names(fit).join(', ')
-  const has = (s: string) => (n: string) => new RegExp(`(^|[^\\w-])${esc(n)}([^\\w-]|$)`).test(s) // whole name: `guard` must not match `contract-guard`
+  const at = (s: string) => (n: string) => s.search(new RegExp(`(^|[^\\w-])${esc(n)}([^\\w-]|$)`)) // whole name: `guard` must not match `contract-guard`
+  const has = (s: string) => (n: string) => at(s)(n) >= 0
   // the first line past the engine's framing (`SessionStart:clear hook success: `), its paths cut to file names: test-gate's
   // `[…/hooks/guard/test-gate.sh]: test-gate: …` (pre-2026-10 layout) must not name guard. Lines below can quote other hooks (a file list, a summary)
   const head = first(text.trim().replace(FRAME, '')).replace(/\S*\//g, '')
-  const own = names(fit.filter(h => !h.plugin)).filter(has(head))
-  if (own.length) return own.join(', ')
+  // several named: the hook names itself first (`lint: run format first`); the others it names are what it talks about
+  const own = names(fit.filter(h => !h.plugin)).filter(has(head)).sort((a, b) => at(head)(a) - at(head)(b))
+  if (own.length) return own[0]!
   const plugins = names(fit.filter(h => h.plugin))
   const said = plugins.filter(has(text))
   if (said.length) return said.join(', ')

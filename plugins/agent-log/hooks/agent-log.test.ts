@@ -22,6 +22,10 @@ test('silent run names every hook whose matcher fits the target', () => {
   expect(hookName(cfg, 'SessionStart', 'clear')).toBe('install-check, unicode-scan, preflight-context, herdr-agent-state, codex, context-mode')
 })
 
+test('a head line naming several of your hooks is credited to the one it names first', () => {
+  expect(hookName({ Stop: [{ matcher: '', name: 'format' }, { matcher: '', name: 'lint' }] }, 'Stop', undefined, 'lint: run format first')).toBe('lint')
+})
+
 test('no fitting hook is empty, so the event can be skipped', () => {
   expect(hookName(cfg, 'PreToolUse', 'SendUserMessage')).toBe('')
   expect(hookName(cfg, 'PostToolBatch')).toBe('')
