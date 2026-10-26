@@ -171,7 +171,7 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   expect(keys.some(l => /^i +this page$/.test(l))).toBe(true)
   expect(keys.some(l => /^⊘ cyan: refused, .* or the model$/.test(l))).toBe(true)
   expect(keys.some(l => /^\? an agent in a state/.test(l))).toBe(true)
-  expect(keys.some(l => /^│ ├ └ an open Agent fold's rows/.test(l))).toBe(true)
+  expect(keys.some(l => /^│ ├ ╰ an open Agent fold's rows/.test(l))).toBe(true)
   await m.press({ key: 'legend' })
   expect(ruleAt(await frame(m, 100, 'back from the keys page'))).toBe(2)
   // an Agent row opens its inspector, whose f filters the log to its agent

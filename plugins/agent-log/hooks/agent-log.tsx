@@ -1714,7 +1714,7 @@ export const register: Register = (on, options) => {
     for (const a of agents) { const p = a.parentId && listed.has(a.parentId) ? a.parentId : 'main'; kids.set(p, [...(kids.get(p) ?? []), a]) }
     const isRootMate = (a: AgentInfo) => a.type === 'teammate' && (kids.get('main') ?? []).includes(a)
     const now = Date.now()
-    // The header's agents, each under its parent on the log's tree guides: `├ ` or the last sibling's `└ `, a parent's line carried
+    // The header's agents, each under its parent on the log's tree guides: `├ ` or the last sibling's `╰ `, a parent's line carried
     // on (`│ `) while its siblings follow; drawn as log rows below (agentRow), so nesting reads as it does in an open fold.
     // Finished agents fold into the toggle row unless showDone. An agent stays listed while it or one below it runs, and while it is the filter
     const tree: [AgentInfo | typeof TEAM, string][] = []
@@ -1724,7 +1724,7 @@ export const register: Register = (on, options) => {
       const xs = showDone ? all : all.filter(a => a === TEAM ? (kids.get('main') ?? []).filter(isRootMate).some(live) : live(a))
       xs.forEach((a, j) => {
         const last = j === xs.length - 1
-        tree.push([a, rest + (last ? '└ ' : '├ ')])
+        tree.push([a, rest + (last ? '╰ ' : '├ ')])
         walk(a === TEAM ? (kids.get('main') ?? []).filter(isRootMate) : kids.get(a.id) ?? [], rest + (last ? '  ' : '│ '))
       })
     }
@@ -1955,7 +1955,7 @@ export const register: Register = (on, options) => {
         // Bright is what did something: a row whose cell has a colour (it broke, was refused, ended early or slow) or bright().
         // A row below the level (a turn's hidden rows, opened in place) is dim whatever it did
         const dim = lvl(x) < level || (!c[1] && !bright(x))
-        // the rows share one twig: on a fold's last part (`└ `) only the last row closes the guide, the ones above it carry it on
+        // the rows share one twig: on a fold's last part (`╰ `) only the last row closes the guide, the ones above it carry it on
         // (`├ `), or a wait above the call ends the line a row early
         p = { target: x, members: [x], nested: [], parts: [],
           head: (rail, who, press) => {
@@ -1963,14 +1963,14 @@ export const register: Register = (on, options) => {
               ...(waits(x) ? [(r: string) => waitLine(x, r, g.wait)] : []),
               (r: string) => line({ k, act: hooked ? action(x, true) : actOf(x), tail: byOf(x), press, st: c, who: hooked ? `  ${who}` : who, rail: r, link: g.link, dim, away: awayOf([x]) }),
               ...server,
-            ], mid = rail.endsWith('└ ') ? `${rail.slice(0, -2)}├ ` : rail
+            ], mid = rail.endsWith('╰ ') ? `${rail.slice(0, -2)}├ ` : rail
             return rs.map((f, i) => f(i < rs.length - 1 ? mid : rail))
           } }
       }
       memo.set(g, p)
       return p
     }
-    // One group's rows: its own on the rail `own`; an open fold's below it, each part on `rest` and a twig, `├ ` or the last's `└ `,
+    // One group's rows: its own on the rail `own`; an open fold's below it, each part on `rest` and a twig, `├ ` or the last's `╰ `,
     // a fold inside continuing the line (`│ `) while siblings follow it. Pressed, a row opens its inspector; only its ▸ opens
     // its fold
     const drawGroup = (g: Group, own: string, rest: string, who: string): any[] => {
@@ -1984,7 +1984,7 @@ export const register: Register = (on, options) => {
         $.ui.invalidate('ui.render')
       }] : undefined
       const out = [head(own, who, () => show(target), disc)].flat()
-      if (open && disc) parts.forEach((p, j) => out.push(...p(rest + (j < parts.length - 1 ? '├ ' : '└ '), rest + (j < parts.length - 1 ? '│ ' : '  '))))
+      if (open && disc) parts.forEach((p, j) => out.push(...p(rest + (j < parts.length - 1 ? '├ ' : '╰ '), rest + (j < parts.length - 1 ? '│ ' : '  '))))
       spans.set(k, out.length)
       return out
     }
@@ -2021,7 +2021,7 @@ export const register: Register = (on, options) => {
     const MARKS = ['✗ red: broke', '⊘ cyan: refused, by a hook, a rule, the classifier, you or the model', '⚠ yellow: ended early (interrupted, cut off, an agent killed)',
       '■ yellow: a hook stopped the session', '◷ yellow: a slow hook', '↩ blue: a hook\'s feedback to the model', '● green: running now', '✓ an agent finished', '? an agent in a state agent-log does not know',
       '↗ magenta: a place in another project; a dim path with no ↗: ~/.claude or /tmp', '+ a hook added context', '· a hook changed nothing', '∅ found nothing', '≈ estimated',
-      '╭ │ ├ ╰ a call bracketed with its hooks, waits and server calls, which sit two cells in: those above it ran before it, those below after', '│ ├ └ an open Agent fold\'s rows, and the agent tree\'s branches', '› the agent the log is filtered to',
+      '╭ │ ├ ╰ a call bracketed with its hooks, waits and server calls, which sit two cells in: those above it ran before it, those below after', '│ ├ ╰ an open Agent fold\'s rows, and the agent tree\'s branches', '› the agent the log is filtered to',
       'bright: a row that did something; dim: routine, or below the level', '▸ ▾ open, close an Agent fold or a turn\'s hidden rows',
       'other, in a turn\'s split: the engine\'s and plugins\' own work between steps']
     const KEYS: [string, string][] = [['a m h u', 'views: all, what the model did, the harness, outside the root'], ['l', 'level: info or notice (/agentlog level sets debug and error)'],

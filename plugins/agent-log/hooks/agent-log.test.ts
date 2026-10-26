@@ -617,8 +617,8 @@ test('a fold opens where it was pressed, its rows on tree guides, each opening i
   expect(await lineOf(m, row)).toBe(at)
   expect(await m.find({ text: /^Step 23$/ })).toBeDefined()
   expect(await m.find({ text: /^Read c\.ts$/ })).toBeDefined()
-  expect((await m.findAll({ type: 'Text', text: /^├ $/ })).length).toBe(2) // the agent's reads, the last on └
-  expect((await m.findAll({ type: 'Text', text: /^└ $/ })).length).toBe(1)
+  expect((await m.findAll({ type: 'Text', text: /^├ $/ })).length).toBe(2) // the agent's reads, the last on ╰
+  expect((await m.findAll({ type: 'Text', text: /^╰ $/ })).length).toBe(1)
   expect(await m.find({ text: /^Step 30$/ })).toBe(undefined)
   expect(await m.find({ key: 'jump' })).toBeDefined()
   await m.press({ key: (await m.find({ type: 'Button', text: /^Read a\.ts$/ }))!.key! }) // a row without ▸: its inspector
@@ -637,7 +637,7 @@ test('a fold\'s last call with a wait above it: the guide runs on to the call, w
   await m.press({ key: (await m.find({ type: 'Button', text: /^▸$/ }))!.key! })
   expect(await m.find({ type: 'Button', text: /^Waiting for the auto-mode classifier$/ })).toBeDefined()
   expect((await m.findAll({ type: 'Text', text: /^├ $/ })).length).toBe(3) // two reads and the wait
-  expect((await m.findAll({ type: 'Text', text: /^└ $/ })).length).toBe(1) // the call alone
+  expect((await m.findAll({ type: 'Text', text: /^╰ $/ })).length).toBe(1) // the call alone
 })
 
 test('the header hangs each agent under its parent on the log\'s tree guides', async ($, on) => {
@@ -645,9 +645,9 @@ test('the header hangs each agent under its parent on the log\'s tree guides', a
   session(on, 'H', [], { agents: [run('A', 'implement'), run('A1', 'scout', 'A'), run('A2', 'review', 'A'), run('B', 'docs')] })
   const m = await pane($)
   await m.press({ key: 'fdone' }) // three agent rows until the list opens
-  // main, then A (more follow: ├), its children on A's line carried on (│), B last (└)
-  const rails = (await m.findAll({ type: 'Text', text: /^[│├└ ]+$/ })).map(t => String(t.text)).filter(t => /[│├└]/.test(t))
-  expect(rails).toEqual(['├ ', '│ ├ ', '│ └ ', '└ '])
+  // main, then A (more follow: ├), its children on A's line carried on (│), B last (╰)
+  const rails = (await m.findAll({ type: 'Text', text: /^[│├╰ ]+$/ })).map(t => String(t.text)).filter(t => /[│├╰]/.test(t))
+  expect(rails).toEqual(['├ ', '│ ├ ', '│ ╰ ', '╰ '])
 })
 
 test('opening the newest fold while following shows it, its row staying on screen', async ($, on) => {
