@@ -121,7 +121,7 @@ check() {
 own() {
   local name=$1 payload=$2 want=$3 d=$tmp/runs/$1.own why=(); shift 4
   rundir "$d"
-  env XDG_RUNTIME_DIR="$d/xdg" HOME="$d/home" HT_IN="$d/in" "$tmp/new/hook-timer" "$@" <"$payload" >/dev/null 2>&1
+  env XDG_RUNTIME_DIR="$d/xdg" HOME="$d/home" TMPDIR="$d/tmp" HT_IN="$d/in" "$tmp/new/hook-timer" "$@" <"$payload" >/dev/null 2>&1
   [[ $(cat "$d"/home/.claude/hook-times/*.jsonl 2>/dev/null | jq -s "length == 1 and (.[0] | $want)") == true ]] ||
     why+=("record $(cat "$d"/home/.claude/hook-times/*.jsonl 2>/dev/null)")
   report "$name" "${why[@]}"
@@ -220,7 +220,7 @@ prune() {
   rundir "$d"; t=$d/home/.claude/hook-times; mkdir -p "$t"
   : >"$t/fresh.jsonl"; touch -d '15 days ago' "$t/stale.jsonl"
   [[ -n ${3-} ]] && echo '{}' >"$t/s-1.jsonl"
-  env XDG_RUNTIME_DIR="$d/xdg" HOME="$d/home" HT_IN="$d/in" "$tmp/new/hook-timer" "$h/guard.sh" <"$p/pre" >/dev/null 2>&1
+  env XDG_RUNTIME_DIR="$d/xdg" HOME="$d/home" TMPDIR="$d/tmp" HT_IN="$d/in" "$tmp/new/hook-timer" "$h/guard.sh" <"$p/pre" >/dev/null 2>&1
   for i in $(seq 20); do [[ -e $t/stale.jsonl ]] || break; sleep 0.1; done
   [[ $([[ -e $t/stale.jsonl ]] && echo kept || echo gone) == "$want" ]] || why+=("stale file not $want")
   [[ -e $t/fresh.jsonl ]] || why+=("fresh file deleted")

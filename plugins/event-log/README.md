@@ -7,7 +7,7 @@ The raw record of a session: every event that crosses Claude Code, in the order 
 ## What it records
 
 - **Rows**: each event gets an `enter` row before its hook chain runs and an `exit` row after, so nested events land between the two and the order on disk is the order things happened. An exit row carries the result or the error and how long the chain took.
-- **Payloads**: in full, each string cut at 16 KiB. Secret-shaped text (tokens, keys, passwords, `Authorization` headers, webhook and presigned URLs) is masked as `***` on a best-effort basis.
+- **Payloads**: in full, each string cut at 16 KiB. Secret-shaped text (tokens, keys, passwords, values named `*_PASS` or `*_PWD`, `Authorization` headers, webhook and presigned URLs) is masked as `***` on a best-effort basis.
 - **Counted, not stored**: screen events (`ui.*`, apart from `ui.fault`), typing and autocomplete, clock ticks, and plugins' read-only queries. A tally row per flush says how many there were.
 
 ## Install
