@@ -209,11 +209,12 @@ export const hookTimes = (cfg: HookCfg) => {
 const wraps = (cfg: HookCfg, event: string, target?: string) => (cfg[event] ?? []).some(h => timed(h) && fits(h.matcher, target))
 // code points hook-timer keeps of a say (its `line`, jq .[0:80]): a say that long may be cut mid-word, so it matches as a prefix only
 const CUT = 80
+const WORD = /[\p{L}\p{N}_]/u // a word's character, in any script's letters: `ok` is not `oké`
 // the hook that handed back a text: the wrapped run whose first line starts one of its lines, past the engine's framing, as whole
 // words (`ok` is not `okay …`) unless the say was cut
 const says = (say: string, l: string) => {
   const s = say.trim()
-  return l.startsWith(s) && ([...say].length >= CUT || !/[\p{L}\p{N}_]$/u.test(s) || !/^[\p{L}\p{N}_]/u.test(l.slice(s.length))) // any script's letters: `ok` is not `oké`
+  return l.startsWith(s) && ([...say].length >= CUT || !WORD.test(s.at(-1) ?? '') || !WORD.test(l[s.length] ?? ''))
 }
 export const speaker = (runs: Run[], text: string) => {
   const lines = text.split('\n').map(l => l.trim().replace(FRAME, ''))
@@ -2143,7 +2144,7 @@ export const register: Register = (on, options) => {
       const outs = [...xs(x => !!x.out).reduce((m, x) => m.set(x.out!, (m.get(x.out!) ?? 0) + 1), new Map<string, number>())].sort((p, q) => q[1] - p[1])
       // the key column fits the longest key (hook events like PermissionRequest, plugin and server names), capped at a third of the
       // pane; a key past the cap is cut, never wrapped into its value
-      const keys = ['calls outside', ...events, ...(setup.plugins.size ? setup.plugins.keys() : enabled.map(id => id.split('@')[0]!))]
+      const keys = ['calls outside', ...(hookCfg ? ['per-hook times'] : []), ...events, ...(setup.plugins.size ? setup.plugins.keys() : enabled.map(id => id.split('@')[0]!))]
       const keyW = Math.max(15, Math.min(Math.max(...keys.map(k => k.length)) + 2, Math.floor(cols / 3)))
       const kw = (k: string, v: string, id = k) => <Box key={`k${id}`} flexDirection="row"><Box flexShrink={0} width={keyW}><Text dimColor wrap="truncate-end">{fit(k, keyW - 2)}</Text></Box><Text wrap="wrap">{v}</Text></Box>
       const title = (k: string, t: string) => [<Text key={`gap${k}`}> </Text>, <Text key={`t${k}`} weight="semibold">{t}</Text>]

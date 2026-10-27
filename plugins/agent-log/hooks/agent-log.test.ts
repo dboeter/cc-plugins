@@ -1658,7 +1658,7 @@ test('the setup page says whether hook-timer times your settings hooks; plugins\
 // settings whose hooks hooksOf reads afresh: a ConfigChange drops the one read before (module state). The function it returns
 // sets that back: a read that fails, as with no settings.read fake, so the next test's hooksOf reads again. settings is the user
 // source, more the others by name; the merged read takes each top-level key from the last source that has it, as the engine's does
-const hooksFrom = async ($: any, on: any, settings: () => object, files: Record<string, () => string> = {}, more: Record<string, () => object> = {}) => {
+const withSettings = async ($: any, on: any, settings: () => object, files: Record<string, () => string> = {}, more: Record<string, () => object> = {}) => {
   let live = true
   on('classic.*', () => ({}) as any)
   on('env.get', () => ({ value: '/home/u' }))
@@ -1674,9 +1674,10 @@ const hooksFrom = async ($: any, on: any, settings: () => object, files: Record<
 test('the setup page shows per-hook times off, then on once a settings hook runs through hook-timer', async ($, on) => {
   session(on, 'PH')
   let cmd = '$HOME/.claude/hooks/guard.sh'
-  const reset = await hooksFrom($, on, () => ({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: cmd }] }] } }))
+  const reset = await withSettings($, on, () => ({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: cmd }] }] } }))
   const m = await pane($, 60, 160)
   await m.press({ key: 'fsetup' })
+  expect(await m.find({ type: 'Text', text: 'per-hook times' })).toBeDefined()
   expect(await m.find({ text: /^off: no settings hook runs through hook-timer/ })).toBeDefined()
   await m.press({ key: 'back' })
   cmd = `$HOME/.claude/hooks/hook-timer ${cmd}`
@@ -1690,7 +1691,7 @@ test('the setup page shows per-hook times off, then on once a settings hook runs
 test('a hook-times file over the 4 MiB a read takes shows on the setup page as per-hook times stopped', async ($, on) => {
   session(on, 'BG')
   on('fs.stat', () => ({ value: { kind: 'file', size: 5 * 1024 * 1024, mtimeMs: 0, isLink: false } }))
-  const reset = await hooksFrom($, on, () => ({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: '$HOME/.claude/hooks/hook-timer $HOME/.claude/hooks/plan.sh' }] }] } }),
+  const reset = await withSettings($, on, () => ({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: '$HOME/.claude/hooks/hook-timer $HOME/.claude/hooks/plan.sh' }] }] } }),
     { '/home/u/.claude/hook-times/BG.jsonl': () => { throw new Error('over 4 MiB') } })
   await ($ as any).classic.Stop({ stop_hook_active: false })
   const m = await pane($, 60, 160)
@@ -1704,18 +1705,18 @@ test('a SubagentStop row keeps its own agent\'s hook-timer run when another agen
   const db = capture(on, 'SA')
   const T = '$HOME/.claude/hooks/hook-timer $HOME/.claude/hooks/'
   const run = (name: string, agent: string) => JSON.stringify({ name, event: 'SubagentStop', use: null, agent, t0: Date.now() - 20, t1: Date.now(), exit: 0, say: null })
-  const reset = await hooksFrom($, on, () => ({ hooks: { SubagentStop: [{ matcher: 'Explore', hooks: [{ type: 'command', command: `${T}stop-check.sh` }] }, { matcher: 'Plan', hooks: [{ type: 'command', command: `${T}plan-check.sh` }] }] } }),
+  const reset = await withSettings($, on, () => ({ hooks: { SubagentStop: [{ matcher: 'Explore', hooks: [{ type: 'command', command: `${T}stop-check.sh` }] }, { matcher: 'Plan', hooks: [{ type: 'command', command: `${T}plan-check.sh` }] }] } }),
     { '/home/u/.claude/hook-times/SA.jsonl': () => [run('plan-check', 'a2'), run('stop-check', 'a1')].join('\n') }) // a2, a Plan agent, stopped meanwhile
   await ($ as any).classic.SubagentStop({ agent_id: 'a1', agent_type: 'Explore', stop_hook_active: false })
   const rows = (await flushed($, 'SA', db)).filter(x => x.origin === 'SubagentStop')
-  expect(rows.map(x => x.name)).toEqual(['stop-check'])
+  expect(rows.map(x => x.name)).toEqual(['stop-check']) // the name only: a lone hook's row keeps the engine's chain time, not its run's
   await reset()
 })
 
 test('your hooks and a project\'s on one event are both named, though the project\'s settings carry hooks too', async ($, on) => {
   const db = capture(on, 'US')
   const hook = (script: string) => ({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: `$HOME/.claude/hooks/${script}` }] }] } })
-  const reset = await hooksFrom($, on, () => hook('format.sh'), {}, { project: () => hook('lint.sh') })
+  const reset = await withSettings($, on, () => hook('format.sh'), {}, { project: () => hook('lint.sh') })
   await ($ as any).classic.Stop({ stop_hook_active: false })
   expect((await flushed($, 'US', db)).filter(x => x.origin === 'Stop').map(x => x.name)).toEqual(['format, lint'])
   await reset()
@@ -1723,7 +1724,7 @@ test('your hooks and a project\'s on one event are both named, though the projec
 
 test('an enabled plugin\'s hooks.json names its hooks by the plugin', async ($, on) => {
   const db = capture(on, 'PL')
-  const reset = await hooksFrom($, on, () => ({ enabledPlugins: { 'tidy@market': true } }), {
+  const reset = await withSettings($, on, () => ({ enabledPlugins: { 'tidy@market': true } }), {
     '/home/u/.claude/plugins/installed_plugins.json': () => JSON.stringify({ plugins: { 'tidy@market': [{ installPath: '/plugins/tidy' }] } }),
     '/plugins/tidy/hooks/hooks.json': () => JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'node stop.mjs' }] }] } }),
   })
