@@ -13,7 +13,7 @@ type Src = 'engine' | 'hook' | 'plugin' // who authored injected text: the engin
 // cmd: a Bash call's full scrubbed command, shown in the inspector while the row shows its description. pat: a Grep's or Glob's
 // pattern, scrubbed and cut to 80, which its row reads (`Search "secs\(" in hooks`)
 // check/rule: tool.check's verdict on a tool call and the settings rule that decided it, as written (`Bash(git push:*)`); no rule = a mode, hook or the tool's own check
-// via: who settled the call, as the collector's tool_decision names it (`config`, `hook`, `user_temporary`, `user_reject`). The engine raises collector records with export on or off (2.1.310)
+// via: who settled the call, as the collector's tool_decision names it (`config`, `hook`, `user_temporary`, `user_reject`), or viaOf's `classifier` (its refusal) and `auto` (a `config` decision in auto mode: settings or the classifier). The engine raises collector records with export on or off (2.1.310)
 // peek: the first PEEK chars of the injected text, error, or deny/block reason, secret-scrubbed; never the person's typed prompt
 // turn: the number of your prompt the entry followed (`#N` = since your Nth prompt; 0 = before your first, drawn `start`); a subagent's entries carry the same number. Absent on entries from before turns were counted
 // status: a tool call's result as data, so views and folds never parse the `outcome` label; entries from before it derive one (stat).
@@ -396,9 +396,13 @@ const STOPPED: Record<string, string> = { max_tokens: 'Cut off at the output lim
 const SIDE: Record<string, string> = { prompt_suggestion: 'prompt suggestion', agent_summary: 'agent progress summary', generate_session_title: 'session title', web_search_tool: 'web search', side_question: 'side question', compact: 'compaction' }
 const CHATTER = new Set(['prompt_suggestion', 'agent_summary', 'generate_session_title'])
 // an `ask` settled, by the collector's decision source
-const VIA: Record<string, string> = { user_temporary: 'you allowed it once', user_permanent: 'you allowed it from now on', user_reject: 'you rejected it', user_abort: 'you interrupted it', hook: 'a PermissionRequest hook decided', config: 'your settings decided', classifier: 'the auto-mode classifier decided' }
+const VIA: Record<string, string> = { user_temporary: 'you allowed it once', user_permanent: 'you allowed it from now on', user_reject: 'you rejected it', user_abort: 'you interrupted it', hook: 'a PermissionRequest hook decided', config: 'your settings decided', classifier: 'the auto-mode classifier decided', auto: 'your settings or the auto-mode classifier decided; the log cannot tell which' }
 // auto mode's classifier refusing a call: the error result the model reads instead of the call's output
 const CLASSIFIED = /^Permission for this action was denied by the Claude Code auto mode classifier/
+// who settled a call (its via), one reading for the inspector and the wait's name. Auto mode's classifier answers as `config`, as a
+// rule does, and the collector records no request of its own (beside a real 37 s refusal, main's were the only ones): only its
+// refusal's error result names it. Any other `config` decision in auto mode is `auto`, either's
+export const viaOf = (source: string | undefined, mode: string | undefined, text = '') => CLASSIFIED.test(text) ? 'classifier' : source === 'config' && mode === 'auto' ? 'auto' : source
 // the error results a refused call returns: a denied permission prompt (or one no one could answer, headless), you rejecting it,
 // the classifier, the guard on the session's working directories. Read from the text too: a decision record can be missing (an
 // older engine), and a refusal's record can come late
@@ -1073,7 +1077,7 @@ export const register: Register = (on, options) => {
       const y = entries.findLast(y => y.kind === 'tool' && y.use === a.tool_use_id)
       decided.delete(a.tool_use_id)
       if (!y || y.via) return
-      y.via = a.source
+      y.via = viaOf(a.source, setup.mode)
       if (a.decision === 'reject') { y.status = 'denied'; y.outcome = 'deny'; y.insight = undefined; y.exit = undefined }
       touch($)
     }).catch(() => {})
@@ -1136,13 +1140,12 @@ export const register: Register = (on, options) => {
     const wait = at != null && d && d.t - at >= WAIT ? d.t - at : undefined
     // main's message closed between the check and the call's end: the decision waited for it. Not up to the decision: the engine
     // records the request a few ms after deciding. Main's next request starts only once its calls end, so none closes in between
-    // by chance. Anything else is named by the decision's source alone: `user_temporary`, `user_reject` and their kin are the person
-    // Auto mode's classifier answers as `config`, as a rule does, but a rule takes a millisecond and the classifier a model request:
-    // a config decision that waited, in auto mode, is the classifier's. Its refusal names it in the error result
+    // by chance. Anything else is named by the decision's source alone: `user_temporary`, `user_reject` and their kin are the person.
+    // A classifier refusal is the classifier's wait even when main's message closed inside it: it can sit 37 s past that close
     const text = typeof r.text === 'string' ? r.text : '', refused = d?.decision === 'reject' || (!!r.isError && DENIED.test(text))
-    const classified = CLASSIFIED.test(text) || (d?.source === 'config' && wait != null && setup.mode === 'auto')
-    const waitFor = wait == null ? undefined : !e.agentId && streamEnd >= at! && streamEnd <= Date.now() ? STREAMING
-      : d?.source?.startsWith('user') ? ASKED : classified ? 'the auto-mode classifier' : `the permission decision${d?.source ? ` (${d.source})` : ''}`
+    const via = viaOf(d?.source, setup.mode, text)
+    const waitFor = wait == null ? undefined : via === 'classifier' ? 'the auto-mode classifier' : !e.agentId && streamEnd >= at! && streamEnd <= Date.now() ? STREAMING
+      : d?.source?.startsWith('user') ? ASKED : `the permission decision${d?.source ? ` (${d.source})` : ''}`
     const sp = e.tool === 'Agent' ? spawned.find(s => s.use === e.tool_use_id) : undefined // the spawn ran inside next
     if (sp) spawned = spawned.filter(s => s !== sp)
     // a rejected decision is a refusal, whether it reaches the call as a deny or as the error result the model reads
@@ -1153,7 +1156,7 @@ export const register: Register = (on, options) => {
     const status: Status = r.deny || refused || hookBlocked ? 'denied' : ins?.quiet ? 'nomatch' : r.isError ? 'failed' : 'ok'
     const pl = await place, a = e as any
     const out = pl ? outsideOf(e.tool, { path: a.file_path ?? a.notebook_path ?? a.path, cmd }, ...pl) : undefined
-    try { push($, { kind: 'tool', name: e.tool, detail, outcome, status, agent: e.agentId, ms: r.deny ? undefined : Date.now() - t0 - (wait ?? 0), wait, waitFor, peek: why, cmd, pat, check: v?.check, rule: v?.rule, exit: ins?.exit, insight: ins?.text || undefined, child: sp?.id, use: e.tool_use_id, step, via: classified ? 'classifier' : d?.source, out }, { ahead: pre, start: began }) } catch {} // logger never breaks the call
+    try { push($, { kind: 'tool', name: e.tool, detail, outcome, status, agent: e.agentId, ms: r.deny ? undefined : Date.now() - t0 - (wait ?? 0), wait, waitFor, peek: why, cmd, pat, check: v?.check, rule: v?.rule, exit: ins?.exit, insight: ins?.text || undefined, child: sp?.id, use: e.tool_use_id, step, via, out }, { ahead: pre, start: began }) } catch {} // logger never breaks the call
     return r
   }).catch(($, e, next) => { logFailure($, 'tool.call', next.error); return next(e) })
 
