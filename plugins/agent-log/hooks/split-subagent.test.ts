@@ -1,5 +1,5 @@
 import { test, expect } from 'claude-code/testing'
-import { ASKED, splitOf } from './agent-log'
+import { ASKED, STREAMING, splitOf } from './agent-log'
 import { x } from './test-helpers' // a grandchild's rows carry its own id as agent
 
 test('a foreground agent\'s permission prompt, decision waits and hooks split as main\'s own do', () => {
@@ -44,4 +44,14 @@ test('a subagent\'s decision wait during which its own request closed stays agen
   expect(splitOf([agent, x(9000, 'step', 3000, { agent: 'B' }), wait(config)] as any, 0, 30_000)).toEqual([0, 5000, 0, 0, 25_000, 0, 0]) // another loop's request
   expect(splitOf([agent, wait(config)] as any, 0, 30_000)).toEqual([0, 5000, 0, 0, 25_000, 0, 0])
   expect(splitOf([agent, wait({ waitFor: 'the permission decision (hook)' })] as any, 0, 30_000)).toEqual([0, 5000, 0, 0, 25_000, 0, 0])
+})
+
+test('a wait you answered is yours even when the loop\'s request closed inside it; a subagent\'s question with no decision record too', () => {
+  const agent = x(0, 'tool', 30_000, { name: 'Agent', child: 'A' })
+  const asked = x(10_000, 'tool', 100, { name: 'Bash', agent: 'A', wait: 5000, waitFor: ASKED }) // 10000-15000
+  expect(splitOf([agent, x(9000, 'step', 3000, { agent: 'A' }), asked] as any, 0, 30_000)).toEqual([5000, 0, 0, 0, 25_000, 0, 0])
+  // main's row from before ASKED won: labelled STREAMING, but you decided it
+  expect(splitOf([x(0, 'tool', 1000, { name: 'Bash', wait: 5000, waitFor: STREAMING, via: 'user_temporary' })] as any, 0, 6000)).toEqual([5000, 0, 0, 0, 0, 1000, 0])
+  const question = x(10_000, 'tool', 8000, { name: 'AskUserQuestion', agent: 'A' }) // no wait: the answer sits in its run
+  expect(splitOf([agent, question] as any, 0, 30_000)).toEqual([8000, 0, 0, 0, 22_000, 0, 0])
 })

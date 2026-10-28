@@ -1,7 +1,7 @@
 // Who decided a call in auto mode, and what its wait was for: one reading of the same evidence (viaOf). The mode is module state:
 // each test sets it back in a finally
 import { test, expect } from 'claude-code/testing'
-import { STREAMING, viaOf } from './agent-log'
+import { ASKED, STREAMING, viaOf } from './agent-log'
 import { capture, flushed, pane, wait } from './test-helpers'
 
 const collect = ($: any, event: string, attributes: object) => $.telemetry.log({ to: 'collector', event, attributes })
@@ -112,4 +112,21 @@ test('an AskUserQuestion\'s or ExitPlanMode\'s wait reads as yours, however it w
     await m.press({ key: (await m.find({ type: 'Button', text: /Waiting for you to answer the question/ }))!.key! })
     expect(await m.find({ text: /for you to answer the question, before it ran$/ })).toBeDefined()
   } finally { await m.unmount() }
+})
+
+test('a prompt you answered after main\'s message closed waited on you, not the model', async ($, on) => {
+  const db = capture(on, 'DU')
+  on('tool.check', asks())
+  on('telemetry.log', () => ({ value: undefined }))
+  on('tool.call', async (_$, e: any) => {
+    if (e.tool_use_id !== 'du1') return { result: 'ok', text: 'ok' }
+    await ($ as any).tool.check({ tool: e.tool, input: {}, tool_use_id: e.tool_use_id })
+    await collect($, 'api_request', { query_source: 'repl_main_thread' }) // the message closes just after the check
+    await wait(150) // you read the prompt
+    await collect($, 'tool_decision', { tool_use_id: 'du1', source: 'user_temporary' })
+    return { result: 'ok', text: 'ok' }
+  })
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'duw', command: 'true', description: 'Warm up' } as any)
+  await $.tool.call({ tool: 'Edit', tool_use_id: 'du1', file_path: '/home/u/a.ts' } as any)
+  expect((await flushed($, 'DU', db)).find(x => x.use === 'du1')).toMatchObject({ via: 'user_temporary', waitFor: ASKED })
 })

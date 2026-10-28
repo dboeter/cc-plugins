@@ -668,12 +668,14 @@ export const splitOf = (xs: Entry[], from: number, to: number): number[] => {
       const s = r.t + (r.wait ?? 0); lo = Math.max(from, s); hi = Math.min(to, s + r.ms)
     }
     const asks = x.kind === 'tool' && ASKS.test(x.name)
-    // a subagent's wait during which its own request closed is that message's, as STREAMING is main's: it stays agents. Rows
-    // logged before tool.call named it so carry the decision's name (112 of 123 such `config` waits had a request close inside)
+    // a wait you answered is yours even when the message closed inside it (via: rows logged before ASKED won are labelled STREAMING).
+    // Else a subagent's wait during which its own request closed is that message's, as STREAMING is main's: it stays agents
+    const yours = asks || x.waitFor === ASKED || !!x.via?.startsWith('user_')
     const streamed = x.waitFor === STREAMING || (!!x.agent && !!x.wait && !!ends.get(x.agent)?.some(t => t >= x.t && t <= x.t + x.wait!))
-    const held = asks || x.waitFor === CLASSIFIER || !streamed
-    if (x.kind === 'tool' && x.wait && held) span(x.t, x.t + x.wait, asks || x.waitFor === ASKED ? 0 : 1) // a call's t is its start plus pre (startOf), its wait before its run; a refused call has a wait and no run
+    const held = yours || x.waitFor === CLASSIFIER || !streamed
+    if (x.kind === 'tool' && x.wait && held) span(x.t, x.t + x.wait, yours ? 0 : 1) // a call's t is its start plus pre (startOf), its wait before its run; a refused call has a wait and no run
     if (x.kind === 'hook' && x.ms != null) span(x.t - x.ms, x.t, 2) // a hook row's t is its end
+    if (x.agent && asks && !x.wait && x.ms != null) span(x.t, x.t + x.ms, 0) // no decision record: your answer sits in its run
     if (x.ms == null || x.agent) continue
     if (x.kind === 'step') span(x.t, x.t + x.ms, 6)
     else if (x.kind === 'tool') span(x.t + (x.wait ?? 0), x.t + (x.wait ?? 0) + x.ms, asks && !x.wait ? 0 : x.name === 'Agent' ? 4 : 5)
@@ -897,7 +899,7 @@ async function loadNow($: EngineInterface): Promise<void> {
   totals = { use: tv?.use ?? {}, bad: tv?.bad ?? {}, turns: Array.isArray(tv?.turns) ? tv.turns : [], skips: Array.isArray(tv?.skips) ? tv.skips : [] }
   names = { ...(v?.names && !Array.isArray(v) ? v.names : {}), ...names } // merged: a fresh instance can name a loop before its first load. Ids are unique, and saved() drops the ones no entry shows
   owed = entries.length || Object.keys(seen).length ? { ...seen } : undefined // /clear's empty session owes nothing
-  blind = false; evicted = []; closed.clear(); lead.clear(); rerun.clear(); pre.clear(); recent.clear(); composed.clear(); checks.clear(); hookMs.clear(); inherited.clear(); took.clear(); skipSeen.clear(); postCtx = [] // the old session's calls
+  blind = false; evicted = []; agentEnd.clear(); closed.clear(); lead.clear(); rerun.clear(); pre.clear(); recent.clear(); composed.clear(); checks.clear(); hookMs.clear(); inherited.clear(); took.clear(); skipSeen.clear(); postCtx = [] // the old session's calls
   // every new key prunes the others: a session's start, and /clear and resume, which add a key. Queued, not awaited: prompt.submit
   // awaits this load before its next, and a prune reads every other session
   mutate(() => pruneOthers($)).catch(() => {})
@@ -1226,8 +1228,8 @@ export const register: Register = (on, options) => {
     const text = typeof r.text === 'string' ? r.text : '', refused = d?.decision === 'reject' || (!!r.isError && DENIED.test(text))
     const via = viaOf(d?.source, setup.mode, text, wait != null)
     const msgEnd = e.agentId ? agentEnd.get(e.agentId) ?? 0 : streamEnd
-    const waitFor = wait == null ? undefined : via === 'classifier' ? CLASSIFIER : msgEnd >= at! && msgEnd <= Date.now() ? STREAMING
-      : d?.source?.startsWith('user') ? ASKED : `the permission decision${d?.source ? ` (${d.source})` : ''}`
+    const waitFor = wait == null ? undefined : via === 'classifier' ? CLASSIFIER : d?.source?.startsWith('user') ? ASKED
+      : msgEnd >= at! && msgEnd <= Date.now() ? STREAMING : `the permission decision${d?.source ? ` (${d.source})` : ''}`
     const sp = e.tool === 'Agent' ? spawned.find(s => s.use === e.tool_use_id) : undefined // the spawn ran inside next
     if (sp) spawned = spawned.filter(s => s !== sp)
     // a rejected decision is a refusal, whether it reaches the call as a deny or as the error result the model reads
