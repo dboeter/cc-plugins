@@ -714,6 +714,9 @@ const compactAt = new Map<string, number>() // loop -> when its PreCompact fired
 // record marks one row; two parallel calls of one tool both fit, and which takes it is a guess: the record names no call
 let lastRun: { t: number; event: string; name: string; errors: number; cancelled: number } | undefined
 let turnAt: number | undefined // when main's running turn began: your prompt's submit
+// main's rows of the running turn that a full log evicted before turn.complete took its split: a request that wrote no text and a
+// hook that changed nothing rank debug, so each goes on its own push. splitOf still counts them; in memory only
+let evicted: Entry[] = []
 // a tool row -> PreToolUse context attachments still to come for it. The engine sends a PreToolUse hook's context with the request
 // after the call, so its attachment arrives once the call's row is logged; push files it just above that row, in call order
 const ahead = new WeakMap<Entry, number>()
@@ -967,6 +970,7 @@ function push($: EngineInterface, e: Omit<Entry, 't'>, opt: { ahead?: number; ab
 function evictOne(): Entry {
   const d = entries.findIndex(y => hiddenCtx(y) || lvl(y) === 0)
   const gone = entries.splice(Math.max(0, d), 1)[0]!
+  if (!gone.agent && gone.turn === turnNo) evicted.push(gone)
   if (gone.kind === 'prompt' && !gone.again && (gone.src === 'hook' || gone.src === 'plugin')) markAgain(entries, gone)
   return gone
 }
@@ -1379,7 +1383,7 @@ export const register: Register = (on, options) => {
     if (!OWN.has(e.origin.kind)) { const r = await next(e); logSkipsIn($, next.trace); return r }
     if (e.turnId) { const r = await next(e); logSkipsIn($, next.trace); if (!('drop' in r && r.drop)) { pending++; queued.push(wordsOf(e)) } return r }
     const t = Date.now() // the turn's start: its UserPromptSubmit hooks run inside next
-    await mutate(async () => { await loadNow($); turnNo++; words.set(turnNo, wordsOf(e)); touch($) }).catch(() => {}) // before next: the UserPromptSubmit hooks it runs belong to the new number
+    await mutate(async () => { await loadNow($); turnNo++; evicted = []; words.set(turnNo, wordsOf(e)); touch($) }).catch(() => {}) // before next: the UserPromptSubmit hooks it runs belong to the new number
     const r = await next(e)
     logSkipsIn($, next.trace)
     if ('drop' in r && r.drop) mutate(async () => { words.delete(turnNo); turnNo--; touch($) }).catch(() => {}) // a dropped prompt never entered
@@ -1540,7 +1544,8 @@ export const register: Register = (on, options) => {
     if (!e.agentId) mutate(async () => {
       const y = entries.findLast(z => z.kind === 'turn' && !z.agent)
       if (y?.ms != null) {
-        y.split = splitOf(entries.filter(z => z.turn === y.turn), y.t - y.ms, y.t)
+        y.split = splitOf([...evicted, ...entries].filter(z => z.turn === y.turn), y.t - y.ms, y.t)
+        evicted = []
         note = unusualOf(y.turn ?? turnNo, y.split, y.ms, entries.filter(z => z !== y && z.kind === 'turn' && !z.agent && z.ms != null).map(z => z.ms!))
         touch($)
       }
@@ -1814,7 +1819,7 @@ export const register: Register = (on, options) => {
       const add = (xs: number[], ms: number) => { xs.forEach((v, i) => { parts[i]! += v }); span += ms }
       for (const y of m.ends) if (y.ms != null) add(y.split ?? splitOf(m.xs, y.t - y.ms, y.t), y.ms)
       const from = turnAt ?? m.first
-      if (n === turnNo && busy && from != null) add(splitOf(m.xs, from, now), now - from)
+      if (n === turnNo && busy && from != null) add(splitOf([...evicted, ...m.xs], from, now), now - from)
       else if (!m.ends.length && m.first != null && m.last! > m.first) add(splitOf(m.xs, m.first, m.last!), m.last! - m.first)
       const by: Record<string, number> = { other: span - parts.reduce((a, b) => a + b, 0) }
       SPLIT.forEach((k, i) => { by[k] = parts[i]! })
