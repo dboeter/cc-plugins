@@ -1,0 +1,117 @@
+// A turn's split when a full log evicts its rows as they come: the module's state is shared, as in agent-log.test.ts
+import { test, expect } from 'claude-code/testing'
+import { capture, flushed, pane, wait } from './test-helpers'
+
+const drain = async (s: any) => { let n: any; while (!(n = await s.next()).done) {} return n.value }
+const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`
+
+const W = 300 // ms per request
+// a request that only called a tool: no text, so its step row ranks debug
+const silent = (on: any) => on('turn.step', async function* (_$: any, e: any) {
+  await wait(W)
+  yield { kind: 'tool', index: 0, id: `tu${e.index}`, name: 'Read' }
+  return { turnId: e.turnId, index: e.index, answer: '', toolUses: [{ name: 'Read', input: {} }], stopReason: 'tool_use', usage: undefined }
+})
+
+test('a full log evicting a turn\'s text-less requests as they come keeps their time in its split', async ($, on) => {
+  const db = capture(on, 'SE')
+  const T = Date.now() - 600_000
+  // the cap of earlier rows, none debug: each new debug row is the oldest debug one, so its own push evicts it
+  db['r:SE'] = { entries: Array.from({ length: 300 }, (_, i) => ({ t: T + i, turn: 1, kind: 'tool', name: 'Read', detail: `/x/${i}.ts`, outcome: 'ok', status: 'ok', ms: 10 })), seen: {}, turn: 1, names: {} }
+  on('prompt.submit', (_$: any, e: any) => ({ text: e.text }))
+  on('turn.complete', () => ({ text: '' }))
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  silent(on)
+  const t0 = Date.now()
+  await $.prompt.submit({ text: 'Read the files', origin: { kind: 'composer' }, wait: false } as any)
+  for (let i = 0; i < 4; i++) {
+    await drain(($ as any).turn.step({ turnId: 'e7d91f2f-e937', index: i, model: 'claude-opus-5-5', messageCount: 3 }))
+    await $.tool.call({ tool: 'Read', tool_use_id: `tu${i}`, file_path: `/y/${i}.ts` } as any) // the turn's rows that stay: its header draws over them
+  }
+  await ($ as any).turn.complete({ reason: 'answer', answer: '', durationMs: Date.now() - t0, usage: undefined })
+  const m = await pane($, 120)
+  try {
+    const rows = await flushed($, 'SE', db)
+    expect(rows.filter(x => x.kind === 'step').length).toBe(0) // all four went on their own push
+    const y = rows.find(x => x.kind === 'turn' && x.turn === 2)
+    expect(y.split[6]).toBeGreaterThanOrEqual(4 * W) // model: each request's whole time, none of it other
+    const model = `model ${secs(y.split[6])}`
+    expect(await m.find({ text: new RegExp(`· ${model}\\b`) })).toBeDefined() // the header's two largest parts
+    await m.press({ key: 'bturn2' }) // the inspector's whole split
+    expect(await m.find({ text: new RegExp(`^${model}\\b`) })).toBeDefined()
+  } finally { await m.unmount() }
+})
+
+test('a full log evicting a foreground agent\'s hook rows as they come keeps their time as hooks, not agents', async ($, on) => {
+  const db = capture(on, 'SA')
+  const T = Date.now() - 600_000
+  db['r:SA'] = { entries: Array.from({ length: 300 }, (_, i) => ({ t: T + i, turn: 1, kind: 'tool', name: 'Read', detail: `/x/${i}.ts`, outcome: 'ok', status: 'ok', ms: 10 })), seen: {}, turn: 1, names: {} }
+  on('prompt.submit', (_$: any, e: any) => ({ text: e.text }))
+  on('turn.complete', () => ({ text: '' }))
+  on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: 'A' }))
+  // a hook that only added context ranks debug: its push evicts it
+  on('classic.PostToolUse', async () => { await wait(W); return { additionalContext: ['lint ok'] } as any })
+  on('tool.call', async (_$: any, e: any) => {
+    if (e.tool_use_id !== 'ag1') return { result: 'ok', text: 'ok' }
+    await ($ as any).agent.spawn({ subagentType: 'scout', prompt: 'Look', tool_use_id: 'ag1' })
+    await ($ as any).classic.PostToolUse({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_use_id: 'sa1', agent_id: 'A', tool_input: {}, tool_response: 'ok' })
+    return { result: 'done', text: 'done' }
+  })
+  const t0 = Date.now()
+  await $.prompt.submit({ text: 'Look around', origin: { kind: 'composer' }, wait: false } as any)
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'ag1', description: 'Look', prompt: 'Look', subagent_type: 'scout' } as any)
+  await ($ as any).turn.complete({ reason: 'answer', answer: '', durationMs: Date.now() - t0, usage: undefined })
+  const rows = await flushed($, 'SA', db)
+  expect(rows.some(x => x.kind === 'hook' && x.agent === 'A')).toBe(false) // evicted on its own push
+  expect(rows.find(x => x.kind === 'tool' && x.use === 'ag1')?.child).toBe('A')
+  expect(rows.find(x => x.kind === 'turn' && x.turn === 2).split[2]).toBeGreaterThanOrEqual(W - 20) // hooks
+})
+
+test('/agentlog clear in a running turn keeps the cleared rows\' time in its split', async ($, on) => {
+  const db = capture(on, 'SC')
+  on('prompt.submit', (_$: any, e: any) => ({ text: e.text }))
+  on('turn.complete', () => ({ text: '' }))
+  silent(on)
+  const t0 = Date.now()
+  await $.prompt.submit({ text: 'Read the files', origin: { kind: 'composer' }, wait: false } as any)
+  await drain(($ as any).turn.step({ turnId: 'c1e4a0b2-77aa', index: 0, model: 'claude-opus-5-5', messageCount: 3 }))
+  await ($ as any).command.run({ command: 'agentlog', args: 'clear', origin: { kind: 'composer' }, presentation: 'text' })
+  await ($ as any).turn.complete({ reason: 'answer', answer: '', durationMs: Date.now() - t0, usage: undefined })
+  const y = (await flushed($, 'SC', db)).find(x => x.kind === 'turn' && !x.agent)
+  expect(y.split[6]).toBeGreaterThanOrEqual(W) // model: the cleared request's time, not other
+})
+
+test('a session switch mid-turn drops the old session\'s evicted rows from the next split', async ($, on) => {
+  let id = 'SW1'
+  const db = capture(on, () => id)
+  const T = Date.now() - 600_000
+  db['r:SW1'] = { entries: Array.from({ length: 300 }, (_, i) => ({ t: T + i, turn: 1, kind: 'tool', name: 'Read', detail: `/x/${i}.ts`, outcome: 'ok', status: 'ok', ms: 10 })), seen: {}, turn: 1, names: {} }
+  db['r:SW2'] = { entries: [], seen: {}, turn: 2, names: {} } // the resumed session's running turn has SW1's turn number
+  on('prompt.submit', (_$: any, e: any) => ({ text: e.text }))
+  on('turn.complete', () => ({ text: '' }))
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  silent(on)
+  const t0 = Date.now()
+  await $.prompt.submit({ text: 'Read the files', origin: { kind: 'composer' }, wait: false } as any)
+  for (let i = 0; i < 2; i++) await drain(($ as any).turn.step({ turnId: 'a0b1c2d3-e4f5', index: i, model: 'claude-opus-5-5', messageCount: 3 })) // evicted on their own push
+  id = 'SW2'
+  await ($ as any).session.start({ cwd: '/w', surface: 'terminal', isInteractive: true, source: 'resume' })
+  await ($ as any).turn.complete({ reason: 'answer', answer: '', durationMs: Date.now() - t0, usage: undefined })
+  const y = (await flushed($, 'SW2', db)).find(x => x.kind === 'turn' && !x.agent)
+  expect(y.turn).toBe(2)
+  expect(y.split[6]).toBeLessThan(W) // model: none of SW1's evicted requests
+})
+
+test('a turn with no end row spans its tool rows through their PostToolUse hooks', async ($, on) => {
+  const db = capture(on, 'SP')
+  const T = Date.now() - 600_000
+  // turn 1's end row is gone (a reload mid-turn): the header shows the span of its rows, ≈
+  db['r:SP'] = { entries: [
+    { t: T, turn: 1, kind: 'tool', name: 'Read', detail: '/a.ts', outcome: 'ok', status: 'ok', ms: 1000 },
+    { t: T + 1000, turn: 1, kind: 'tool', name: 'Edit', detail: '/a.ts', outcome: 'ok', status: 'ok', ms: 1000, post: 2000 },
+  ], seen: {}, turn: 2, names: {} }
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  await ($ as any).session.start({ cwd: '/w', surface: 'terminal', isInteractive: true, source: 'resume' })
+  const m = await pane($, 120)
+  try { expect(await m.find({ text: /≈ 4\.0s/ })).toBeDefined() } finally { await m.unmount() } // 1 s read, 1 s edit, 2 s lint after it
+})
