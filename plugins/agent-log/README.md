@@ -65,7 +65,7 @@ Answer `y` to add the marketplace, then pick a scope.
 
 The pane never opens by itself. While it is closed, a turn that ended unusually gets one line above the prompt, between turns, until the next turn ends or you open the pane:
 
-- `/agentlog #4 took 41.2s, 3× the usual`: the turn ran over twice the median of your earlier turns (once there are three).
+- `/agentlog #4 took 41.2s, 3× the usual`: the turn ran over twice the median of your earlier turns (once there are three), each without its time waiting on you.
 - `/agentlog #2: hooks 12.0s of 20.0s`: hooks, or a slow permission decision, held the turn longest.
 
 Turns under 10 seconds never get a line, and time spent waiting on you never counts as unusual. `/agentlog` shows or hides the pane, `/agentlog all|model|harness|outside` picks a view (`agent` still works for `model`), `/agentlog level debug|info|notice|error` sets the least important row shown, and `/agentlog clear` empties the log. The setup page's model use and problems and the turn times "the usual" is measured against still count the cleared rows, as they count the rows a full log evicts: they cover the whole session. No `/agentlog` enters the conversation: its line is dropped and its reply is a toast, so the model reads neither.

@@ -658,11 +658,13 @@ export const splitOf = (xs: Entry[], from: number, to: number): number[] => {
 }
 // The band's note on a turn that ended unusually, or none: `#4 took 41.2s, 3× the usual` against the median of main's earlier
 // turns (3 or more of them), else `#4: hooks 12.0s of 20.0s` when hooks or a slow permission decision held the turn longest.
-// Turns under 10 s never note: a short turn is not worth a look. Waiting on you is left out: that is your time, not a fault
+// Turns under 10 s never note: a short turn is not worth a look. Waiting on you is left out: that is your time, not a fault, so
+// the floor, the median rule and its `took` read the turn less its `you` part; prior holds the earlier turns' times less theirs
 export const unusualOf = (n: number, split: number[], ms: number, prior: number[]): string | undefined => {
-  if (ms < 10_000) return undefined
+  const own = ms - (split[0] ?? 0)
+  if (own < 10_000) return undefined
   const ps = prior.filter(p => p > 0).sort((a, b) => a - b), mid = ps.length >= 3 ? ps[ps.length >> 1]! : undefined
-  if (mid && ms > 2 * mid) return `#${n} took ${secs(ms)}, ${Math.round(ms / mid)}× the usual`
+  if (mid && own > 2 * mid) return `#${n} took ${secs(own)}, ${Math.round(own / mid)}× the usual`
   const top = split.reduce((m, v, i) => v > split[m]! ? i : m, 0), other = ms - split.reduce((a, b) => a + b, 0)
   const who = SPLIT[top]!
   if ((who === 'hooks' || who === 'permission') && split[top]! > other && split[top]! >= 3000) return `#${n}: ${who} ${secs(split[top])} of ${secs(ms)}`
@@ -721,7 +723,8 @@ let evicted: Entry[] = []
 // measured against, so those cover the whole session: readers add the surviving rows. Folded at eviction, not at push: a step
 // row's cost and tokens land after it does. Saved with the entries; a store without it starts empty, so its rows alone count.
 // use: by the page's line (`main`, `agents`, `side:<name>`, `plugin:<name>`); tok and cost unset until a row had them.
-// turns: main's turn times, one number per turn, so a long session stays well inside BUDGET
+// turns: main's turn times less their `you` part (a turn evicted before its split counts whole), one number per turn, so a long
+// session stays well inside BUDGET
 type Use = { n: number; ms: number; tok?: [number, number]; cost?: number }
 type Totals = { use: Record<string, Use>; bad: Record<string, number>; turns: number[] }
 let totals: Totals = { use: {}, bad: {}, turns: [] }
@@ -741,7 +744,7 @@ const fold = (x: Entry) => {
   const u = useKey(x), b = badKey(x)
   if (u) totals.use[u] = useOf([x], totals.use[u])
   if (b) totals.bad[b] = (totals.bad[b] ?? 0) + 1
-  if (x.kind === 'turn' && !x.agent && x.ms != null) totals.turns.push(x.ms)
+  if (x.kind === 'turn' && !x.agent && x.ms != null) totals.turns.push(x.ms - (x.split?.[0] ?? 0))
 }
 // a tool row -> PreToolUse context attachments still to come for it. The engine sends a PreToolUse hook's context with the request
 // after the call, so its attachment arrives once the call's row is logged; push files it just above that row, in call order
@@ -1581,7 +1584,7 @@ export const register: Register = (on, options) => {
       if (y?.ms != null) {
         y.split = splitOf([...evicted, ...entries].filter(z => z.turn === y.turn), y.t - y.ms, y.t)
         evicted = []
-        note = unusualOf(y.turn ?? turnNo, y.split, y.ms, [...totals.turns, ...entries.filter(z => z !== y && z.kind === 'turn' && !z.agent && z.ms != null).map(z => z.ms!)])
+        note = unusualOf(y.turn ?? turnNo, y.split, y.ms, [...totals.turns, ...entries.filter(z => z !== y && z.kind === 'turn' && !z.agent && z.ms != null).map(z => z.ms! - (z.split?.[0] ?? 0))])
         touch($)
       }
     }).catch(() => {})
