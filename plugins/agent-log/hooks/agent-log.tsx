@@ -717,6 +717,32 @@ let turnAt: number | undefined // when main's running turn began: your prompt's 
 // main's rows of the running turn that a full log evicted before turn.complete took its split: a request that wrote no text and a
 // hook that changed nothing rank debug, so each goes on its own push. splitOf still counts them; in memory only
 let evicted: Entry[] = []
+// What the rows a full log evicted counted toward the setup page's model use and problems and the turn times "the usual" is
+// measured against, so those cover the whole session: readers add the surviving rows. Folded at eviction, not at push: a step
+// row's cost and tokens land after it does. Saved with the entries; a store without it starts empty, so its rows alone count.
+// use: by the page's line (`main`, `agents`, `side:<name>`, `plugin:<name>`); tok and cost unset until a row had them.
+// turns: main's turn times, one number per turn, so a long session stays well inside BUDGET
+type Use = { n: number; ms: number; tok?: [number, number]; cost?: number }
+type Totals = { use: Record<string, Use>; bad: Record<string, number>; turns: number[] }
+let totals: Totals = { use: {}, bad: {}, turns: [] }
+const useKey = (x: Entry) => x.kind === 'step' ? (x.agent ? 'agents' : 'main') : x.kind === 'side' && x.src !== 'plugin' ? `side:${x.name}` : x.kind === 'side' || x.kind === 'fork' ? `plugin:${x.name}` : undefined
+// the problem a row counts as in problemsOf, by its name there
+const badKey = (x: Entry) => x.kind === 'hook' ? (stat(x) === 'failed' ? 'hook failed' : undefined) : x.kind === 'event' && ['hook skipped', 'API error', 'turn failed', 'MCP failed'].includes(x.name) ? x.name : undefined
+const useOf = (ys: Entry[], u: Use = { n: 0, ms: 0 }): Use => {
+  const r = { ...u, tok: u.tok && [...u.tok] as [number, number] }
+  for (const x of ys) {
+    r.n++; r.ms += x.ms ?? 0
+    if (x.tok) { r.tok ??= [0, 0]; r.tok[0] += x.tok[0]! + x.tok[1]! + x.tok[2]!; r.tok[1] += x.tok[3] ?? 0 }
+    if (x.cost != null) r.cost = (r.cost ?? 0) + x.cost
+  }
+  return r
+}
+const fold = (x: Entry) => {
+  const u = useKey(x), b = badKey(x)
+  if (u) totals.use[u] = useOf([x], totals.use[u])
+  if (b) totals.bad[b] = (totals.bad[b] ?? 0) + 1
+  if (x.kind === 'turn' && !x.agent && x.ms != null) totals.turns.push(x.ms)
+}
 // a tool row -> PreToolUse context attachments still to come for it. The engine sends a PreToolUse hook's context with the request
 // after the call, so its attachment arrives once the call's row is logged; push files it just above that row, in call order
 const ahead = new WeakMap<Entry, number>()
@@ -802,7 +828,7 @@ const seed = (xs: Entry[]) => { const s: Record<string, number> = {}; for (const
 // names only for loops the kept entries still show: a session forks several times a turn, and the store has a size cap
 // `seen` likewise drops a subagent's counts once no kept entry shows it: else they grow all session. Main's (agent part '') stay
 const shown = (id: string) => entries.some(x => x.agent === id)
-const saved = () => ({ entries, seen: Object.fromEntries(Object.entries(seen).filter(([g]) => { const a = g.split('|')[2]; return !a || shown(a) })), turn: turnNo, names: Object.fromEntries(Object.entries(names).filter(([id]) => shown(id))) })
+const saved = () => ({ entries, seen: Object.fromEntries(Object.entries(seen).filter(([g]) => { const a = g.split('|')[2]; return !a || shown(a) })), turn: turnNo, names: Object.fromEntries(Object.entries(names).filter(([id]) => shown(id))), totals })
 
 // session id changes on /clear and resume; a failed load is retried next call. Outside the chain, so a load during a session
 // switch cannot interleave with a push's: loadNow runs only inside mutate, which is why it checks the key again
@@ -821,6 +847,8 @@ async function loadNow($: EngineInterface): Promise<void> {
   entries = Array.isArray(v) ? v : Array.isArray(v?.entries) ? v.entries : []
   turnNo = typeof v?.turn === 'number' ? v.turn : Math.max(0, ...entries.map(x => x.turn ?? 0)) // stores from before turns hold none: start at 0
   seen = v?.seen && !Array.isArray(v) ? v.seen : seed(entries)
+  const tv = Array.isArray(v) ? undefined : v?.totals
+  totals = { use: tv?.use ?? {}, bad: tv?.bad ?? {}, turns: Array.isArray(tv?.turns) ? tv.turns : [] }
   names = { ...(v?.names && !Array.isArray(v) ? v.names : {}), ...names } // merged: a fresh instance can name a loop before its first load. Ids are unique, and saved() drops the ones no entry shows
   owed = entries.length || Object.keys(seen).length ? { ...seen } : undefined // /clear's empty session owes nothing
   blind = false; closed.clear(); lead.clear(); rerun.clear(); pre.clear(); recent.clear(); composed.clear(); checks.clear(); inherited.clear(); took.clear(); skipSeen.clear(); postCtx = [] // the old session's calls
@@ -970,6 +998,7 @@ function push($: EngineInterface, e: Omit<Entry, 't'>, opt: { ahead?: number; ab
 function evictOne(): Entry {
   const d = entries.findIndex(y => hiddenCtx(y) || lvl(y) === 0)
   const gone = entries.splice(Math.max(0, d), 1)[0]!
+  fold(gone)
   if (!gone.agent && gone.turn === turnNo) evicted.push(gone)
   if (gone.kind === 'prompt' && !gone.again && (gone.src === 'hook' || gone.src === 'plugin')) markAgain(entries, gone)
   return gone
@@ -993,17 +1022,17 @@ async function pruneOthers($: EngineInterface): Promise<void> {
 // What broke this session, for the controls' red badge and the setup page: settings hook runs that failed or were cancelled (the collector's counts, else the red
 // hook rows), API errors, turns the API failed, MCP servers that did not connect
 const problemsOf = (xs: Entry[]): string[] => {
-  const n = (f: (x: Entry) => boolean) => xs.filter(f).length
+  const n = (k: string, f: (x: Entry) => boolean) => xs.filter(f).length + (totals.bad[k] ?? 0) // and the evicted rows' (totals)
   const many = (k: number, one: string, more = `${one}s`) => k ? `${k} ${k > 1 ? more : one}` : ''
   const runs = [...setup.runs.values()].reduce((a, r) => a + r.errors + r.cancelled, 0)
   return [
-    many(runs || n(x => x.kind === 'hook' && stat(x) === 'failed'), 'hook run failed', 'hook runs failed'),
-    many(n(x => x.kind === 'event' && x.name === 'hook skipped'), 'hook skipped', 'hooks skipped'),
-    many(n(x => x.kind === 'event' && x.name === 'API error'), 'API error'),
-    many(n(x => x.kind === 'event' && x.name === 'turn failed'), 'turn failed', 'turns failed'),
+    many(runs || n('hook failed', x => x.kind === 'hook' && stat(x) === 'failed'), 'hook run failed', 'hook runs failed'),
+    many(n('hook skipped', x => x.kind === 'event' && x.name === 'hook skipped'), 'hook skipped', 'hooks skipped'),
+    many(n('API error', x => x.kind === 'event' && x.name === 'API error'), 'API error'),
+    many(n('turn failed', x => x.kind === 'event' && x.name === 'turn failed'), 'turn failed', 'turns failed'),
     unsaved ? 'log not saved' : '',
     bigTimes && key === `r:${bigTimes}` ? 'per-hook times stopped: the hook-times file is over 4 MiB' : '',
-    many([...setup.mcp.values()].filter(m => m.status !== 'connected' && m.status !== 'disconnected').length || n(x => x.kind === 'event' && x.name === 'MCP failed'), 'MCP server down', 'MCP servers down'),
+    many([...setup.mcp.values()].filter(m => m.status !== 'connected' && m.status !== 'disconnected').length || n('MCP failed', x => x.kind === 'event' && x.name === 'MCP failed'), 'MCP server down', 'MCP servers down'),
   ].filter(Boolean)
 }
 
@@ -1456,6 +1485,7 @@ export const register: Register = (on, options) => {
     if (e.args.trim() === 'clear') {
       await mutate(async () => {
         await loadNow($)
+        entries.forEach(fold) // the session's totals stay: the setup page says "this session", and clearing the log does not end it
         entries = [] // `seen` stays: clearing the log takes nothing out of the model's context
         expanded.clear()
         fit()
@@ -1546,7 +1576,7 @@ export const register: Register = (on, options) => {
       if (y?.ms != null) {
         y.split = splitOf([...evicted, ...entries].filter(z => z.turn === y.turn), y.t - y.ms, y.t)
         evicted = []
-        note = unusualOf(y.turn ?? turnNo, y.split, y.ms, entries.filter(z => z !== y && z.kind === 'turn' && !z.agent && z.ms != null).map(z => z.ms!))
+        note = unusualOf(y.turn ?? turnNo, y.split, y.ms, [...totals.turns, ...entries.filter(z => z !== y && z.kind === 'turn' && !z.agent && z.ms != null).map(z => z.ms!)])
         touch($)
       }
     }).catch(() => {})
@@ -2133,15 +2163,20 @@ export const register: Register = (on, options) => {
     // records, the hooks and plugins your settings name. A problem's row opens its inspector
     const setupPage = (at?: [string, string, string | undefined]) => {
       const xs = (f: (x: Entry) => boolean) => entries.filter(f)
-      // requests: how many, their time, tokens and price where the collector gave one
-      const use = (ys: Entry[]) => {
-        const sum = (f: (x: Entry) => number) => ys.reduce((a, x) => a + f(x), 0)
-        const cost = ys.some(x => x.cost != null) ? ` · $${sum(x => x.cost ?? 0).toFixed(2)}` : ''
+      // requests: how many, their time, tokens and price where the collector gave one; the line's rows and its evicted ones (totals)
+      const use = (k: string, ys: Entry[]) => {
+        const u = useOf(ys, totals.use[k])
+        const cost = u.cost != null ? ` · $${u.cost.toFixed(2)}` : ''
         // no row with tokens (requests from before they were stored, a plugin's fork): unknown, not 0
-        const io = ys.some(x => x.tok) ? `${num(sum(x => x.tok ? x.tok[0]! + x.tok[1]! + x.tok[2]! : 0))} in · ${num(sum(x => x.tok?.[3] ?? 0))} out` : '— tokens'
-        return `${ys.length} request${ys.length === 1 ? '' : 's'} · ${exact(sum(x => x.ms ?? 0))} · ${io}${cost}`
+        const io = u.tok ? `${num(u.tok[0])} in · ${num(u.tok[1])} out` : '— tokens'
+        return `${u.n} request${u.n === 1 ? '' : 's'} · ${exact(u.ms)} · ${io}${cost}`
       }
-      const by = (ys: Entry[]) => { const m = new Map<string, Entry[]>(); for (const y of ys) m.set(y.name, [...m.get(y.name) ?? [], y]); return [...m] }
+      // the rows by name, and the names only evicted rows had (totals' `<at>:<name>` lines) with none
+      const by = (at: string, ys: Entry[]) => {
+        const m = new Map<string, Entry[]>(Object.keys(totals.use).filter(k => k.startsWith(`${at}:`)).map(k => [k.slice(at.length + 1), []]))
+        for (const y of ys) m.set(y.name, [...m.get(y.name) ?? [], y])
+        return [...m]
+      }
       const bad = xs(x => (x.kind === 'hook' && stat(x) === 'failed') || (x.kind === 'event' && BAD.has(stat(x))))
       const events = [...new Set([...Object.keys(hookCfg ?? {}), ...setup.runs.keys()])]
       const steps = xs(x => x.kind === 'step')
@@ -2174,10 +2209,10 @@ export const register: Register = (on, options) => {
           {setup.plugins.size ? [...setup.plugins].map(([n, pl]) => kw(n, [pl.version, pl.scope, pl.hooks && 'hooks', pl.mcp && 'MCP'].filter(Boolean).join(' · '), `pl${n}`))
             : enabled.map(id => kw(id.split('@')[0]!, `enabled in your settings (${id.split('@')[1] ?? ''})`, `pl${id}`))}
           {title('us', 'Model use this session')}
-          {kw('main', use(steps.filter(x => !x.agent)))}
-          {steps.some(x => x.agent) && kw('subagents', use(steps.filter(x => x.agent)))}
-          {by(xs(x => x.kind === 'side' && x.src !== 'plugin')).map(([n, ys]) => kw(SIDE[n] ?? n, use(ys), `us${n}`))}
-          {by(xs(x => (x.kind === 'side' && x.src === 'plugin') || x.kind === 'fork')).map(([n, ys]) => kw(n, `${use(ys)} (plugin)`, `up${n}`))}
+          {kw('main', use('main', steps.filter(x => !x.agent)))}
+          {(steps.some(x => x.agent) || totals.use.agents) && kw('subagents', use('agents', steps.filter(x => x.agent)))}
+          {by('side', xs(x => x.kind === 'side' && x.src !== 'plugin')).map(([n, ys]) => kw(SIDE[n] ?? n, use(`side:${n}`, ys), `us${n}`))}
+          {by('plugin', xs(x => (x.kind === 'side' && x.src === 'plugin') || x.kind === 'fork')).map(([n, ys]) => kw(n, `${use(`plugin:${n}`, ys)} (plugin)`, `up${n}`))}
           {title('bg', !setup.bg ? 'Background: told at the end of each turn' : bgN + cronN ? 'Background: in flight when the last turn ended' : 'Background: nothing in flight when the last turn ended')}
           {setup.bg?.tasks.map((t, i) => kw(t.type, `${t.status}: ${fit(t.command ?? t.description, 200)}`, `bg${i}`))}
           {setup.bg?.crons.map((c, i) => kw('cron', `${c.schedule}${c.recurring ? '' : ' (once)'}: ${fit(first(c.prompt), 200)}`, `cr${i}`))}
