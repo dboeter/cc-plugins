@@ -7,7 +7,9 @@ import { scrub } from './scrub'
 
 // === ENTRIES AND TEXT ===
 type Src = 'engine' | 'hook' | 'plugin' // who authored injected text: the engine's own framing, a settings hook, or a plugin chain
-// agent: the loop's agentId, absent on main. bytes: injected size (kept, not shown for now). ms: tool run time, minus its wait.
+// agent: the loop's agentId, absent on main. bytes: injected size (kept, not shown for now). ms: tool run time, minus its wait and
+// its hooks. pre/post: on a tool row, the time its PreToolUse and PostToolUse chains ran inside it, which their own rows show. Its
+// t is when its run began, pre after the call began (startOf), so splitOf finds the run where it ran
 // wait/waitFor: on a tool row, the time between tool.check's verdict and the engine's decision, and what it waited on
 // type: the engine's attachment kind or context-block name, kept beside the readable `name`. origin: the settings hook event that produced the text or, on a hook row, ran the hook (its trigger; `name` is then the hook's own name).
 // cmd: a Bash call's full scrubbed command, shown in the inspector while the row shows its description. pat: a Grep's or Glob's
@@ -38,7 +40,7 @@ type Status = 'ok' | 'failed' | 'denied' | 'blocked' | 'feedback' | 'stopped' | 
 // event: something the engine reports happening (eventOf, harnessOf): name is what (`model switch`, `API error`), detail and outcome
 // its particulars. side: a model request outside the turns: the engine's own (src engine, name its query source: a title, a
 // prompt suggestion, compaction) or a plugin's $.model.complete (src plugin, name the plugin); detail is the model
-type Entry = { t: number; turn?: number; kind: 'tool' | 'hook' | 'session' | 'prompt' | 'turn' | 'fork' | 'step' | 'event' | 'side'; name: string; detail: string; outcome: string; status?: Status; src?: Src; bytes?: number; agent?: string; ms?: number; type?: string; origin?: string; peek?: string; cmd?: string; check?: 'allow' | 'ask' | 'deny'; rule?: string; exit?: number; insight?: string; child?: string; use?: string; wait?: number; waitFor?: string; again?: boolean
+type Entry = { t: number; turn?: number; kind: 'tool' | 'hook' | 'session' | 'prompt' | 'turn' | 'fork' | 'step' | 'event' | 'side'; name: string; detail: string; outcome: string; status?: Status; src?: Src; bytes?: number; agent?: string; ms?: number; type?: string; origin?: string; peek?: string; cmd?: string; check?: 'allow' | 'ask' | 'deny'; rule?: string; exit?: number; insight?: string; child?: string; use?: string; wait?: number; waitFor?: string; pre?: number; post?: number; again?: boolean
   pat?: string; via?: string; step?: string; effort?: string | number; ttft?: number; think?: number; stop?: string; tok?: number[]; asked?: string[]; server?: [string, number | null][]; thought?: string; cost?: number; req?: string; split?: number[]; out?: string; each?: Record<string, number>; spoke?: string[]; errs?: string[]; says?: Record<string, string>; exits?: Record<string, number> }
 
 const PANE = 'agent-log'
@@ -695,6 +697,9 @@ const decided = new Map<string, { t: number; source?: string; decision?: string 
 let streamEnd = 0 // when main's last model request closed (collector `api_request`)
 const WAIT = 100 // ms: a shorter gap is the engine's own step from check to decision (1-2 ms when nothing streams), not a wait
 const preCtx = new Map<string, number>() // tool_use_id -> context entries its PreToolUse hooks returned, taken by the tool.call that raised them
+// tool_use_id -> the ms its PreToolUse and PostToolUse chains ran inside the call, those that logged a row: tool.call leaves them
+// out of its row. A chain with no row stays in, so splitOf still finds the instant held
+const hookMs = new Map<string, { pre: number; post: number }>()
 // tool_use_id -> the loop making the call, while it runs: classic.PreToolUse's envelope is the bare call (ToolCallEnvelope), which
 // names no loop, so its hook rows take the loop from here
 const loopOf = new Map<string, string | undefined>()
@@ -824,7 +829,7 @@ async function loadNow($: EngineInterface): Promise<void> {
   seen = v?.seen && !Array.isArray(v) ? v.seen : seed(entries)
   names = { ...(v?.names && !Array.isArray(v) ? v.names : {}), ...names } // merged: a fresh instance can name a loop before its first load. Ids are unique, and saved() drops the ones no entry shows
   owed = entries.length || Object.keys(seen).length ? { ...seen } : undefined // /clear's empty session owes nothing
-  blind = false; closed.clear(); lead.clear(); rerun.clear(); pre.clear(); recent.clear(); composed.clear(); checks.clear(); inherited.clear(); took.clear(); skipSeen.clear(); postCtx = [] // the old session's calls
+  blind = false; closed.clear(); lead.clear(); rerun.clear(); pre.clear(); recent.clear(); composed.clear(); checks.clear(); hookMs.clear(); inherited.clear(); took.clear(); skipSeen.clear(); postCtx = [] // the old session's calls
   // every new key prunes the others: a session's start, and /clear and resume, which add a key. Queued, not awaited: prompt.submit
   // awaits this load before its next, and a prune reads every other session
   mutate(() => pruneOthers($)).catch(() => {})
@@ -924,29 +929,33 @@ export const markAgain = (xs: Entry[], x: Entry) => {
   for (const y of xs) if (y.kind === 'prompt' && y.name === x.name && y.bytes === x.bytes && first(y.peek) === first(x.peek)) { y.again = seen || undefined; seen = true }
 }
 
+// where a row goes among the rest: a tool row by when its call began, not its run, so a call stays ahead of a parallel one begun
+// during its PreToolUse chain
+const startOf = (y: Entry) => y.t - (y.pre ?? 0)
+
 // fire-and-forget: callers never await the log, so logging cannot cost a hook its budget
 // opt.ahead: on a tool row, its PreToolUse context attachments to come. opt.above: on such an attachment, the tool it goes with.
 // opt.after: on a PostToolUse attachment, the tool it followed (its newest call of that name in the loop, by start)
-// opt.start: on a tool row, when its call began. opt.once: left out when the session holds a row of the same kind, name, detail and outcome
+// opt.start: on a tool row, when its call began: its t is pre after it. opt.once: left out when the session holds a row of the same kind, name, detail and outcome
 function push($: EngineInterface, e: Omit<Entry, 't'>, opt: { ahead?: number; above?: string; after?: string; start?: number; once?: boolean } = {}): void {
   const t = opt.start ?? Date.now() // when it happened, not when the chain gets to it: rows are placed by it
   mutate(async () => {
     await loadNow($)
     if (opt.once && entries.some(y => y.kind === e.kind && y.name === e.name && y.detail === e.detail && y.outcome === e.outcome)) return
-    const x: Entry = { t, turn: turnNo, ...e }
+    const x: Entry = { t: t + (e.pre ?? 0), turn: turnNo, ...e }
     // A call's row is pushed once the call is over, after everything that happened while it ran: its own hooks (they run inside
     // it), parallel calls that finished first, a foreground agent's whole run. So it goes in where it began: before the first
     // row logged after its start, but never between another call and that call's hook rows, and in front of its own first row
     // even when they share a millisecond. Its PreToolUse context, which comes after it, goes in behind that call's PreToolUse hook rows
     const call = x.kind === 'tool' && x.use ? entries.findIndex(y => y.use === x.use) : -1
-    let at = opt.start != null ? entries.findLastIndex(y => y.t <= x.t) + 1 : -1
+    let at = opt.start != null ? entries.findLastIndex(y => startOf(y) <= t) + 1 : -1
     while (at > 0 && at < entries.length && entries[at]!.use && entries[at]!.use === entries[at - 1]!.use) at++
     if (call >= 0 && (at < 0 || call < at)) at = call
     const i = opt.above ? entries.findIndex(y => (ahead.get(y) ?? 0) > 0 && y.name === opt.above && y.agent === x.agent) : -1
     if (call >= 0) x.turn = entries[call]!.turn // the turn its hooks ran in, the one it began in
     if (at >= 0 && at < entries.length) entries.splice(at, 0, x)
     else if (i >= 0) {
-      const y = entries[i]!; ahead.set(y, ahead.get(y)! - 1); x.t = y.t; x.turn = y.turn; x.use = y.use // the row's time and turn, so the log stays in time order
+      const y = entries[i]!; ahead.set(y, ahead.get(y)! - 1); x.t = startOf(y); x.turn = y.turn; x.use = y.use // the row's time and turn, so the log stays in time order
       const j = y.use ? entries.findLastIndex(z => z.use === y.use && z.origin === 'PreToolUse') : -1
       entries.splice(Math.max(i, j) + 1, 0, x)
     } else {
@@ -1138,6 +1147,8 @@ export const register: Register = (on, options) => {
     const at = e.tool_use_id ? checkedAt.get(e.tool_use_id) : undefined, d = e.tool_use_id ? decided.get(e.tool_use_id) : undefined
     if (e.tool_use_id) { checks.delete(e.tool_use_id); preCtx.delete(e.tool_use_id); checkedAt.delete(e.tool_use_id); decided.delete(e.tool_use_id) }
     const wait = at != null && d && d.t - at >= WAIT ? d.t - at : undefined
+    const h = e.tool_use_id ? hookMs.get(e.tool_use_id) : undefined
+    if (e.tool_use_id) hookMs.delete(e.tool_use_id)
     // main's message closed between the check and the call's end: the decision waited for it. Not up to the decision: the engine
     // records the request a few ms after deciding. Main's next request starts only once its calls end, so none closes in between
     // by chance. Anything else is named by the decision's source alone: `user_temporary`, `user_reject` and their kin are the person.
@@ -1156,7 +1167,7 @@ export const register: Register = (on, options) => {
     const status: Status = r.deny || refused || hookBlocked ? 'denied' : ins?.quiet ? 'nomatch' : r.isError ? 'failed' : 'ok'
     const pl = await place, a = e as any
     const out = pl ? outsideOf(e.tool, { path: a.file_path ?? a.notebook_path ?? a.path, cmd }, ...pl) : undefined
-    try { push($, { kind: 'tool', name: e.tool, detail, outcome, status, agent: e.agentId, ms: r.deny ? undefined : Date.now() - t0 - (wait ?? 0), wait, waitFor, peek: why, cmd, pat, check: v?.check, rule: v?.rule, exit: ins?.exit, insight: ins?.text || undefined, child: sp?.id, use: e.tool_use_id, step, via, out }, { ahead: pre, start: began }) } catch {} // logger never breaks the call
+    try { push($, { kind: 'tool', name: e.tool, detail, outcome, status, agent: e.agentId, ms: r.deny ? undefined : Date.now() - t0 - (wait ?? 0) - (h ? h.pre + h.post : 0), wait, waitFor, pre: h?.pre || undefined, post: h?.post || undefined, peek: why, cmd, pat, check: v?.check, rule: v?.rule, exit: ins?.exit, insight: ins?.text || undefined, child: sp?.id, use: e.tool_use_id, step, via, out }, { ahead: pre, start: began }) } catch {} // logger never breaks the call
     return r
   }).catch(($, e, next) => { logFailure($, 'tool.call', next.error); return next(e) })
 
@@ -1307,6 +1318,11 @@ export const register: Register = (on, options) => {
     if (spokeN?.length) for (const p of typeof blocked === 'string' ? [blocked] : ctx) { const n = speaker(runs, p) ?? hookName(cfg, event, target, p); if (!n.includes(', ')) own[n] = own[n] ? `${own[n]}\n${p}` : p }
     const says = Object.keys(own).length ? Object.fromEntries(Object.entries(own).map(([n, s]) => [n, peek(s) ?? ''])) : undefined
     const exits = name.includes(', ') && runs.some(r => r.exit) ? Object.fromEntries(runs.filter(r => r.exit).map(r => [r.name, r.exit!])) : undefined
+    if (e.tool_use_id && /^(PreToolUse|PostToolUse|PostToolUseFailure)$/.test(event)) { // they run inside the call; PermissionRequest's sit in its wait
+      const h = hookMs.get(e.tool_use_id) ?? { pre: 0, post: 0 }
+      if (event === 'PreToolUse') h.pre += ms; else h.post += ms
+      hookMs.set(e.tool_use_id, h)
+    }
     try { push($, { kind: 'hook', name: name || `${event} hook`, origin: event, detail, outcome, status: failed ? 'failed' : undefined, src: 'hook', agent: e.agent_id ?? (e.tool_use_id ? loopOf.get(e.tool_use_id) : undefined), ms, peek: peek(failed && said !== broke ? `${broke}\n${said}` : said), use: e.tool_use_id, each, spoke: spokeN, errs, says, exits }) } catch {}
     return r
   }).catch(($, e, next) => { logFailure($, 'classic.*', next.error); return next(e) })
@@ -1646,6 +1662,8 @@ export const register: Register = (on, options) => {
             ? `asked${x.via?.startsWith('user_') ? ' you' : ''}${x.rule ? ` (rule ${x.rule})` : ''}; ${VIA[x.via ?? ''] ?? (x.via ? `${x.via} decided` : 'the mode or you decided')}`
             : `${x.check === 'allow' ? 'allowed' : 'denied'} by ${x.rule ? `rule ${x.rule}` : 'the mode, a hook or the tool itself'}`)}
           {x.ms != null && kv(x.child ? 'call' : 'took', exact(x.ms))}
+          {/* a call's hooks ran inside it, before and after its run, so took leaves them out */}
+          {(x.pre != null || x.post != null) && kv('hooks', `${exact((x.pre ?? 0) + (x.post ?? 0))} around it, in their own rows`)}
           {x.kind === 'turn' && !x.agent && (m => [(sp => sp && kv('split', sp + (sp.includes('other ') ? ' (other: the engine\'s and plugins\' own work between steps)' : '')))(splitText(turnOf(x), m)), m.agents.size > 1 && kv('loops', loops(m.agents))])(turnIn(turnOf(x)))}
           {/* the wait came before the call ran, so took leaves it out */}
           {x.wait != null && kv('waited', `${exact(x.wait)} for ${x.waitFor ?? 'the decision'}, before it ran`)}
@@ -1805,7 +1823,7 @@ export const register: Register = (on, options) => {
       if (x.kind === 'turn') { if (!x.agent) { m.ms = (m.ms ?? 0) + (x.ms ?? 0); m.aborted ||= stat(x) === 'aborted'; m.ends.push(x) } continue }
       m.xs.push(x)
       if (!hiddenCtx(x)) m.agents.add(x.agent ?? 'main') // a loop whose only rows are hidden context (a fork's first request) shows nothing
-      if (!x.agent && x.kind !== 'fork' && x.kind !== 'side') { m.first ??= x.t; m.last = Math.max(m.last ?? 0, x.kind === 'tool' ? x.t + (x.ms ?? 0) + (x.wait ?? 0) : x.kind === 'step' ? x.t + (x.ms ?? 0) : x.t) } // a call's and a step's t is its start. Main's rows only: a fork or a side request logging after the turn would stretch the span (both sit under main)
+      if (!x.agent && x.kind !== 'fork' && x.kind !== 'side') { m.first ??= startOf(x); m.last = Math.max(m.last ?? 0, x.kind === 'tool' ? x.t + (x.ms ?? 0) + (x.wait ?? 0) : x.kind === 'step' ? x.t + (x.ms ?? 0) : x.t) } // a call's and a step's t is its start. Main's rows only: a fork or a side request logging after the turn would stretch the span (both sit under main)
     }
     // `model 30.1s · tools 8.2s · other 1.0s`, where the turn's time went (splitOf), largest first: each turn end's own split, else
     // counted now from the rows still logged; the running turn up to now, a turn whose end was never logged over its rows' span.
