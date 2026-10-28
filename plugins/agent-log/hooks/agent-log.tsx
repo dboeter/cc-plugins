@@ -32,6 +32,8 @@ type Status = 'ok' | 'failed' | 'denied' | 'blocked' | 'feedback' | 'stopped' | 
 // tools it called; server: the calls the API ran itself (the advisor) and their ms; thought: its thinking's first line;
 // cost/req: the collector's price and request id for it
 // split: on main's turn row, where its time went as splitOf counts it, kept so evicting the turn's rows does not lose it
+// lead: on main's turn row, the engine's time from the turn's start (durationMs's) to the prompt.submit agent-log saw, which no row
+// holds; a turn stored before it existed, or a queued prompt's, counts that time as other
 // out: on a tool row, the place outside the session's project root the call reached (outsideOf), `~`-shortened; absent inside it
 // each: on a row of several hooks, each hook's own ms, by name, as hook-timer recorded it (pickRuns); hooks it does not wrap are absent
 // spoke: on such a row, the hooks whose text (context, a block, feedback) the row's outcome is; errs: the wrapped hooks that exited
@@ -42,7 +44,7 @@ type Status = 'ok' | 'failed' | 'denied' | 'blocked' | 'feedback' | 'stopped' | 
 // its particulars. side: a model request outside the turns: the engine's own (src engine, name its query source: a title, a
 // prompt suggestion, compaction) or a plugin's $.model.complete (src plugin, name the plugin); detail is the model
 type Entry = { t: number; turn?: number; kind: 'tool' | 'hook' | 'session' | 'prompt' | 'turn' | 'fork' | 'step' | 'event' | 'side'; name: string; detail: string; outcome: string; status?: Status; src?: Src; bytes?: number; agent?: string; ms?: number; type?: string; origin?: string; peek?: string; cmd?: string; check?: 'allow' | 'ask' | 'deny'; rule?: string; exit?: number; insight?: string; child?: string; use?: string; wait?: number; waitFor?: string; pre?: number; post?: number; again?: boolean
-  pat?: string; via?: string; step?: string; effort?: string | number; ttft?: number; think?: number; stop?: string; tok?: number[]; asked?: string[]; server?: [string, number | null][]; thought?: string; cost?: number; req?: string; split?: number[]; out?: string; each?: Record<string, number>; spoke?: string[]; errs?: string[]; says?: Record<string, string>; exits?: Record<string, number> }
+  pat?: string; via?: string; step?: string; effort?: string | number; ttft?: number; think?: number; stop?: string; tok?: number[]; asked?: string[]; server?: [string, number | null][]; thought?: string; cost?: number; req?: string; split?: number[]; lead?: number; out?: string; each?: Record<string, number>; spoke?: string[]; errs?: string[]; says?: Record<string, string>; exits?: Record<string, number> }
 
 const PANE = 'agent-log'
 // a block after the fact refuses nothing: PostToolUse's tool already ran and Stop's turn already ended, so the hook's text is
@@ -642,7 +644,8 @@ export const rootOf = (xs: Entry[]) => {
 // tools, the model.
 // A wait on the model's message is the model's. A subagent's steps and calls sit inside its Agent call, so count as agents; its
 // prompts, questions, classifier waits and hook runs count as main's do, but only within main's Agent call (rootOf): a background agent's call returns at once.
-// [from, to] is the turn; what none of them held is the engine's and plugins' own work between steps: other = to - from - the sum
+// [from, to] is the turn; what none of them held is the engine's and plugins' own work between steps: other = to - from - the sum.
+// The stretch before the prompt's submit is the turn row's lead, not a part here: no row of the turn exists yet to count
 export const SPLIT = ['you', 'permission', 'hooks', 'compact', 'agents', 'tools', 'model'] as const
 export const ASKED = 'you to answer the permission prompt' // a wait's waitFor when the person decided it
 export const STREAMING = 'the model to finish its message' // a wait's waitFor when the call was decided as main's message ended
@@ -1615,10 +1618,12 @@ export const register: Register = (on, options) => {
     const mine = !!e.agentId && linked(e.agentId)
     try { push($, { kind: 'turn', name: 'turn', detail: '', outcome: mine ? costOf(e.usage) : '', status, agent: e.agentId, ms: e.durationMs, peek: mine ? peek(e.answer) : undefined }) } catch {} // a closing boundary per loop; push redraws
     // main's split, once its rows are in (queued behind the push): kept on its turn row, so a full log evicting them loses nothing
+    const at = turnAt // reset below, before the queued mutate runs
     if (!e.agentId) mutate(async () => {
       const y = entries.findLast(z => z.kind === 'turn' && !z.agent)
       if (y?.ms != null) {
         y.split = splitOf([...evicted, ...entries].filter(z => z.turn === y.turn), y.t - y.ms, y.t)
+        if (at != null) y.lead = Math.max(0, Math.min(y.ms, at - (y.t - y.ms)))
         evicted = []
         note = unusualOf(y.turn ?? turnNo, y.split, y.ms, [...totals.turns, ...entries.filter(z => z !== y && z.kind === 'turn' && !z.agent && z.ms != null).map(z => z.ms! - (z.split?.[0] ?? 0))])
         touch($)
@@ -1887,17 +1892,18 @@ export const register: Register = (on, options) => {
     }
     // `model 30.1s · tools 8.2s · other 1.0s`, where the turn's time went (splitOf), largest first: each turn end's own split, else
     // counted now from the rows still logged; the running turn up to now, a turn whose end was never logged over its rows' span.
-    // Parts under 0.1 s are left out; other is the engine's and plugins' own work between steps. most: the header's two largest
-    const SHOW = ['model', 'tools', 'agents', 'hooks', 'compact', 'permission', 'you', 'other']
+    // Parts under 0.1 s are left out; other is the engine's and plugins' own work between steps, before submit the turn rows' lead
+    // (the engine's time before your prompt's submit). most: the header's two largest
+    const SHOW = ['model', 'tools', 'agents', 'hooks', 'compact', 'permission', 'you', 'before submit', 'other']
     const splitText = (n: number, m: Turn, most = Infinity) => {
       const parts = SPLIT.map(() => 0)
-      let span = 0
+      let span = 0, lead = 0
       const add = (xs: number[], ms: number) => { xs.forEach((v, i) => { parts[i]! += v }); span += ms }
-      for (const y of m.ends) if (y.ms != null) add(y.split ?? splitOf(m.xs, y.t - y.ms, y.t), y.ms)
+      for (const y of m.ends) if (y.ms != null) { add(y.split ?? splitOf(m.xs, y.t - y.ms, y.t), y.ms); lead += y.lead ?? 0 }
       const from = turnAt ?? m.first
       if (n === turnNo && busy && from != null) add(splitOf([...evicted, ...m.xs], from, now), now - from)
       else if (!m.ends.length && m.first != null && m.last! > m.first) add(splitOf(m.xs, m.first, m.last!), m.last! - m.first)
-      const by: Record<string, number> = { other: span - parts.reduce((a, b) => a + b, 0) }
+      const by: Record<string, number> = { 'before submit': lead, other: span - lead - parts.reduce((a, b) => a + b, 0) }
       SPLIT.forEach((k, i) => { by[k] = parts[i]! })
       return SHOW.filter(k => by[k]! >= 100).sort((p, q) => by[q]! - by[p]!).slice(0, most).map(k => `${k} ${secs(by[k])}`).join(' · ')
     }
@@ -2105,6 +2111,7 @@ export const register: Register = (on, options) => {
       '↗ magenta: a place in another project; a dim path with no ↗: ~/.claude or /tmp', '+ a hook added context', '· a hook changed nothing', '∅ found nothing', '≈ estimated',
       '╭ │ ├ ╰ a call bracketed with its hooks, waits and server calls, which sit two cells in: those above it ran before it, those below after', '│ ├ ╰ an open Agent fold\'s rows, and the agent tree\'s branches', '› the agent the log is filtered to',
       'bright: a row that did something; dim: routine, or below the level', '▸ ▾ open, close an Agent fold or a turn\'s hidden rows',
+      'before submit, in a turn\'s split: the engine\'s time from the turn\'s start to your prompt\'s submit, before its hooks ran',
       'other, in a turn\'s split: the engine\'s and plugins\' own work between steps']
     const KEYS: [string, string][] = [['a m h u', 'views: all, what the model did, the harness, outside the root'], ['l', 'level: info or notice (/agentlog level sets debug and error)'],
       ['o', 'open or close every Agent fold'], ['s', 'the setup page'], ['i', 'this page'], ['j k', 'the row cursor down, up, over rows and turn headers; in the inspector, the next or previous row'], ['↓ ↑', 'the row cursor too'],
