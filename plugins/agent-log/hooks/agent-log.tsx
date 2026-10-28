@@ -9,7 +9,8 @@ import { scrub } from './scrub'
 type Src = 'engine' | 'hook' | 'plugin' // who authored injected text: the engine's own framing, a settings hook, or a plugin chain
 // agent: the loop's agentId, absent on main. bytes: injected size (kept, not shown for now). ms: tool run time, minus its wait and
 // its hooks. pre/post: on a tool row, the time its PreToolUse and PostToolUse chains ran inside it, which their own rows show. Its
-// t is when its run began, pre after the call began (startOf), so splitOf finds the run where it ran
+// t is where its PreToolUse chain ended, pre after the call began (startOf): the engine checks the call after that chain, so its
+// wait then its run follow t, where splitOf counts them
 // wait/waitFor: on a tool row, the time between tool.check's verdict and the engine's decision, and what it waited on
 // type: the engine's attachment kind or context-block name, kept beside the readable `name`. origin: the settings hook event that produced the text or, on a hook row, ran the hook (its trigger; `name` is then the hook's own name).
 // cmd: a Bash call's full scrubbed command, shown in the inspector while the row shows its description. pat: a Grep's or Glob's
