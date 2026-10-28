@@ -49,3 +49,39 @@ test('a turn stored before lead existed still draws, its time before submit in o
   await m.press({ key: 'bturn1' })
   expect(await m.find({ text: /^other 2\.0s · model 1\.0s\b/ })).toBeDefined()
 })
+
+test('the turn\'s start is its end, read as turn.complete arrives, less its duration: a slow handler after it takes nothing off before submit', async ($, on) => {
+  const db = capture(on, 'PL')
+  on('prompt.submit', (_$: any, e: any) => ({ text: e.text }))
+  on('turn.complete', async () => { await new Promise(res => (globalThis as any).setTimeout(res, 500)); return { text: '' } })
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  await ($ as any).session.start({ cwd: '/w', surface: 'terminal', isInteractive: true, source: 'startup' })
+  const t0 = Date.now()
+  await $.prompt.submit({ text: 'Say hi', origin: { kind: 'composer' }, wait: false } as any)
+  const t1 = Date.now()
+  await $.tool.call({ tool: 'Read', tool_use_id: 'tl1', file_path: '/w/a.ts' } as any)
+  await ($ as any).turn.complete({ reason: 'answer', answer: '', durationMs: Date.now() - t0 + 1000, usage: undefined })
+  await $.session.end({ reason: 'other', sessionId: 'PL' } as any)
+  const y = db['r:PL'].entries.find((x: any) => x.kind === 'turn' && !x.agent)
+  expect(y.lead).toBeGreaterThanOrEqual(950) // the engine's 1 s before the submit, not less the 500 ms the next handler took after the end
+  expect(y.lead).toBeLessThanOrEqual(1000 + (t1 - t0))
+})
+
+test('a turn stored before its split was kept still draws one, counted from its rows', async ($, on) => {
+  const db = capture(on, 'PN')
+  const T = Date.now() - 600_000
+  // no split, no time before submit, no totals: a store from before this split was kept
+  db['r:PN'] = { entries: [
+    { t: T - 3000, turn: 1, kind: 'step', name: 'claude-opus-5-5', detail: '', outcome: '', status: 'ok', ms: 1000 },
+    { t: T, turn: 1, kind: 'turn', name: 'turn', detail: '', outcome: '', status: 'ok', ms: 3000 },
+  ], seen: {}, turn: 1, names: {} }
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  await ($ as any).session.start({ cwd: '/w', surface: 'terminal', isInteractive: true, source: 'resume' })
+  const m = await pane($)
+  try {
+    expect(await m.find({ text: /other 2\.0s · model 1\.0s$/ })).toBeDefined() // the header's two largest parts
+    await m.press({ key: 'bturn1' })
+    expect(await m.find({ text: /^other 2\.0s · model 1\.0s\b/ })).toBeDefined()
+  } finally { await m.unmount() }
+})

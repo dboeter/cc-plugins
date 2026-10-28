@@ -22,7 +22,7 @@ const setupOf = async ($: any) => {
   const m = await $.ui.mount(PANE)
   await m.press({ key: 'fsetup' })
   const read = async (re: RegExp) => (await m.find({ text: re }))?.text
-  const r = { main: await read(/^\d+ requests? · .* \$/), agents: await read(/^1 request · 1\.0s/), side: await read(/^1 request · 200ms · — tokens$/), problems: await read(/^Problems: /) }
+  const r = { main: await read(/^\d+ requests? · .* \$/), agents: await read(/^1 request · 1\.0s/), side: await read(/^1 request · 200ms · — tokens$/), problems: await read(/^Problems: /), gone: await read(/no longer in the log$/) }
   await m.press({ key: 'back' })
   await m.unmount()
   return r
@@ -52,11 +52,12 @@ test('a full log evicting the requests and problems the setup page counts leaves
   const kept = db['r:ST'].entries as any[]
   expect(kept.some(x => x.kind !== 'tool')).toBe(false) // every counted row is gone
   expect(db['r:ST'].totals.use.main).toEqual({ n: 3, ms: 3000, tok: [300, 30], cost: 1.5 }) // saved with the entries
-  expect(await setupOf($)).toEqual(before)
+  const gone = '✗ 1 hook run failed, no longer in the log' // the problem list's first line for the evicted problems, which no row shows
+  expect(await setupOf($)).toEqual({ ...before, gone })
   // cleared, the log keeps the session's totals
   await ($ as any).command.run({ command: 'agentlog', args: 'clear', origin: { kind: 'composer' }, presentation: 'text' })
   expect(db['r:ST'].entries).toEqual([])
-  expect(await setupOf($)).toEqual(before)
+  expect(await setupOf($)).toEqual({ ...before, gone })
 })
 
 test('a resumed or reloaded session adds its stored totals to the rows it still has', async ($, on) => {
@@ -66,6 +67,7 @@ test('a resumed or reloaded session adds its stored totals to the rows it still 
   expect(s.main).toContain('3 requests · 3.0s · 300 in · 30 out · $1.50')
   expect(s.side).toBeDefined() // a line only evicted rows had
   expect(s.problems).toContain('Problems: 2 API errors')
+  expect(s.gone).toBe('✗ 2 API errors, no longer in the log') // the list names what the count holds and no row shows
 })
 
 test('a store from before the totals counts its rows, as it did', async ($, on) => {

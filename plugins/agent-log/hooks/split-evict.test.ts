@@ -79,3 +79,17 @@ test('a full log evicting a foreground agent\'s hook rows as they come keeps the
   expect(rows.find(x => x.kind === 'tool' && x.use === 'ag1')?.child).toBe('A')
   expect(rows.find(x => x.kind === 'turn' && x.turn === 2).split[2]).toBeGreaterThanOrEqual(W - 20) // hooks
 })
+
+test('/agentlog clear in a running turn keeps the cleared rows\' time in its split', async ($, on) => {
+  const db = capture(on, 'SC')
+  on('prompt.submit', (_$: any, e: any) => ({ text: e.text }))
+  on('turn.complete', () => ({ text: '' }))
+  silent(on)
+  const t0 = Date.now()
+  await $.prompt.submit({ text: 'Read the files', origin: { kind: 'composer' }, wait: false } as any)
+  await drain(($ as any).turn.step({ turnId: 'c1e4a0b2-77aa', index: 0, model: 'claude-opus-5-5', messageCount: 3 }))
+  await ($ as any).command.run({ command: 'agentlog', args: 'clear', origin: { kind: 'composer' }, presentation: 'text' })
+  await ($ as any).turn.complete({ reason: 'answer', answer: '', durationMs: Date.now() - t0, usage: undefined })
+  const y = (await flushed($, 'SC', db)).find(x => x.kind === 'turn' && !x.agent)
+  expect(y.split[6]).toBeGreaterThanOrEqual(W) // model: the cleared request's time, not other
+})

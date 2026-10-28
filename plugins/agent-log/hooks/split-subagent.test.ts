@@ -4,17 +4,17 @@ import { ASKED, splitOf } from './agent-log'
 // main's Agent row carries the agent it spawned as child; that agent's rows carry it as agent (a grandchild's, its own id)
 const x = (t: number, kind: string, ms: number | undefined, extra: object = {}) => ({ t, kind, name: 'Read', detail: '', outcome: '', ms, ...extra })
 
-test('a foreground agent\'s permission prompt, classifier wait and hooks split as main\'s own do; its config wait stays agents', () => {
+test('a foreground agent\'s permission prompt, decision waits and hooks split as main\'s own do', () => {
   const xs = [
     x(0, 'tool', 30_000, { name: 'Agent', child: 'A' }), // foreground: the call holds 0-30000
-    x(1000, 'step', 2000, { agent: 'A' }), // its model: agents
+    x(1000, 'step', 1500, { agent: 'A' }), // its model: agents
     x(3000, 'tool', 1000, { name: 'Bash', agent: 'A', wait: 20_000, waitFor: ASKED }), // 3000-23000 you, then its run: agents
-    x(24_000, 'tool', 500, { name: 'Edit', agent: 'A', wait: 1000, waitFor: 'the permission decision (config)' }), // 24000-25000 agents: mostly its message closing
+    x(24_000, 'tool', 500, { name: 'Edit', agent: 'A', wait: 1000, waitFor: 'the permission decision (config)' }), // 24000-25000 permission: no request of its closed inside
     x(26_000, 'hook', 500, { agent: 'A' }), // 25500-26000 hooks
     x(27_000, 'tool', 100, { name: 'Bash', agent: 'B', wait: 1000, waitFor: ASKED }), // a grandchild's prompt: 27000-28000 you
     x(28_500, 'tool', undefined, { name: 'Bash', agent: 'A', wait: 1000, waitFor: 'the auto-mode classifier', status: 'denied' }), // 28500-29500 permission
   ]
-  expect(splitOf([...xs, x(26_500, 'tool', 1000, { name: 'Agent', agent: 'A', child: 'B' })] as any, 0, 30_000)).toEqual([21_000, 1000, 500, 0, 7500, 0, 0])
+  expect(splitOf([...xs, x(26_500, 'tool', 1000, { name: 'Agent', agent: 'A', child: 'B' })] as any, 0, 30_000)).toEqual([21_000, 2000, 500, 0, 6500, 0, 0])
 })
 
 test('a background agent adds nothing to main\'s turn: its call returns at once', () => {
@@ -36,4 +36,14 @@ test('a subagent\'s wait counts only inside the turn and its Agent call', () => 
     x(0, 'hook', 100, { agent: 'C' }), // a loop no Agent row started (a plugin's fork): not counted
   ]
   expect(splitOf(xs as any, 0, 20_000)).toEqual([3000, 0, 1000, 0, 8000, 0, 0])
+})
+
+test('a subagent\'s decision wait during which its own request closed stays agents; a hook-decided or config wait without one is permission', () => {
+  const agent = x(0, 'tool', 30_000, { name: 'Agent', child: 'A' })
+  const wait = (extra: object) => x(10_000, 'tool', 100, { name: 'Edit', agent: 'A', wait: 5000, ...extra }) // 10000-15000
+  const config = { waitFor: 'the permission decision (config)' }
+  expect(splitOf([agent, x(9000, 'step', 3000, { agent: 'A' }), wait(config)] as any, 0, 30_000)).toEqual([0, 0, 0, 0, 30_000, 0, 0]) // its request closed at 12000
+  expect(splitOf([agent, x(9000, 'step', 3000, { agent: 'B' }), wait(config)] as any, 0, 30_000)).toEqual([0, 5000, 0, 0, 25_000, 0, 0]) // another loop's request
+  expect(splitOf([agent, wait(config)] as any, 0, 30_000)).toEqual([0, 5000, 0, 0, 25_000, 0, 0])
+  expect(splitOf([agent, wait({ waitFor: 'the permission decision (hook)' })] as any, 0, 30_000)).toEqual([0, 5000, 0, 0, 25_000, 0, 0])
 })

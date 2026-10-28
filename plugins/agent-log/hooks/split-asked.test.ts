@@ -30,3 +30,8 @@ test('a foreground agent\'s question splits as you inside its Agent call', () =>
   ]
   expect(splitOf(xs as any, 0, 30_000)).toEqual([25_000, 0, 0, 0, 5000, 0, 0])
 })
+
+test('with no decision record an AskUserQuestion\'s run is your answer, and splits as you', () => {
+  const xs = [x(0, 'step', 1000), x(1000, 'tool', 30_000, { name: 'AskUserQuestion' }), x(31_000, 'tool', 100)]
+  expect(splitOf(xs as any, 0, 31_100)).toEqual([30_000, 0, 0, 0, 0, 100, 1000])
+})

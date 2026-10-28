@@ -12,7 +12,17 @@ test('a turn you held 30 s of is not unusual against earlier turns of 10-14 s', 
 
 test('the 10 s floor applies to the turn less your part', () => {
   expect(unusualOf(2, split({ you: 12_000, hooks: 6_000 }), 18_000, [])).toBe(undefined) // 6 s without you: never noted
-  expect(unusualOf(2, split({ you: 2_000, hooks: 9_000 }), 12_000, [])).toBe('#2: hooks 9.0s of 12.0s')
+  expect(unusualOf(2, split({ you: 2_000, hooks: 9_000 }), 12_000, [])).toBe('#2: hooks 9.0s of 10.0s') // of the turn less your part
+})
+
+test('your part never hides a hooks note: the largest part is picked from the rest', () => {
+  expect(unusualOf(3, split({ you: 30_000, hooks: 9_000, model: 2_000 }), 41_000, [])).toBe('#3: hooks 9.0s of 11.0s')
+})
+
+test('the time before submit is not other: hooks over the rest of the turn get their note', () => {
+  // 14 s: hooks 5, model 3, before submit 4, other 2. Counted as other, the 6 s would outweigh the hooks
+  expect(unusualOf(5, split({ hooks: 5_000, model: 3_000 }), 14_000, [], 4_000)).toBe('#5: hooks 5.0s of 14.0s')
+  expect(unusualOf(5, split({ hooks: 5_000, model: 3_000 }), 14_000, [])).toBe(undefined)
 })
 
 const capture = (on: any, id: string) => {

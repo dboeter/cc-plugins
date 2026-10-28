@@ -407,7 +407,7 @@ const CLASSIFIED = /^Permission for this action was denied by the Claude Code au
 // who settled a call (its via), one reading for the inspector and the wait's name. Auto mode's classifier answers as `config`, as a
 // rule does, and the collector records no request of its own (beside a real 37 s refusal, main's were the only ones): only its
 // refusal's error result names it. Any other `config` decision in auto mode is `auto`, either's
-export const viaOf = (source: string | undefined, mode: string | undefined, text = '') => CLASSIFIED.test(text) ? 'classifier' : source === 'config' && mode === 'auto' ? 'auto' : source
+export const viaOf = (source: string | undefined, mode: string | undefined, text = '', waited = false) => CLASSIFIED.test(text) ? 'classifier' : source === 'config' && mode === 'auto' && waited ? 'auto' : source
 // the error results a refused call returns: a denied permission prompt (or one no one could answer, headless), you rejecting it,
 // the classifier, the guard on the session's working directories. Read from the text too: a decision record can be missing (an
 // older engine), and a refusal's record can come late
@@ -643,17 +643,23 @@ export const rootOf = (xs: Entry[]) => {
 // the engine took its time over (a headless `ask` sat 19 s before its `config` decision), hooks, a compaction, agents, other
 // tools, the model.
 // A wait on the model's message is the model's. A subagent's steps and calls sit inside its Agent call, so count as agents; its
-// prompts, questions, classifier waits and hook runs count as main's do, but only within main's Agent call (rootOf): a background agent's call returns at once.
+// waits and hook runs count as main's do, but only within main's Agent call (rootOf): a background agent's call returns at once.
 // [from, to] is the turn; what none of them held is the engine's and plugins' own work between steps: other = to - from - the sum.
 // The stretch before the prompt's submit is the turn row's lead, not a part here: no row of the turn exists yet to count
 export const SPLIT = ['you', 'permission', 'hooks', 'compact', 'agents', 'tools', 'model'] as const
 export const ASKED = 'you to answer the permission prompt' // a wait's waitFor when the person decided it
 export const STREAMING = 'the model to finish its message' // a wait's waitFor when the call was decided as main's message ended
+export const CLASSIFIER = 'the auto-mode classifier' // a wait's waitFor when the classifier refused the call
 // calls whose wait is you answering their dialog, whatever waitFor says: main's message closes after the check and before the
-// answer (`user_temporary` minutes later), so most are labelled STREAMING, and rows logged before waitFor have none
+// answer (`user_temporary` minutes later), so most are labelled STREAMING, and rows logged before waitFor have none. With no
+// decision record (no wait) the answer sits in the call's run, which counts as you too
 const ASKS = /^(AskUserQuestion|ExitPlanMode)$/
+// what such a call's wait was for, read for any row: its stored waitFor names the model or nothing
+export const answerOf = (x: Entry) => x.kind !== 'tool' || !ASKS.test(x.name) ? undefined : x.name === 'ExitPlanMode' ? 'you to approve the plan' : 'you to answer the question'
 export const splitOf = (xs: Entry[], from: number, to: number): number[] => {
   const pts: [number, number, number][] = [], root = rootOf(xs)
+  const ends = new Map<string, number[]>() // a subagent -> when its requests closed
+  for (const x of xs) if (x.kind === 'step' && x.agent && x.ms != null) ends.set(x.agent, [...ends.get(x.agent) ?? [], x.t + x.ms])
   let lo = from, hi = to
   const span = (a: number, b: number, c: number) => { const p = Math.max(a, lo), q = Math.min(b, hi); if (q > p) pts.push([p, 1, c], [q, -1, c]) }
   for (const x of xs) {
@@ -664,14 +670,15 @@ export const splitOf = (xs: Entry[], from: number, to: number): number[] => {
       const s = r.t + (r.wait ?? 0); lo = Math.max(from, s); hi = Math.min(to, s + r.ms)
     }
     const asks = x.kind === 'tool' && ASKS.test(x.name)
-    // a subagent's other waits stay agents: STREAMING names main's message only, and a subagent's `config` wait is mostly a
-    // message closing (112 of 123 over 100 ms in the event log had a subagent request close inside)
-    const held = asks || (x.agent ? x.waitFor === ASKED || x.waitFor === 'the auto-mode classifier' : x.waitFor !== STREAMING)
+    // a subagent's wait during which its own request closed is that message's, as STREAMING is main's: it stays agents. Rows
+    // logged before tool.call named it so carry the decision's name (112 of 123 such `config` waits had a request close inside)
+    const streamed = x.waitFor === STREAMING || (!!x.agent && !!x.wait && !!ends.get(x.agent)?.some(t => t >= x.t && t <= x.t + x.wait!))
+    const held = asks || x.waitFor === CLASSIFIER || !streamed
     if (x.kind === 'tool' && x.wait && held) span(x.t, x.t + x.wait, asks || x.waitFor === ASKED ? 0 : 1) // a call's t is its start, its wait before its run; a refused call has a wait and no run
     if (x.kind === 'hook' && x.ms != null) span(x.t - x.ms, x.t, 2) // a hook row's t is its end
     if (x.ms == null || x.agent) continue
     if (x.kind === 'step') span(x.t, x.t + x.ms, 6)
-    else if (x.kind === 'tool') span(x.t + (x.wait ?? 0), x.t + (x.wait ?? 0) + x.ms, x.name === 'Agent' ? 4 : 5)
+    else if (x.kind === 'tool') span(x.t + (x.wait ?? 0), x.t + (x.wait ?? 0) + x.ms, asks && !x.wait ? 0 : x.name === 'Agent' ? 4 : 5)
     else if (x.kind === 'event' && x.name === 'compacted') span(x.t, x.t + x.ms, 3) // pushed at its start
   }
   pts.sort((p, q) => p[0] - q[0])
@@ -684,14 +691,14 @@ export const splitOf = (xs: Entry[], from: number, to: number): number[] => {
 // turns (3 or more of them), else `#4: hooks 12.0s of 20.0s` when hooks or a slow permission decision held the turn longest.
 // Turns under 10 s never note: a short turn is not worth a look. Waiting on you is left out: that is your time, not a fault, so
 // the floor, the median rule and its `took` read the turn less its `you` part; prior holds the earlier turns' times less theirs
-export const unusualOf = (n: number, split: number[], ms: number, prior: number[]): string | undefined => {
+export const unusualOf = (n: number, split: number[], ms: number, prior: number[], preSubmit = 0): string | undefined => {
   const own = ms - (split[0] ?? 0)
   if (own < 10_000) return undefined
   const ps = prior.filter(p => p > 0).sort((a, b) => a - b), mid = ps.length >= 3 ? ps[ps.length >> 1]! : undefined
   if (mid && own > 2 * mid) return `#${n} took ${secs(own)}, ${Math.round(own / mid)}× the usual`
-  const top = split.reduce((m, v, i) => v > split[m]! ? i : m, 0), other = ms - split.reduce((a, b) => a + b, 0)
+  const top = split.reduce((m, v, i) => i && v > split[m]! ? i : m, 1), other = ms - preSubmit - split.reduce((a, b) => a + b, 0)
   const who = SPLIT[top]!
-  if ((who === 'hooks' || who === 'permission') && split[top]! > other && split[top]! >= 3000) return `#${n}: ${who} ${secs(split[top])} of ${secs(ms)}`
+  if ((who === 'hooks' || who === 'permission') && split[top]! > other && split[top]! >= 3000) return `#${n}: ${who} ${secs(split[top])} of ${secs(own)}`
   return undefined
 }
 // a spawned agent's name: the second and later of a type read `type #2`, `#3`, so two general-purpose agents tell apart in row
@@ -715,6 +722,7 @@ const blockedUse = new Set<string>() // tool_use_ids a PreToolUse hook blocked: 
 const checkedAt = new Map<string, number>()
 const decided = new Map<string, { t: number; source?: string; decision?: string }>()
 let streamEnd = 0 // when main's last model request closed (collector `api_request`)
+const agentEnd = new Map<string, number>() // a running subagent -> when its last model request closed (its turn.step's end)
 const WAIT = 100 // ms: a shorter gap is the engine's own step from check to decision (1-2 ms when nothing streams), not a wait
 const preCtx = new Map<string, number>() // tool_use_id -> context entries its PreToolUse hooks returned, taken by the tool.call that raised them
 // tool_use_id -> the ms its PreToolUse and PostToolUse chains ran inside the call, those that logged a row: tool.call leaves them
@@ -757,8 +765,14 @@ type Use = { n: number; ms: number; tok?: [number, number]; cost?: number }
 type Totals = { use: Record<string, Use>; bad: Record<string, number>; turns: number[]; skips: string[] }
 let totals: Totals = { use: {}, bad: {}, turns: [], skips: [] }
 const useKey = (x: Entry) => x.kind === 'step' ? (x.agent ? 'agents' : 'main') : x.kind === 'side' && x.src !== 'plugin' ? `side:${x.name}` : x.kind === 'side' || x.kind === 'fork' ? `plugin:${x.name}` : undefined
-// the problem a row counts as in problemsOf, by its name there
-const badKey = (x: Entry) => x.kind === 'hook' ? (stat(x) === 'failed' ? 'hook failed' : undefined) : x.kind === 'event' && ['hook skipped', 'API error', 'turn failed', 'MCP failed'].includes(x.name) ? x.name : undefined
+// the problems a row can count as (problemsOf, totals.bad): its key, then how one and several read
+const ev = (name: string) => (x: Entry) => x.kind === 'event' && x.name === name
+const PROBLEM: Record<string, [(x: Entry) => boolean, string, string]> = {
+  'hook failed': [x => x.kind === 'hook' && stat(x) === 'failed', 'hook run failed', 'hook runs failed'], 'hook skipped': [ev('hook skipped'), 'hook skipped', 'hooks skipped'],
+  'API error': [ev('API error'), 'API error', 'API errors'], 'turn failed': [ev('turn failed'), 'turn failed', 'turns failed'], 'MCP failed': [ev('MCP failed'), 'MCP server down', 'MCP servers down'],
+}
+const badKey = (x: Entry) => Object.keys(PROBLEM).find(k => PROBLEM[k]![0](x))
+const problem = (k: string, n: number) => n ? `${n} ${PROBLEM[k]![n > 1 ? 2 : 1]}` : ''
 const useOf = (ys: Entry[], u: Use = { n: 0, ms: 0 }): Use => {
   const r = { ...u, tok: u.tok && [...u.tok] as [number, number] }
   for (const x of ys) {
@@ -768,6 +782,8 @@ const useOf = (ys: Entry[], u: Use = { n: 0, ms: 0 }): Use => {
   }
   return r
 }
+// a row leaving the log, evicted or cleared: into the totals, and the running turn's rows into evicted for its split
+const drop = (x: Entry) => { fold(x); if (x.turn === turnNo) evicted.push(x) }
 const fold = (x: Entry) => {
   const u = useKey(x), b = badKey(x)
   if (u) totals.use[u] = useOf([x], totals.use[u])
@@ -883,7 +899,7 @@ async function loadNow($: EngineInterface): Promise<void> {
   totals = { use: tv?.use ?? {}, bad: tv?.bad ?? {}, turns: Array.isArray(tv?.turns) ? tv.turns : [], skips: Array.isArray(tv?.skips) ? tv.skips : [] }
   names = { ...(v?.names && !Array.isArray(v) ? v.names : {}), ...names } // merged: a fresh instance can name a loop before its first load. Ids are unique, and saved() drops the ones no entry shows
   owed = entries.length || Object.keys(seen).length ? { ...seen } : undefined // /clear's empty session owes nothing
-  blind = false; closed.clear(); lead.clear(); rerun.clear(); pre.clear(); recent.clear(); composed.clear(); checks.clear(); hookMs.clear(); inherited.clear(); took.clear(); skipSeen.clear(); postCtx = [] // the old session's calls
+  blind = false; evicted = []; closed.clear(); lead.clear(); rerun.clear(); pre.clear(); recent.clear(); composed.clear(); checks.clear(); hookMs.clear(); inherited.clear(); took.clear(); skipSeen.clear(); postCtx = [] // the old session's calls
   // every new key prunes the others: a session's start, and /clear and resume, which add a key. Queued, not awaited: prompt.submit
   // awaits this load before its next, and a prune reads every other session
   mutate(() => pruneOthers($)).catch(() => {})
@@ -1034,8 +1050,7 @@ function push($: EngineInterface, e: Omit<Entry, 't'>, opt: { ahead?: number; ab
 function evictOne(): Entry {
   const d = entries.findIndex(y => hiddenCtx(y) || lvl(y) === 0)
   const gone = entries.splice(Math.max(0, d), 1)[0]!
-  fold(gone)
-  if (gone.turn === turnNo) evicted.push(gone)
+  drop(gone)
   if (gone.kind === 'prompt' && !gone.again && (gone.src === 'hook' || gone.src === 'plugin')) markAgain(entries, gone)
   return gone
 }
@@ -1058,17 +1073,13 @@ async function pruneOthers($: EngineInterface): Promise<void> {
 // What broke this session, for the controls' red badge and the setup page: settings hook runs that failed or were cancelled (the collector's counts, else the red
 // hook rows), API errors, turns the API failed, MCP servers that did not connect
 const problemsOf = (xs: Entry[]): string[] => {
-  const n = (k: string, f: (x: Entry) => boolean) => xs.filter(f).length + (totals.bad[k] ?? 0) // and the evicted rows' (totals)
-  const many = (k: number, one: string, more = `${one}s`) => k ? `${k} ${k > 1 ? more : one}` : ''
+  const n = (k: string, first = 0) => problem(k, first || xs.filter(PROBLEM[k]![0]).length + (totals.bad[k] ?? 0)) // and the evicted rows' (totals)
   const runs = [...setup.runs.values()].reduce((a, r) => a + r.errors + r.cancelled, 0)
   return [
-    many(runs || n('hook failed', x => x.kind === 'hook' && stat(x) === 'failed'), 'hook run failed', 'hook runs failed'),
-    many(n('hook skipped', x => x.kind === 'event' && x.name === 'hook skipped'), 'hook skipped', 'hooks skipped'),
-    many(n('API error', x => x.kind === 'event' && x.name === 'API error'), 'API error'),
-    many(n('turn failed', x => x.kind === 'event' && x.name === 'turn failed'), 'turn failed', 'turns failed'),
+    n('hook failed', runs), n('hook skipped'), n('API error'), n('turn failed'),
     unsaved ? 'log not saved' : '',
     bigTimes && key === `r:${bigTimes}` ? 'per-hook times stopped: the hook-times file is over 4 MiB' : '',
-    many([...setup.mcp.values()].filter(m => m.status !== 'connected' && m.status !== 'disconnected').length || n('MCP failed', x => x.kind === 'event' && x.name === 'MCP failed'), 'MCP server down', 'MCP servers down'),
+    n('MCP failed', [...setup.mcp.values()].filter(m => m.status !== 'connected' && m.status !== 'disconnected').length),
   ].filter(Boolean)
 }
 
@@ -1142,7 +1153,7 @@ export const register: Register = (on, options) => {
       const y = entries.findLast(y => y.kind === 'tool' && y.use === a.tool_use_id)
       decided.delete(a.tool_use_id)
       if (!y || y.via) return
-      y.via = viaOf(a.source, setup.mode)
+      y.via = viaOf(a.source, setup.mode, '', y.wait != null)
       if (a.decision === 'reject') { y.status = 'denied'; y.outcome = 'deny'; y.insight = undefined; y.exit = undefined }
       touch($)
     }).catch(() => {})
@@ -1210,13 +1221,14 @@ export const register: Register = (on, options) => {
     const wait = at != null && d && d.t - at >= WAIT ? d.t - at : undefined
     const h = e.tool_use_id ? hookMs.get(e.tool_use_id) : undefined
     if (e.tool_use_id) hookMs.delete(e.tool_use_id)
-    // main's message closed between the check and the call's end: the decision waited for it. Not up to the decision: the engine
+    // the loop's message closed between the check and the call's end: the decision waited for it. Not up to the decision: the engine
     // records the request a few ms after deciding. Main's next request starts only once its calls end, so none closes in between
     // by chance. Anything else is named by the decision's source alone: `user_temporary`, `user_reject` and their kin are the person.
     // A classifier refusal is the classifier's wait even when main's message closed inside it: it can sit 37 s past that close
     const text = typeof r.text === 'string' ? r.text : '', refused = d?.decision === 'reject' || (!!r.isError && DENIED.test(text))
-    const via = viaOf(d?.source, setup.mode, text)
-    const waitFor = wait == null ? undefined : via === 'classifier' ? 'the auto-mode classifier' : !e.agentId && streamEnd >= at! && streamEnd <= Date.now() ? STREAMING
+    const via = viaOf(d?.source, setup.mode, text, wait != null)
+    const msgEnd = e.agentId ? agentEnd.get(e.agentId) ?? 0 : streamEnd
+    const waitFor = wait == null ? undefined : via === 'classifier' ? CLASSIFIER : msgEnd >= at! && msgEnd <= Date.now() ? STREAMING
       : d?.source?.startsWith('user') ? ASKED : `the permission decision${d?.source ? ` (${d.source})` : ''}`
     const sp = e.tool === 'Agent' ? spawned.find(s => s.use === e.tool_use_id) : undefined // the spawn ran inside next
     if (sp) spawned = spawned.filter(s => s !== sp)
@@ -1266,6 +1278,7 @@ export const register: Register = (on, options) => {
       try {
         const end = Date.now()
         if (since != null) think += end - since
+        if (e.agentId) agentEnd.set(e.agentId, end)
         const u = r?.usage
         const tok = u ? [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens, u.output_tokens] : undefined
         const sig = tok?.join(), b = sig ? bills.find(b => b.sig === sig) : undefined
@@ -1532,7 +1545,7 @@ export const register: Register = (on, options) => {
     if (e.args.trim() === 'clear') {
       await mutate(async () => {
         await loadNow($)
-        entries.forEach(fold) // the session's totals stay: the setup page says "this session", and clearing the log does not end it
+        entries.forEach(drop) // the session's totals and the running turn's split stay: clearing the log does not end either
         entries = [] // `seen` stays: clearing the log takes nothing out of the model's context
         expanded.clear()
         fit()
@@ -1608,7 +1621,9 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => { logFailure($, 'model.fork', next.error); return next(e) })
 
   on('turn.complete', async ($, e, next) => {
-    const at = turnAt // main's submit, read before any await lets the next prompt's set it
+    // main's submit and the turn's end, read before any await lets the next prompt's set them. turn.complete carries no time of its
+    // own, so the turn's start is this end less durationMs
+    const at = turnAt, end = Date.now()
     const r = await next(e)
     logSkipsIn($, next.trace)
     await ready($)
@@ -1622,14 +1637,14 @@ export const register: Register = (on, options) => {
     if (!e.agentId) mutate(async () => {
       const y = entries.findLast(z => z.kind === 'turn' && !z.agent)
       if (y?.ms != null) {
-        y.split = splitOf([...evicted, ...entries].filter(z => z.turn === y.turn), y.t - y.ms, y.t)
-        if (at != null) y.lead = Math.max(0, Math.min(y.ms, at - (y.t - y.ms)))
+        y.split = splitOf([...evicted, ...entries].filter(z => z.turn === y.turn), end - y.ms, end)
+        if (at != null) y.lead = Math.max(0, Math.min(y.ms, at - (end - y.ms)))
         evicted = []
-        note = unusualOf(y.turn ?? turnNo, y.split, y.ms, [...totals.turns, ...entries.filter(z => z !== y && z.kind === 'turn' && !z.agent && z.ms != null).map(z => z.ms! - (z.split?.[0] ?? 0))])
+        note = unusualOf(y.turn ?? turnNo, y.split, y.ms, [...totals.turns, ...entries.filter(z => z !== y && z.kind === 'turn' && !z.agent && z.ms != null).map(z => z.ms! - (z.split?.[0] ?? 0))], y.lead)
         touch($)
       }
     }).catch(() => {})
-    if (!e.agentId) { busy = false; turnAt = undefined }
+    if (!e.agentId) { busy = false; turnAt = undefined } else agentEnd.delete(e.agentId)
     if (!e.agentId && pending) mutate(async () => { await loadNow($); queued.forEach((w, i) => words.set(turnNo + 1 + i, w)); turnNo += pending; pending = 0; queued = []; touch($) }).catch(() => {}) // queued after the push, so the turn row keeps its number
     return r
   })
@@ -1731,7 +1746,7 @@ export const register: Register = (on, options) => {
           {(x.pre != null || x.post != null) && kv('hooks', `${exact((x.pre ?? 0) + (x.post ?? 0))} around it, in their own rows`)}
           {x.kind === 'turn' && !x.agent && (m => [(sp => sp && kv('split', sp + (sp.includes('other ') ? ' (other: the engine\'s and plugins\' own work between steps)' : '')))(splitText(turnOf(x), m)), m.agents.size > 1 && kv('loops', loops(m.agents))])(turnIn(turnOf(x)))}
           {/* the wait came before the call ran, so took leaves it out */}
-          {x.wait != null && kv('waited', `${exact(x.wait)} for ${x.waitFor ?? 'the decision'}, before it ran`)}
+          {x.wait != null && kv('waited', `${exact(x.wait)} for ${answerOf(x) ?? x.waitFor ?? 'the decision'}, before it ran`)}
           {x.kind === 'step' && kv('model', `${x.name}${x.effort != null ? ` · effort ${x.effort}` : ''}`)}
           {x.kind === 'side' && !!x.detail && kv('model', x.detail)}
           {x.ttft != null && kv('first', `${exact(x.ttft)} to the first token`)}
@@ -2004,8 +2019,8 @@ export const register: Register = (on, options) => {
     // a call's wait, drawn from its own fields above it; pressed, the call's inspector
     // only a wait on a decision: one on the model finishing the message that holds the call is the model's time (splitOf counts
     // it so), and would draw a row for every call. The inspector still says it
-    const waits = (y: Entry) => y.wait != null && y.waitFor !== STREAMING
-    const waitLine = (y: Entry, rail: string, link?: string) => line({ k: `e${idOf(y)}w`, act: `Waiting for ${y.waitFor ?? 'the decision'}`, press: () => show(y), st: [secs(y.wait)], who: '  ', rail, link })
+    const waits = (y: Entry) => y.wait != null && (!!answerOf(y) || y.waitFor !== STREAMING)
+    const waitLine = (y: Entry, rail: string, link?: string) => line({ k: `e${idOf(y)}w`, act: `Waiting for ${answerOf(y) ?? y.waitFor ?? 'the decision'}`, press: () => show(y), st: [secs(y.wait)], who: '  ', rail, link })
     // A group's parts, from the one switch on its kind:
     // - head: its own row, given the press (its fold's toggle when it has one, else the inspector on target) and that disclosure
     // - members: the entries a closed fold stands for, which back lands on
@@ -2254,6 +2269,8 @@ export const register: Register = (on, options) => {
           {kw('calls outside', outs.length ? outs.slice(0, 12).map(([p, n]) => n > 1 ? `${p} ×${n}` : p).join(', ') + (outs.length > 12 ? `, +${outs.length - 12} more` : '') : 'none reached outside the root')}
           {title('pb', problems.length ? `Problems: ${problems.join(', ')}` : 'Problems: none this session')}
           {bad.slice(-20).map(x => <Box key={`p${idOf(x)}`} flexDirection="row"><Button key={`pb${idOf(x)}`} label={fit(`✗ ${action(x)}`, cols - 4)} plain onPress={() => show(x)} /></Box>)}
+          {/* the counted problems a full log evicted or /agentlog clear cleared: no row left to open */}
+          {Object.entries(totals.bad).map(([k, c]) => !!c && <Text key={`pe${k}`} wrap="truncate-end">{`✗ ${problem(k, c)}, no longer in the log`}</Text>)}
           {title('hk', `Hooks: ${hookN} distinct settings and plugin hook commands${setup.runs.size ? '; runs as the collector counted them' : ''}`)}
           {hookCfg && kw('per-hook times', hookTimes(hookCfg))}
           {events.map(ev => { const r = setup.runs.get(ev), names = [...new Set((hookCfg?.[ev] ?? []).map(h => h.name))]
