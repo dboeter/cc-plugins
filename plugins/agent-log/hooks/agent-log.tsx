@@ -630,7 +630,7 @@ export const rootOf = (xs: Entry[]) => {
   }
 }
 // Where a turn's time went, each instant counted once, by what held it, in this order where they overlap (a read-only call runs
-// while the model still writes; a call's hooks run inside the call): you answering a permission prompt, a permission decision
+// while the model still writes; a call's hooks run inside the call): you answering a permission prompt, a question or a plan, a permission decision
 // the engine took its time over (a headless `ask` sat 19 s before its `config` decision), hooks, a compaction, agents, other
 // tools, the model.
 // A wait on the model's message is the model's. A subagent's steps and calls sit inside its Agent call, so count as agents; its
@@ -639,6 +639,9 @@ export const rootOf = (xs: Entry[]) => {
 export const SPLIT = ['you', 'permission', 'hooks', 'compact', 'agents', 'tools', 'model'] as const
 export const ASKED = 'you to answer the permission prompt' // a wait's waitFor when the person decided it
 export const STREAMING = 'the model to finish its message' // a wait's waitFor when the call was decided as main's message ended
+// calls whose wait is you answering their dialog, whatever waitFor says: main's message closes after the check and before the
+// answer (`user_temporary` minutes later), so most are labelled STREAMING, and rows logged before waitFor have none
+const ASKS = /^(AskUserQuestion|ExitPlanMode)$/
 export const splitOf = (xs: Entry[], from: number, to: number): number[] => {
   const pts: [number, number, number][] = [], root = rootOf(xs)
   let lo = from, hi = to
@@ -650,7 +653,8 @@ export const splitOf = (xs: Entry[], from: number, to: number): number[] => {
       if (!r || r.agent || r.ms == null) continue
       const s = r.t + (r.wait ?? 0); lo = Math.max(from, s); hi = Math.min(to, s + r.ms)
     }
-    if (x.kind === 'tool' && x.wait && x.waitFor !== STREAMING) span(x.t, x.t + x.wait, x.waitFor === ASKED ? 0 : 1) // a call's t is its start, its wait before its run; a refused call has a wait and no run
+    const asks = x.kind === 'tool' && ASKS.test(x.name)
+    if (x.kind === 'tool' && x.wait && (asks || x.waitFor !== STREAMING)) span(x.t, x.t + x.wait, asks || x.waitFor === ASKED ? 0 : 1) // a call's t is its start, its wait before its run; a refused call has a wait and no run
     if (x.kind === 'hook' && x.ms != null) span(x.t - x.ms, x.t, 2) // a hook row's t is its end
     if (x.ms == null || x.agent) continue
     if (x.kind === 'step') span(x.t, x.t + x.ms, 6)
