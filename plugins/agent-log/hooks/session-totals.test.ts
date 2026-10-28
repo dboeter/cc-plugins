@@ -104,3 +104,14 @@ test('a text-less request a full log evicted on its own push still adds the pric
   expect(db['r:SP'].entries.some((x: any) => x.kind === 'step')).toBe(false) // evicted on its push
   expect((await setupOf($)).main).toMatch(/^1 request · .* · 9\.1k in · 50 out · \$0\.25$/)
 })
+
+test('a skipped hook a full log evicted is not logged again after a reload, so the problem counts once', async ($, on) => {
+  const db = capture(on, 'SS')
+  db['r:SS'] = { entries: [step(1)], seen: {}, turn: 1, names: {}, totals: { use: {}, bad: { 'hook skipped': 1 }, turns: [], skips: ['skins classic.SessionStart|by cc-plugin-sec-default'] } }
+  on('prompt.submit', (_$: any, e: any) => ({ text: e.text }))
+  const notice = '<task-notification>\nskins: its classic.SessionStart hook was skipped. "cc-plugin-sec-default" runs first and sent the event on past it.\n</task-notification>'
+  await $.prompt.submit({ text: notice, origin: { kind: 'task-notification' }, wait: false } as any)
+  await $.session.end({ reason: 'other', sessionId: 'SS' } as any)
+  expect(db['r:SS'].entries.some((x: any) => x.name === 'hook skipped')).toBe(false)
+  expect((await setupOf($)).problems).toContain('Problems: 1 hook skipped')
+})

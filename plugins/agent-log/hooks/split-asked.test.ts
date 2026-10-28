@@ -15,9 +15,11 @@ test('answering an AskUserQuestion or approving an ExitPlanMode plan splits as y
 })
 
 test('a 5 s model and 60 s AskUserQuestion turn is not noted unusual', () => {
-  const xs = [x(0, 'step', 5000), x(5000, 'tool', 100, { name: 'AskUserQuestion', wait: 60_000 })]
-  // no earlier turns: the median rule leaving your time out is ticket 03's
-  expect(unusualOf(2, splitOf(xs as any, 0, 65_100), 65_100, [])).toBe(undefined)
+  // against earlier turns of 10-14 s: counted whole, the 65.1 s turn would be 5× the usual
+  for (const waitFor of [undefined, STREAMING]) {
+    const xs = [x(0, 'step', 5000), x(5000, 'tool', 100, { name: 'AskUserQuestion', wait: 60_000, waitFor })]
+    expect(unusualOf(2, splitOf(xs as any, 0, 65_100), 65_100, [10_000, 12_000, 14_000])).toBe(undefined)
+  }
 })
 
 test('a foreground agent\'s question splits as you inside its Agent call', () => {

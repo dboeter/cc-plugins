@@ -54,3 +54,28 @@ test('a full log evicting a turn\'s text-less requests as they come keeps their 
   await m.press({ key: 'bturn2' }) // the inspector's whole split
   expect(await m.find({ text: new RegExp(`^${model}\\b`) })).toBeDefined()
 })
+
+test('a full log evicting a foreground agent\'s hook rows as they come keeps their time as hooks, not agents', async ($, on) => {
+  const db = capture(on, 'SA')
+  const T = Date.now() - 600_000
+  db['r:SA'] = { entries: Array.from({ length: 300 }, (_, i) => ({ t: T + i, turn: 1, kind: 'tool', name: 'Read', detail: `/x/${i}.ts`, outcome: 'ok', status: 'ok', ms: 10 })), seen: {}, turn: 1, names: {} }
+  on('prompt.submit', (_$: any, e: any) => ({ text: e.text }))
+  on('turn.complete', () => ({ text: '' }))
+  on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: 'A' }))
+  // a hook that only added context ranks debug: its push evicts it
+  on('classic.PostToolUse', async () => { await wait(W); return { additionalContext: ['lint ok'] } as any })
+  on('tool.call', async (_$: any, e: any) => {
+    if (e.tool_use_id !== 'ag1') return { result: 'ok', text: 'ok' }
+    await ($ as any).agent.spawn({ subagentType: 'scout', prompt: 'Look', tool_use_id: 'ag1' })
+    await ($ as any).classic.PostToolUse({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_use_id: 'sa1', agent_id: 'A', tool_input: {}, tool_response: 'ok' })
+    return { result: 'done', text: 'done' }
+  })
+  const t0 = Date.now()
+  await $.prompt.submit({ text: 'Look around', origin: { kind: 'composer' }, wait: false } as any)
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'ag1', description: 'Look', prompt: 'Look', subagent_type: 'scout' } as any)
+  await ($ as any).turn.complete({ reason: 'answer', answer: '', durationMs: Date.now() - t0, usage: undefined })
+  const rows = await flushed($, 'SA', db)
+  expect(rows.some(x => x.kind === 'hook' && x.agent === 'A')).toBe(false) // evicted on its own push
+  expect(rows.find(x => x.kind === 'tool' && x.use === 'ag1')?.child).toBe('A')
+  expect(rows.find(x => x.kind === 'turn' && x.turn === 2).split[2]).toBeGreaterThanOrEqual(W - 20) // hooks
+})

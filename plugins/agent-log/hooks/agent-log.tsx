@@ -641,7 +641,7 @@ export const rootOf = (xs: Entry[]) => {
 // the engine took its time over (a headless `ask` sat 19 s before its `config` decision), hooks, a compaction, agents, other
 // tools, the model.
 // A wait on the model's message is the model's. A subagent's steps and calls sit inside its Agent call, so count as agents; its
-// waits and hook runs count as main's do, but only within main's Agent call (rootOf): a background agent's call returns at once.
+// prompts, questions, classifier waits and hook runs count as main's do, but only within main's Agent call (rootOf): a background agent's call returns at once.
 // [from, to] is the turn; what none of them held is the engine's and plugins' own work between steps: other = to - from - the sum
 export const SPLIT = ['you', 'permission', 'hooks', 'compact', 'agents', 'tools', 'model'] as const
 export const ASKED = 'you to answer the permission prompt' // a wait's waitFor when the person decided it
@@ -661,7 +661,10 @@ export const splitOf = (xs: Entry[], from: number, to: number): number[] => {
       const s = r.t + (r.wait ?? 0); lo = Math.max(from, s); hi = Math.min(to, s + r.ms)
     }
     const asks = x.kind === 'tool' && ASKS.test(x.name)
-    if (x.kind === 'tool' && x.wait && (asks || x.waitFor !== STREAMING)) span(x.t, x.t + x.wait, asks || x.waitFor === ASKED ? 0 : 1) // a call's t is its start, its wait before its run; a refused call has a wait and no run
+    // a subagent's other waits stay agents: STREAMING names main's message only, and a subagent's `config` wait is mostly a
+    // message closing (112 of 123 over 100 ms in the event log had a subagent request close inside)
+    const held = asks || (x.agent ? x.waitFor === ASKED || x.waitFor === 'the auto-mode classifier' : x.waitFor !== STREAMING)
+    if (x.kind === 'tool' && x.wait && held) span(x.t, x.t + x.wait, asks || x.waitFor === ASKED ? 0 : 1) // a call's t is its start, its wait before its run; a refused call has a wait and no run
     if (x.kind === 'hook' && x.ms != null) span(x.t - x.ms, x.t, 2) // a hook row's t is its end
     if (x.ms == null || x.agent) continue
     if (x.kind === 'step') span(x.t, x.t + x.ms, 6)
@@ -737,7 +740,7 @@ const compactAt = new Map<string, number>() // loop -> when its PreCompact fired
 // record marks one row; two parallel calls of one tool both fit, and which takes it is a guess: the record names no call
 let lastRun: { t: number; event: string; name: string; errors: number; cancelled: number } | undefined
 let turnAt: number | undefined // when main's running turn began: your prompt's submit
-// main's rows of the running turn that a full log evicted before turn.complete took its split: a request that wrote no text and a
+// the rows of the running turn (main's and its subagents') that a full log evicted before turn.complete took its split: a request that wrote no text and a
 // hook that changed nothing rank debug, so each goes on its own push. splitOf still counts them; in memory only
 let evicted: Entry[] = []
 // What the rows a full log evicted counted toward the setup page's model use and problems and the turn times "the usual" is
@@ -745,10 +748,11 @@ let evicted: Entry[] = []
 // row's cost and tokens land after it does. Saved with the entries; a store without it starts empty, so its rows alone count.
 // use: by the page's line (`main`, `agents`, `side:<name>`, `plugin:<name>`); tok and cost unset until a row had them.
 // turns: main's turn times less their `you` part (a turn evicted before its split counts whole), one number per turn, so a long
-// session stays well inside BUDGET
+// session stays well inside BUDGET. skips: the evicted `hook skipped` rows' `<detail>|<outcome>`, so push's `once` still finds
+// them after a reload and the problem counts once
 type Use = { n: number; ms: number; tok?: [number, number]; cost?: number }
-type Totals = { use: Record<string, Use>; bad: Record<string, number>; turns: number[] }
-let totals: Totals = { use: {}, bad: {}, turns: [] }
+type Totals = { use: Record<string, Use>; bad: Record<string, number>; turns: number[]; skips: string[] }
+let totals: Totals = { use: {}, bad: {}, turns: [], skips: [] }
 const useKey = (x: Entry) => x.kind === 'step' ? (x.agent ? 'agents' : 'main') : x.kind === 'side' && x.src !== 'plugin' ? `side:${x.name}` : x.kind === 'side' || x.kind === 'fork' ? `plugin:${x.name}` : undefined
 // the problem a row counts as in problemsOf, by its name there
 const badKey = (x: Entry) => x.kind === 'hook' ? (stat(x) === 'failed' ? 'hook failed' : undefined) : x.kind === 'event' && ['hook skipped', 'API error', 'turn failed', 'MCP failed'].includes(x.name) ? x.name : undefined
@@ -766,6 +770,7 @@ const fold = (x: Entry) => {
   if (u) totals.use[u] = useOf([x], totals.use[u])
   if (b) totals.bad[b] = (totals.bad[b] ?? 0) + 1
   if (x.kind === 'turn' && !x.agent && x.ms != null) totals.turns.push(x.ms - (x.split?.[0] ?? 0))
+  if (b === 'hook skipped') totals.skips.push(`${x.detail}|${x.outcome}`)
 }
 // a tool row -> PreToolUse context attachments still to come for it. The engine sends a PreToolUse hook's context with the request
 // after the call, so its attachment arrives once the call's row is logged; push files it just above that row, in call order
@@ -872,7 +877,7 @@ async function loadNow($: EngineInterface): Promise<void> {
   turnNo = typeof v?.turn === 'number' ? v.turn : Math.max(0, ...entries.map(x => x.turn ?? 0)) // stores from before turns hold none: start at 0
   seen = v?.seen && !Array.isArray(v) ? v.seen : seed(entries)
   const tv = Array.isArray(v) ? undefined : v?.totals
-  totals = { use: tv?.use ?? {}, bad: tv?.bad ?? {}, turns: Array.isArray(tv?.turns) ? tv.turns : [] }
+  totals = { use: tv?.use ?? {}, bad: tv?.bad ?? {}, turns: Array.isArray(tv?.turns) ? tv.turns : [], skips: Array.isArray(tv?.skips) ? tv.skips : [] }
   names = { ...(v?.names && !Array.isArray(v) ? v.names : {}), ...names } // merged: a fresh instance can name a loop before its first load. Ids are unique, and saved() drops the ones no entry shows
   owed = entries.length || Object.keys(seen).length ? { ...seen } : undefined // /clear's empty session owes nothing
   blind = false; closed.clear(); lead.clear(); rerun.clear(); pre.clear(); recent.clear(); composed.clear(); checks.clear(); hookMs.clear(); inherited.clear(); took.clear(); skipSeen.clear(); postCtx = [] // the old session's calls
@@ -987,7 +992,7 @@ function push($: EngineInterface, e: Omit<Entry, 't'>, opt: { ahead?: number; ab
   const t = opt.start ?? Date.now() // when it happened, not when the chain gets to it: rows are placed by it
   mutate(async () => {
     await loadNow($)
-    if (opt.once && entries.some(y => y.kind === e.kind && y.name === e.name && y.detail === e.detail && y.outcome === e.outcome)) return
+    if (opt.once && (entries.some(y => y.kind === e.kind && y.name === e.name && y.detail === e.detail && y.outcome === e.outcome) || (e.name === 'hook skipped' && totals.skips.includes(`${e.detail}|${e.outcome}`)))) return
     const x: Entry = { t: t + (e.pre ?? 0), turn: turnNo, ...e }
     // A call's row is pushed once the call is over, after everything that happened while it ran: its own hooks (they run inside
     // it), parallel calls that finished first, a foreground agent's whole run. So it goes in where it began: before the first
@@ -1027,7 +1032,7 @@ function evictOne(): Entry {
   const d = entries.findIndex(y => hiddenCtx(y) || lvl(y) === 0)
   const gone = entries.splice(Math.max(0, d), 1)[0]!
   fold(gone)
-  if (!gone.agent && gone.turn === turnNo) evicted.push(gone)
+  if (gone.turn === turnNo) evicted.push(gone)
   if (gone.kind === 'prompt' && !gone.again && (gone.src === 'hook' || gone.src === 'plugin')) markAgain(entries, gone)
   return gone
 }
