@@ -15,7 +15,7 @@ type Src = 'engine' | 'hook' | 'plugin' // who authored injected text: the engin
 // cmd: a Bash call's full scrubbed command, shown in the inspector while the row shows its description. pat: a Grep's or Glob's
 // pattern, scrubbed and cut to 80, which its row reads (`Search "secs\(" in hooks`)
 // check/rule: tool.check's verdict on a tool call and the settings rule that decided it, as written (`Bash(git push:*)`); no rule = a mode, hook or the tool's own check
-// via: who settled the call, as the collector's tool_decision names it (`config`, `hook`, `user_temporary`, `user_reject`), or viaOf's `classifier` (its refusal) and `auto` (a `config` decision in auto mode: settings or the classifier). The engine raises collector records with export on or off (2.1.310)
+// via: who settled the call, as the collector's tool_decision names it (`config`, `hook`, `user_temporary`, `user_reject`), or viaOf's `classifier` (its refusal) and `auto` (a `config` decision in auto mode that waited: settings or the classifier). The engine raises collector records with export on or off (2.1.310)
 // peek: the first PEEK chars of the injected text, error, or deny/block reason, secret-scrubbed; never the person's typed prompt
 // turn: the number of your prompt the entry followed (`#N` = since your Nth prompt; 0 = before your first, drawn `start`); a subagent's entries carry the same number. Absent on entries from before turns were counted
 // status: a tool call's result as data, so views and folds never parse the `outcome` label; entries from before it derive one (stat).
