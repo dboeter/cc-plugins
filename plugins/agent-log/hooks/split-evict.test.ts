@@ -80,3 +80,38 @@ test('/agentlog clear in a running turn keeps the cleared rows\' time in its spl
   const y = (await flushed($, 'SC', db)).find(x => x.kind === 'turn' && !x.agent)
   expect(y.split[6]).toBeGreaterThanOrEqual(W) // model: the cleared request's time, not other
 })
+
+test('a session switch mid-turn drops the old session\'s evicted rows from the next split', async ($, on) => {
+  let id = 'SW1'
+  const db = capture(on, () => id)
+  const T = Date.now() - 600_000
+  db['r:SW1'] = { entries: Array.from({ length: 300 }, (_, i) => ({ t: T + i, turn: 1, kind: 'tool', name: 'Read', detail: `/x/${i}.ts`, outcome: 'ok', status: 'ok', ms: 10 })), seen: {}, turn: 1, names: {} }
+  db['r:SW2'] = { entries: [], seen: {}, turn: 2, names: {} } // the resumed session's running turn has SW1's turn number
+  on('prompt.submit', (_$: any, e: any) => ({ text: e.text }))
+  on('turn.complete', () => ({ text: '' }))
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  silent(on)
+  const t0 = Date.now()
+  await $.prompt.submit({ text: 'Read the files', origin: { kind: 'composer' }, wait: false } as any)
+  for (let i = 0; i < 2; i++) await drain(($ as any).turn.step({ turnId: 'a0b1c2d3-e4f5', index: i, model: 'claude-opus-5-5', messageCount: 3 })) // evicted on their own push
+  id = 'SW2'
+  await ($ as any).session.start({ cwd: '/w', surface: 'terminal', isInteractive: true, source: 'resume' })
+  await ($ as any).turn.complete({ reason: 'answer', answer: '', durationMs: Date.now() - t0, usage: undefined })
+  const y = (await flushed($, 'SW2', db)).find(x => x.kind === 'turn' && !x.agent)
+  expect(y.turn).toBe(2)
+  expect(y.split[6]).toBeLessThan(W) // model: none of SW1's evicted requests
+})
+
+test('a turn with no end row spans its tool rows through their PostToolUse hooks', async ($, on) => {
+  const db = capture(on, 'SP')
+  const T = Date.now() - 600_000
+  // turn 1's end row is gone (a reload mid-turn): the header shows the span of its rows, ≈
+  db['r:SP'] = { entries: [
+    { t: T, turn: 1, kind: 'tool', name: 'Read', detail: '/a.ts', outcome: 'ok', status: 'ok', ms: 1000 },
+    { t: T + 1000, turn: 1, kind: 'tool', name: 'Edit', detail: '/a.ts', outcome: 'ok', status: 'ok', ms: 1000, post: 2000 },
+  ], seen: {}, turn: 2, names: {} }
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  await ($ as any).session.start({ cwd: '/w', surface: 'terminal', isInteractive: true, source: 'resume' })
+  const m = await pane($, 120)
+  try { expect(await m.find({ text: /≈ 4\.0s/ })).toBeDefined() } finally { await m.unmount() } // 1 s read, 1 s edit, 2 s lint after it
+})

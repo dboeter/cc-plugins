@@ -4,10 +4,10 @@ import type { TestBody } from 'claude-code/testing'
 type Engine = Parameters<TestBody>[0] // a test's `$`
 export const wait = (ms: number) => new Promise(res => (globalThis as any).setTimeout(res, ms)) // no DOM or node lib in this tsconfig
 // a store the test reads back: what agent-log wrote, by key. session.end flushes the log's last second. panes: [] for a closed
-// pane, so the band shows the note
-export const capture = (on: any, id: string, panes = [{ id: 'agent-log' }]) => {
+// pane, so the band shows the note. id: a function for a test that switches session
+export const capture = (on: any, id: string | (() => string), panes = [{ id: 'agent-log' }]) => {
   const db: Record<string, any> = {}
-  on('session.id', () => ({ value: id }))
+  on('session.id', () => ({ value: typeof id === 'function' ? id() : id }))
   on('agent.list', () => ({ value: [] }))
   on('config.list', () => ({ value: [] }))
   on('ui.panes', () => ({ value: panes }))

@@ -1901,7 +1901,7 @@ export const register: Register = (on, options) => {
       if (x.kind === 'turn') { if (!x.agent) { m.ms = (m.ms ?? 0) + (x.ms ?? 0); m.aborted ||= stat(x) === 'aborted'; m.ends.push(x) } continue }
       m.xs.push(x)
       if (!hiddenCtx(x)) m.agents.add(x.agent ?? 'main') // a loop whose only rows are hidden context (a fork's first request) shows nothing
-      if (!x.agent && x.kind !== 'fork' && x.kind !== 'side') { m.first ??= startOf(x); m.last = Math.max(m.last ?? 0, x.kind === 'tool' ? x.t + (x.ms ?? 0) + (x.wait ?? 0) : x.kind === 'step' ? x.t + (x.ms ?? 0) : x.t) } // a step's t is its start, a call's its start plus pre (startOf). Main's rows only: a fork or a side request logging after the turn would stretch the span (both sit under main)
+      if (!x.agent && x.kind !== 'fork' && x.kind !== 'side') { m.first ??= startOf(x); m.last = Math.max(m.last ?? 0, x.kind === 'tool' ? x.t + (x.wait ?? 0) + (x.ms ?? 0) + (x.post ?? 0) : x.kind === 'step' ? x.t + (x.ms ?? 0) : x.t) } // a step's t is its start, a call's its start plus pre (startOf), its end after its PostToolUse chain. Main's rows only: a fork or a side request logging after the turn would stretch the span (both sit under main)
     }
     // `model 30.1s · tools 8.2s · other 1.0s`, where the turn's time went (splitOf), largest first: each turn end's own split, else
     // counted now from the rows still logged; the running turn up to now, a turn whose end was never logged over its rows' span.
