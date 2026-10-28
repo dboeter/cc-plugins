@@ -700,7 +700,7 @@ const stepOf = new Map<string, string>()
 // pairs them by the four token counts, which the record repeats exactly. Either may land first. Records of the engine's side
 // requests (titles, prompt suggestions) pair with nothing and age out
 let bills: { t: number; sig: string; cost?: number; req?: string }[] = []
-let unbilled: { t: number; sig: string; key: string }[] = []
+let unbilled: { t: number; sig: string; key: string; agent?: string }[] = []
 // what streams or runs right now, for the pane's ● lines: a loop's model request (its phase, and the first line it wrote or thought
 // so far) or a tool call. Gone at its end, when its row is logged. In memory only: a reload starts it empty
 // asking: a call whose permission prompt is up (PermissionRequest), until its decision lands (the collector's tool_decision)
@@ -1133,7 +1133,12 @@ export const register: Register = (on, options) => {
       if (!s) bills = [...bills.filter(b => bill.t - b.t < 60000).slice(-19), bill]
       else { // the step's row is in, or queued ahead of this on the chain
         unbilled = unbilled.filter(u => u !== s)
-        mutate(async () => { const y = entries.findLast(y => y.kind === 'step' && y.step === s.key); if (y) { y.cost = bill.cost; y.req = bill.req; touch($) } }).catch(() => {})
+        // a text-less step a full log evicted on its own push was folded without its price: the price joins its totals line
+        mutate(async () => {
+          const y = entries.findLast(y => y.kind === 'step' && y.step === s.key)
+          if (y) { y.cost = bill.cost; y.req = bill.req; touch($) }
+          else if (bill.cost != null) { const u = totals.use[s.agent ? 'agents' : 'main']; if (u) { u.cost = (u.cost ?? 0) + bill.cost; touch($) } }
+        }).catch(() => {})
       }
     } catch {}
     const r = await next(e)
@@ -1227,7 +1232,7 @@ export const register: Register = (on, options) => {
         const u = r?.usage
         const tok = u ? [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens, u.output_tokens] : undefined
         const sig = tok?.join(), b = sig ? bills.find(b => b.sig === sig) : undefined
-        if (b) bills = bills.filter(x => x !== b); else if (sig) unbilled = [...unbilled.slice(-19), { t: end, sig, key }]
+        if (b) bills = bills.filter(x => x !== b); else if (sig) unbilled = [...unbilled.slice(-19), { t: end, sig, key, agent: e.agentId }]
         const aborted = next.signal.aborted || (!r && !err) // closed early: the person interrupted, or the engine dropped the stream
         const status: Status = aborted ? 'aborted' : err ? 'failed' : stepStatus(r?.stopReason)
         const names = r ? r.toolUses.map(u => u.name) : asked

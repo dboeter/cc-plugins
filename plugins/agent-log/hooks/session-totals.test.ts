@@ -87,3 +87,20 @@ test('"the usual" is the median of the kept turn times, the evicted turns\' incl
   const band = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'AbovePrompt', props: { isWorking: false, hasSurvey: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 } } as any })
   expect(await band.find({ text: /^#\d+ took 40\.0s, 4× the usual$/ })).toBeDefined()
 })
+
+test('a text-less request a full log evicted on its own push still adds the price its collector record brings later', async ($, on) => {
+  const db = capture(on, 'SP')
+  db['r:SP'] = { entries: Array.from({ length: 300 }, (_, i) => read(i)), seen: {}, turn: 1, names: {} }
+  on('telemetry.log', () => ({ value: undefined }))
+  on('turn.step', async function* (_$: any, e: any) {
+    yield { kind: 'tool', index: 0, id: 'tu1', name: 'Read' }
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [{ name: 'Read', input: {} }], stopReason: 'tool_use', usage: { input_tokens: 2, output_tokens: 50, cache_read_input_tokens: 9000, cache_creation_input_tokens: 100, model: 'claude-opus-5-5' } }
+  })
+  await setupOf($) // loads the store
+  const s = ($ as any).turn.step({ turnId: 'a3c0', index: 0, model: 'claude-opus-5-5', messageCount: 3 })
+  while (!(await s.next()).done) {}
+  await ($ as any).telemetry.log({ to: 'collector', event: 'api_request', attributes: { input_tokens: 2, cache_read_tokens: 9000, cache_creation_tokens: 100, output_tokens: 50, cost_usd: 0.25, request_id: 'req_1', query_source: 'repl_main_thread' } })
+  await $.session.end({ reason: 'other', sessionId: 'SP' } as any)
+  expect(db['r:SP'].entries.some((x: any) => x.kind === 'step')).toBe(false) // evicted on its push
+  expect((await setupOf($)).main).toMatch(/^1 request · .* · 9\.1k in · 50 out · \$0\.25$/)
+})
