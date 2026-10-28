@@ -1,4 +1,4 @@
-// The engine's turn starts before the prompt submit agent-log sees: that stretch is the turn row's lead, drawn as `before submit`.
+// The engine's turn starts before the prompt submit agent-log sees: that stretch is the turn row's preSubmit, drawn as `before submit`.
 // The module's state is shared, as in agent-log.test.ts
 import { test, expect } from 'claude-code/testing'
 
@@ -32,14 +32,14 @@ test('a turn whose duration starts 2 s before its submit reads that 2 s as befor
   const m = await pane($)
   await $.session.end({ reason: 'other', sessionId: 'PS' } as any)
   const y = db['r:PS'].entries.find((x: any) => x.kind === 'turn' && !x.agent)
-  expect(y.lead).toBeGreaterThanOrEqual(1950)
-  expect(y.lead).toBeLessThanOrEqual(2000 + (t1 - t0))
+  expect(y.preSubmit).toBeGreaterThanOrEqual(1950)
+  expect(y.preSubmit).toBeLessThanOrEqual(2000 + (t1 - t0))
   await m.press({ key: `bturn${y.turn}` }) // the inspector's whole split
   expect(await m.find({ text: /^before submit 2\.0s\b/ })).toBeDefined()
   expect(await m.find({ text: /other \d/ })).toBeUndefined() // nothing else in the turn: none of the 2 s is other
 })
 
-test('a turn stored before lead existed still draws, its time before submit in other', async ($, on) => {
+test('a turn stored before preSubmit existed still draws, its time before submit in other', async ($, on) => {
   const db = capture(on, 'PO')
   const T = Date.now() - 600_000
   db['r:PO'] = { entries: [{ t: T, turn: 1, kind: 'turn', name: 'turn', detail: '', outcome: '', status: 'ok', ms: 3000, split: [0, 0, 0, 0, 0, 0, 1000] }], seen: {}, turn: 1, names: {} }
@@ -64,8 +64,8 @@ test('the turn\'s start is its end, read as turn.complete arrives, less its dura
   await ($ as any).turn.complete({ reason: 'answer', answer: '', durationMs: Date.now() - t0 + 1000, usage: undefined })
   await $.session.end({ reason: 'other', sessionId: 'PL' } as any)
   const y = db['r:PL'].entries.find((x: any) => x.kind === 'turn' && !x.agent)
-  expect(y.lead).toBeGreaterThanOrEqual(950) // the engine's 1 s before the submit, not less the 500 ms the next handler took after the end
-  expect(y.lead).toBeLessThanOrEqual(1000 + (t1 - t0))
+  expect(y.preSubmit).toBeGreaterThanOrEqual(950) // the engine's 1 s before the submit, not less the 500 ms the next handler took after the end
+  expect(y.preSubmit).toBeLessThanOrEqual(1000 + (t1 - t0))
 })
 
 test('a turn stored before its split was kept still draws one, counted from its rows', async ($, on) => {

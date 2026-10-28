@@ -8,9 +8,8 @@ import { scrub } from './scrub'
 // === ENTRIES AND TEXT ===
 type Src = 'engine' | 'hook' | 'plugin' // who authored injected text: the engine's own framing, a settings hook, or a plugin chain
 // agent: the loop's agentId, absent on main. bytes: injected size (kept, not shown for now). ms: tool run time, minus its wait and
-// its hooks. pre/post: on a tool row, the time its PreToolUse and PostToolUse chains ran inside it, which their own rows show. Its
-// t is where its PreToolUse chain ended, pre after the call began (startOf): the engine checks the call after that chain, so its
-// wait then its run follow t, where splitOf counts them
+// its hooks. pre/post: on a tool row, the ms its PreToolUse and PostToolUse chains ran inside it, timed on their own rows. Its t is
+// the call's start plus pre (startOf): the engine checks the call after that chain, so its wait and run follow t
 // wait/waitFor: on a tool row, the time between tool.check's verdict and the engine's decision, and what it waited on
 // type: the engine's attachment kind or context-block name, kept beside the readable `name`. origin: the settings hook event that produced the text or, on a hook row, ran the hook (its trigger; `name` is then the hook's own name).
 // cmd: a Bash call's full scrubbed command, shown in the inspector while the row shows its description. pat: a Grep's or Glob's
@@ -32,8 +31,8 @@ type Status = 'ok' | 'failed' | 'denied' | 'blocked' | 'feedback' | 'stopped' | 
 // tools it called; server: the calls the API ran itself (the advisor) and their ms; thought: its thinking's first line;
 // cost/req: the collector's price and request id for it
 // split: on main's turn row, where its time went as splitOf counts it, kept so evicting the turn's rows does not lose it
-// lead: on main's turn row, the engine's time from the turn's start (durationMs's) to the prompt.submit agent-log saw, which no row
-// holds; a turn stored before it existed, or a queued prompt's, counts that time as other
+// preSubmit: on main's turn row, the engine's time from the turn's start (durationMs's) to the prompt.submit agent-log saw, which
+// no row holds; a turn stored before it existed, or a queued prompt's, counts that time as other
 // out: on a tool row, the place outside the session's project root the call reached (outsideOf), `~`-shortened; absent inside it
 // each: on a row of several hooks, each hook's own ms, by name, as hook-timer recorded it (pickRuns); hooks it does not wrap are absent
 // spoke: on such a row, the hooks whose text (context, a block, feedback) the row's outcome is; errs: the wrapped hooks that exited
@@ -44,7 +43,7 @@ type Status = 'ok' | 'failed' | 'denied' | 'blocked' | 'feedback' | 'stopped' | 
 // its particulars. side: a model request outside the turns: the engine's own (src engine, name its query source: a title, a
 // prompt suggestion, compaction) or a plugin's $.model.complete (src plugin, name the plugin); detail is the model
 type Entry = { t: number; turn?: number; kind: 'tool' | 'hook' | 'session' | 'prompt' | 'turn' | 'fork' | 'step' | 'event' | 'side'; name: string; detail: string; outcome: string; status?: Status; src?: Src; bytes?: number; agent?: string; ms?: number; type?: string; origin?: string; peek?: string; cmd?: string; check?: 'allow' | 'ask' | 'deny'; rule?: string; exit?: number; insight?: string; child?: string; use?: string; wait?: number; waitFor?: string; pre?: number; post?: number; again?: boolean
-  pat?: string; via?: string; step?: string; effort?: string | number; ttft?: number; think?: number; stop?: string; tok?: number[]; asked?: string[]; server?: [string, number | null][]; thought?: string; cost?: number; req?: string; split?: number[]; lead?: number; out?: string; each?: Record<string, number>; spoke?: string[]; errs?: string[]; says?: Record<string, string>; exits?: Record<string, number> }
+  pat?: string; via?: string; step?: string; effort?: string | number; ttft?: number; think?: number; stop?: string; tok?: number[]; asked?: string[]; server?: [string, number | null][]; thought?: string; cost?: number; req?: string; split?: number[]; preSubmit?: number; out?: string; each?: Record<string, number>; spoke?: string[]; errs?: string[]; says?: Record<string, string>; exits?: Record<string, number> }
 
 const PANE = 'agent-log'
 // a block after the fact refuses nothing: PostToolUse's tool already ran and Stop's turn already ended, so the hook's text is
@@ -404,9 +403,8 @@ const CHATTER = new Set(['prompt_suggestion', 'agent_summary', 'generate_session
 const VIA: Record<string, string> = { user_temporary: 'you allowed it once', user_permanent: 'you allowed it from now on', user_reject: 'you rejected it', user_abort: 'you interrupted it', hook: 'a PermissionRequest hook decided', config: 'your settings decided', classifier: 'the auto-mode classifier decided', auto: 'your settings or the auto-mode classifier decided; the log cannot tell which' }
 // auto mode's classifier refusing a call: the error result the model reads instead of the call's output
 const CLASSIFIED = /^Permission for this action was denied by the Claude Code auto mode classifier/
-// who settled a call (its via), one reading for the inspector and the wait's name. Auto mode's classifier answers as `config`, as a
-// rule does, and the collector records no request of its own (beside a real 37 s refusal, main's were the only ones): only its
-// refusal's error result names it. Any other `config` decision in auto mode is `auto`, either's
+// who settled a call (its via), for the inspector and the wait's name: auto mode's classifier answers as `config`, as a rule does,
+// and only its refusal's error result names it. A `config` decision in auto mode that waited is `auto`, either's; an instant one a rule's
 export const viaOf = (source: string | undefined, mode: string | undefined, text = '', waited = false) => CLASSIFIED.test(text) ? 'classifier' : source === 'config' && mode === 'auto' && waited ? 'auto' : source
 // the error results a refused call returns: a denied permission prompt (or one no one could answer, headless), you rejecting it,
 // the classifier, the guard on the session's working directories. Read from the text too: a decision record can be missing (an
@@ -645,7 +643,7 @@ export const rootOf = (xs: Entry[]) => {
 // A wait on the model's message is the model's. A subagent's steps and calls sit inside its Agent call, so count as agents; its
 // waits and hook runs count as main's do, but only within main's Agent call (rootOf): a background agent's call returns at once.
 // [from, to] is the turn; what none of them held is the engine's and plugins' own work between steps: other = to - from - the sum.
-// The stretch before the prompt's submit is the turn row's lead, not a part here: no row of the turn exists yet to count
+// The stretch before the prompt's submit is the turn row's preSubmit, not a part here: no row of the turn exists yet to count
 export const SPLIT = ['you', 'permission', 'hooks', 'compact', 'agents', 'tools', 'model'] as const
 export const ASKED = 'you to answer the permission prompt' // a wait's waitFor when the person decided it
 export const STREAMING = 'the model to finish its message' // a wait's waitFor when the call was decided as main's message ended
@@ -674,7 +672,7 @@ export const splitOf = (xs: Entry[], from: number, to: number): number[] => {
     // logged before tool.call named it so carry the decision's name (112 of 123 such `config` waits had a request close inside)
     const streamed = x.waitFor === STREAMING || (!!x.agent && !!x.wait && !!ends.get(x.agent)?.some(t => t >= x.t && t <= x.t + x.wait!))
     const held = asks || x.waitFor === CLASSIFIER || !streamed
-    if (x.kind === 'tool' && x.wait && held) span(x.t, x.t + x.wait, asks || x.waitFor === ASKED ? 0 : 1) // a call's t is its start, its wait before its run; a refused call has a wait and no run
+    if (x.kind === 'tool' && x.wait && held) span(x.t, x.t + x.wait, asks || x.waitFor === ASKED ? 0 : 1) // a call's t is its start plus pre (startOf), its wait before its run; a refused call has a wait and no run
     if (x.kind === 'hook' && x.ms != null) span(x.t - x.ms, x.t, 2) // a hook row's t is its end
     if (x.ms == null || x.agent) continue
     if (x.kind === 'step') span(x.t, x.t + x.ms, 6)
@@ -691,8 +689,9 @@ export const splitOf = (xs: Entry[], from: number, to: number): number[] => {
 // turns (3 or more of them), else `#4: hooks 12.0s of 20.0s` when hooks or a slow permission decision held the turn longest.
 // Turns under 10 s never note: a short turn is not worth a look. Waiting on you is left out: that is your time, not a fault, so
 // the floor, the median rule and its `took` read the turn less its `you` part; prior holds the earlier turns' times less theirs
+const lessYou = (ms: number, split?: number[]) => ms - (split?.[0] ?? 0) // a turn's time less its `you` part (SPLIT[0])
 export const unusualOf = (n: number, split: number[], ms: number, prior: number[], preSubmit = 0): string | undefined => {
-  const own = ms - (split[0] ?? 0)
+  const own = lessYou(ms, split)
   if (own < 10_000) return undefined
   const ps = prior.filter(p => p > 0).sort((a, b) => a - b), mid = ps.length >= 3 ? ps[ps.length >> 1]! : undefined
   if (mid && own > 2 * mid) return `#${n} took ${secs(own)}, ${Math.round(own / mid)}× the usual`
@@ -751,20 +750,19 @@ const compactAt = new Map<string, number>() // loop -> when its PreCompact fired
 // record marks one row; two parallel calls of one tool both fit, and which takes it is a guess: the record names no call
 let lastRun: { t: number; event: string; name: string; errors: number; cancelled: number } | undefined
 let turnAt: number | undefined // when main's running turn began: your prompt's submit
-// the rows of the running turn (main's and its subagents') that a full log evicted before turn.complete took its split: a request that wrote no text and a
-// hook that changed nothing rank debug, so each goes on its own push. splitOf still counts them; in memory only
+// the running turn's rows (main's and its subagents') evicted or cleared before turn.complete took its split, which still counts
+// them: a text-less request or a no-change hook ranks debug, so its own push can evict it. In memory only
 let evicted: Entry[] = []
-// What the rows a full log evicted counted toward the setup page's model use and problems and the turn times "the usual" is
-// measured against, so those cover the whole session: readers add the surviving rows. Folded at eviction, not at push: a step
-// row's cost and tokens land after it does. Saved with the entries; a store without it starts empty, so its rows alone count.
-// use: by the page's line (`main`, `agents`, `side:<name>`, `plugin:<name>`); tok and cost unset until a row had them.
-// turns: main's turn times less their `you` part (a turn evicted before its split counts whole), one number per turn, so a long
-// session stays well inside BUDGET. skips: the evicted `hook skipped` rows' `<detail>|<outcome>`, so push's `once` still finds
-// them after a reload and the problem counts once
+// What evicted and cleared rows counted toward the setup page's model use and problems and the turns "the usual" is measured
+// against, folded as they leave (a step's price lands after its push) and saved with the entries; readers add the surviving rows.
+// use: by the page's line (`main`, `agents`, `side:<name>`, `plugin:<name>`); turns: main's turn times less their `you` part, one
+// number per turn to stay inside BUDGET; skips: the evicted `hook skipped` rows' skipKey, so push's `once` finds them after a reload
 type Use = { n: number; ms: number; tok?: [number, number]; cost?: number }
 type Totals = { use: Record<string, Use>; bad: Record<string, number>; turns: number[]; skips: string[] }
 let totals: Totals = { use: {}, bad: {}, turns: [], skips: [] }
-const useKey = (x: Entry) => x.kind === 'step' ? (x.agent ? 'agents' : 'main') : x.kind === 'side' && x.src !== 'plugin' ? `side:${x.name}` : x.kind === 'side' || x.kind === 'fork' ? `plugin:${x.name}` : undefined
+const loopKey = (agent?: string) => agent ? 'agents' : 'main' // a request's model-use line
+const skipKey = (x: Pick<Entry, 'detail' | 'outcome'>) => `${x.detail}|${x.outcome}`
+const useKey = (x: Entry) => x.kind === 'step' ? loopKey(x.agent) : x.kind === 'side' && x.src !== 'plugin' ? `side:${x.name}` : x.kind === 'side' || x.kind === 'fork' ? `plugin:${x.name}` : undefined
 // the problems a row can count as (problemsOf, totals.bad): its key, then how one and several read
 const ev = (name: string) => (x: Entry) => x.kind === 'event' && x.name === name
 const PROBLEM: Record<string, [(x: Entry) => boolean, string, string]> = {
@@ -788,8 +786,8 @@ const fold = (x: Entry) => {
   const u = useKey(x), b = badKey(x)
   if (u) totals.use[u] = useOf([x], totals.use[u])
   if (b) totals.bad[b] = (totals.bad[b] ?? 0) + 1
-  if (x.kind === 'turn' && !x.agent && x.ms != null) totals.turns.push(x.ms - (x.split?.[0] ?? 0))
-  if (b === 'hook skipped') totals.skips.push(`${x.detail}|${x.outcome}`)
+  if (x.kind === 'turn' && !x.agent && x.ms != null) totals.turns.push(lessYou(x.ms, x.split))
+  if (b === 'hook skipped') totals.skips.push(skipKey(x))
 }
 // a tool row -> PreToolUse context attachments still to come for it. The engine sends a PreToolUse hook's context with the request
 // after the call, so its attachment arrives once the call's row is logged; push files it just above that row, in call order
@@ -1011,7 +1009,7 @@ function push($: EngineInterface, e: Omit<Entry, 't'>, opt: { ahead?: number; ab
   const t = opt.start ?? Date.now() // when it happened, not when the chain gets to it: rows are placed by it
   mutate(async () => {
     await loadNow($)
-    if (opt.once && (entries.some(y => y.kind === e.kind && y.name === e.name && y.detail === e.detail && y.outcome === e.outcome) || (e.name === 'hook skipped' && totals.skips.includes(`${e.detail}|${e.outcome}`)))) return
+    if (opt.once && (entries.some(y => y.kind === e.kind && y.name === e.name && y.detail === e.detail && y.outcome === e.outcome) || (e.name === 'hook skipped' && totals.skips.includes(skipKey(e))))) return
     const x: Entry = { t: t + (e.pre ?? 0), turn: turnNo, ...e }
     // A call's row is pushed once the call is over, after everything that happened while it ran: its own hooks (they run inside
     // it), parallel calls that finished first, a foreground agent's whole run. So it goes in where it began: before the first
@@ -1184,7 +1182,7 @@ export const register: Register = (on, options) => {
         mutate(async () => {
           const y = entries.findLast(y => y.kind === 'step' && y.step === s.key)
           if (y) { y.cost = bill.cost; y.req = bill.req; touch($) }
-          else if (bill.cost != null) { const u = totals.use[s.agent ? 'agents' : 'main']; if (u) { u.cost = (u.cost ?? 0) + bill.cost; touch($) } }
+          else if (bill.cost != null) { const u = totals.use[loopKey(s.agent)]; if (u) { u.cost = (u.cost ?? 0) + bill.cost; touch($) } }
         }).catch(() => {})
       }
     } catch {}
@@ -1219,7 +1217,7 @@ export const register: Register = (on, options) => {
     const at = e.tool_use_id ? checkedAt.get(e.tool_use_id) : undefined, d = e.tool_use_id ? decided.get(e.tool_use_id) : undefined
     if (e.tool_use_id) { checks.delete(e.tool_use_id); preCtx.delete(e.tool_use_id); checkedAt.delete(e.tool_use_id); decided.delete(e.tool_use_id) }
     const wait = at != null && d && d.t - at >= WAIT ? d.t - at : undefined
-    const h = e.tool_use_id ? hookMs.get(e.tool_use_id) : undefined
+    const around = e.tool_use_id ? hookMs.get(e.tool_use_id) : undefined
     if (e.tool_use_id) hookMs.delete(e.tool_use_id)
     // the loop's message closed between the check and the call's end: the decision waited for it. Not up to the decision: the engine
     // records the request a few ms after deciding. Main's next request starts only once its calls end, so none closes in between
@@ -1240,7 +1238,7 @@ export const register: Register = (on, options) => {
     const status: Status = r.deny || refused || hookBlocked ? 'denied' : ins?.quiet ? 'nomatch' : r.isError ? 'failed' : 'ok'
     const pl = await place, a = e as any
     const out = pl ? outsideOf(e.tool, { path: a.file_path ?? a.notebook_path ?? a.path, cmd }, ...pl) : undefined
-    try { push($, { kind: 'tool', name: e.tool, detail, outcome, status, agent: e.agentId, ms: r.deny ? undefined : Date.now() - t0 - (wait ?? 0) - (h ? h.pre + h.post : 0), wait, waitFor, pre: h?.pre || undefined, post: h?.post || undefined, peek: why, cmd, pat, check: v?.check, rule: v?.rule, exit: ins?.exit, insight: ins?.text || undefined, child: sp?.id, use: e.tool_use_id, step, via, out }, { ahead: pre, start: began }) } catch {} // logger never breaks the call
+    try { push($, { kind: 'tool', name: e.tool, detail, outcome, status, agent: e.agentId, ms: r.deny ? undefined : Date.now() - t0 - (wait ?? 0) - (around ? around.pre + around.post : 0), wait, waitFor, pre: around?.pre || undefined, post: around?.post || undefined, peek: why, cmd, pat, check: v?.check, rule: v?.rule, exit: ins?.exit, insight: ins?.text || undefined, child: sp?.id, use: e.tool_use_id, step, via, out }, { ahead: pre, start: began }) } catch {} // logger never breaks the call
     return r
   }).catch(($, e, next) => { logFailure($, 'tool.call', next.error); return next(e) })
 
@@ -1621,8 +1619,8 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => { logFailure($, 'model.fork', next.error); return next(e) })
 
   on('turn.complete', async ($, e, next) => {
-    // main's submit and the turn's end, read before any await lets the next prompt's set them. turn.complete carries no time of its
-    // own, so the turn's start is this end less durationMs
+    // read before any await: the next prompt can reset turnAt, and the handlers next runs would make the end late. turn.complete
+    // carries no time of its own, so the turn's start is this end less durationMs
     const at = turnAt, end = Date.now()
     const r = await next(e)
     logSkipsIn($, next.trace)
@@ -1638,9 +1636,9 @@ export const register: Register = (on, options) => {
       const y = entries.findLast(z => z.kind === 'turn' && !z.agent)
       if (y?.ms != null) {
         y.split = splitOf([...evicted, ...entries].filter(z => z.turn === y.turn), end - y.ms, end)
-        if (at != null) y.lead = Math.max(0, Math.min(y.ms, at - (end - y.ms)))
+        if (at != null) y.preSubmit = Math.max(0, Math.min(y.ms, at - (end - y.ms)))
         evicted = []
-        note = unusualOf(y.turn ?? turnNo, y.split, y.ms, [...totals.turns, ...entries.filter(z => z !== y && z.kind === 'turn' && !z.agent && z.ms != null).map(z => z.ms! - (z.split?.[0] ?? 0))], y.lead)
+        note = unusualOf(y.turn ?? turnNo, y.split, y.ms, [...totals.turns, ...entries.filter(z => z !== y && z.kind === 'turn' && !z.agent && z.ms != null).map(z => lessYou(z.ms!, z.split))], y.preSubmit)
         touch($)
       }
     }).catch(() => {})
@@ -1903,22 +1901,22 @@ export const register: Register = (on, options) => {
       if (x.kind === 'turn') { if (!x.agent) { m.ms = (m.ms ?? 0) + (x.ms ?? 0); m.aborted ||= stat(x) === 'aborted'; m.ends.push(x) } continue }
       m.xs.push(x)
       if (!hiddenCtx(x)) m.agents.add(x.agent ?? 'main') // a loop whose only rows are hidden context (a fork's first request) shows nothing
-      if (!x.agent && x.kind !== 'fork' && x.kind !== 'side') { m.first ??= startOf(x); m.last = Math.max(m.last ?? 0, x.kind === 'tool' ? x.t + (x.ms ?? 0) + (x.wait ?? 0) : x.kind === 'step' ? x.t + (x.ms ?? 0) : x.t) } // a call's and a step's t is its start. Main's rows only: a fork or a side request logging after the turn would stretch the span (both sit under main)
+      if (!x.agent && x.kind !== 'fork' && x.kind !== 'side') { m.first ??= startOf(x); m.last = Math.max(m.last ?? 0, x.kind === 'tool' ? x.t + (x.ms ?? 0) + (x.wait ?? 0) : x.kind === 'step' ? x.t + (x.ms ?? 0) : x.t) } // a step's t is its start, a call's its start plus pre (startOf). Main's rows only: a fork or a side request logging after the turn would stretch the span (both sit under main)
     }
     // `model 30.1s · tools 8.2s · other 1.0s`, where the turn's time went (splitOf), largest first: each turn end's own split, else
     // counted now from the rows still logged; the running turn up to now, a turn whose end was never logged over its rows' span.
-    // Parts under 0.1 s are left out; other is the engine's and plugins' own work between steps, before submit the turn rows' lead
+    // Parts under 0.1 s are left out; other is the engine's and plugins' own work between steps, before submit the turn rows' preSubmit
     // (the engine's time before your prompt's submit). most: the header's two largest
     const SHOW = ['model', 'tools', 'agents', 'hooks', 'compact', 'permission', 'you', 'before submit', 'other']
     const splitText = (n: number, m: Turn, most = Infinity) => {
       const parts = SPLIT.map(() => 0)
-      let span = 0, lead = 0
+      let span = 0, preSubmit = 0
       const add = (xs: number[], ms: number) => { xs.forEach((v, i) => { parts[i]! += v }); span += ms }
-      for (const y of m.ends) if (y.ms != null) { add(y.split ?? splitOf(m.xs, y.t - y.ms, y.t), y.ms); lead += y.lead ?? 0 }
+      for (const y of m.ends) if (y.ms != null) { add(y.split ?? splitOf(m.xs, y.t - y.ms, y.t), y.ms); preSubmit += y.preSubmit ?? 0 }
       const from = turnAt ?? m.first
       if (n === turnNo && busy && from != null) add(splitOf([...evicted, ...m.xs], from, now), now - from)
       else if (!m.ends.length && m.first != null && m.last! > m.first) add(splitOf(m.xs, m.first, m.last!), m.last! - m.first)
-      const by: Record<string, number> = { 'before submit': lead, other: span - lead - parts.reduce((a, b) => a + b, 0) }
+      const by: Record<string, number> = { 'before submit': preSubmit, other: span - preSubmit - parts.reduce((a, b) => a + b, 0) }
       SPLIT.forEach((k, i) => { by[k] = parts[i]! })
       return SHOW.filter(k => by[k]! >= 100).sort((p, q) => by[q]! - by[p]!).slice(0, most).map(k => `${k} ${secs(by[k])}`).join(' · ')
     }
