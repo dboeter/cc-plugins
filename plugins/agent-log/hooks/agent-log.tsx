@@ -630,24 +630,35 @@ export const rootOf = (xs: Entry[]) => {
   }
 }
 // Where a turn's time went, each instant counted once, by what held it, in this order where they overlap (a read-only call runs
-// while the model still writes; a call's hooks run inside the call): you answering a permission prompt, a permission decision
+// while the model still writes; a call's hooks run inside the call): you answering a permission prompt, a question or a plan, a permission decision
 // the engine took its time over (a headless `ask` sat 19 s before its `config` decision), hooks, a compaction, agents, other
 // tools, the model.
-// A wait on the model's message is the model's. Over main's rows alone: a foreground subagent's time sits inside its Agent call.
+// A wait on the model's message is the model's. A subagent's steps and calls sit inside its Agent call, so count as agents; its
+// waits and hook runs count as main's do, but only within main's Agent call (rootOf): a background agent's call returns at once.
 // [from, to] is the turn; what none of them held is the engine's and plugins' own work between steps: other = to - from - the sum
 export const SPLIT = ['you', 'permission', 'hooks', 'compact', 'agents', 'tools', 'model'] as const
 export const ASKED = 'you to answer the permission prompt' // a wait's waitFor when the person decided it
 export const STREAMING = 'the model to finish its message' // a wait's waitFor when the call was decided as main's message ended
+// calls whose wait is you answering their dialog, whatever waitFor says: main's message closes after the check and before the
+// answer (`user_temporary` minutes later), so most are labelled STREAMING, and rows logged before waitFor have none
+const ASKS = /^(AskUserQuestion|ExitPlanMode)$/
 export const splitOf = (xs: Entry[], from: number, to: number): number[] => {
-  const pts: [number, number, number][] = []
-  const span = (a: number, b: number, c: number) => { const p = Math.max(a, from), q = Math.min(b, to); if (q > p) pts.push([p, 1, c], [q, -1, c]) }
+  const pts: [number, number, number][] = [], root = rootOf(xs)
+  let lo = from, hi = to
+  const span = (a: number, b: number, c: number) => { const p = Math.max(a, lo), q = Math.min(b, hi); if (q > p) pts.push([p, 1, c], [q, -1, c]) }
   for (const x of xs) {
-    if (x.agent) continue
-    if (x.kind === 'tool' && x.wait && x.waitFor !== STREAMING) span(x.t, x.t + x.wait, x.waitFor === ASKED ? 0 : 1) // a call's t is its start, its wait before its run; a refused call has a wait and no run
-    if (x.ms == null) continue
+    lo = from; hi = to
+    if (x.agent) {
+      const r = root(x)
+      if (!r || r.agent || r.ms == null) continue
+      const s = r.t + (r.wait ?? 0); lo = Math.max(from, s); hi = Math.min(to, s + r.ms)
+    }
+    const asks = x.kind === 'tool' && ASKS.test(x.name)
+    if (x.kind === 'tool' && x.wait && (asks || x.waitFor !== STREAMING)) span(x.t, x.t + x.wait, asks || x.waitFor === ASKED ? 0 : 1) // a call's t is its start, its wait before its run; a refused call has a wait and no run
+    if (x.kind === 'hook' && x.ms != null) span(x.t - x.ms, x.t, 2) // a hook row's t is its end
+    if (x.ms == null || x.agent) continue
     if (x.kind === 'step') span(x.t, x.t + x.ms, 6)
     else if (x.kind === 'tool') span(x.t + (x.wait ?? 0), x.t + (x.wait ?? 0) + x.ms, x.name === 'Agent' ? 4 : 5)
-    else if (x.kind === 'hook') span(x.t - x.ms, x.t, 2) // a hook row's t is its end
     else if (x.kind === 'event' && x.name === 'compacted') span(x.t, x.t + x.ms, 3) // pushed at its start
   }
   pts.sort((p, q) => p[0] - q[0])
