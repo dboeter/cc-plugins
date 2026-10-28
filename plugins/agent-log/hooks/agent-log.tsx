@@ -1608,6 +1608,7 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => { logFailure($, 'model.fork', next.error); return next(e) })
 
   on('turn.complete', async ($, e, next) => {
+    const at = turnAt // main's submit, read before any await lets the next prompt's set it
     const r = await next(e)
     logSkipsIn($, next.trace)
     await ready($)
@@ -1618,7 +1619,6 @@ export const register: Register = (on, options) => {
     const mine = !!e.agentId && linked(e.agentId)
     try { push($, { kind: 'turn', name: 'turn', detail: '', outcome: mine ? costOf(e.usage) : '', status, agent: e.agentId, ms: e.durationMs, peek: mine ? peek(e.answer) : undefined }) } catch {} // a closing boundary per loop; push redraws
     // main's split, once its rows are in (queued behind the push): kept on its turn row, so a full log evicting them loses nothing
-    const at = turnAt // reset below, before the queued mutate runs
     if (!e.agentId) mutate(async () => {
       const y = entries.findLast(z => z.kind === 'turn' && !z.agent)
       if (y?.ms != null) {
