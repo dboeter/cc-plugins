@@ -1,25 +1,7 @@
 // A tool row's time is the call alone: its PreToolUse and PostToolUse chains run inside the call, and their own rows time them
-import { test, expect, type TestBody } from 'claude-code/testing'
+import { test, expect } from 'claude-code/testing'
 import { splitOf, SPLIT } from './agent-log'
-
-type Engine = Parameters<TestBody>[0] // a test's `$`
-const wait = (ms: number) => new Promise(res => (globalThis as any).setTimeout(res, ms)) // no DOM or node lib in this tsconfig
-// a store the test reads back: what agent-log wrote, by key. session.end flushes the log's last second
-const capture = (on: any, id: string) => {
-  const db: Record<string, any> = {}
-  on('session.id', () => ({ value: id }))
-  on('agent.list', () => ({ value: [] }))
-  on('config.list', () => ({ value: [] }))
-  on('ui.panes', () => ({ value: [{ id: 'agent-log' }] }))
-  on('store.get', (_$: any, e: any) => ({ value: db[e.key] }))
-  on('store.set', (_$: any, e: any) => { db[e.key] = e.value; return { value: undefined } })
-  on('store.delete', (_$: any, e: any) => { delete db[e.key]; return { value: undefined } })
-  on('store.keys', () => ({ value: Object.keys(db) }))
-  on('session.end', (_$: any, e: any) => ({ sessionId: e.sessionId }))
-  return db
-}
-const flushed = async ($: any, id: string, db: Record<string, any>) => { await $.session.end({ reason: 'other', sessionId: id }); return (db[`r:${id}`]?.entries ?? []) as any[] }
-const pane = ($: Engine) => $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { title: 'Agent log', isFocused: false, placement: 'dock', bodyColumns: 160, scroll: { offset: 0, bodyRows: 40 } } as any })
+import { capture, flushed, pane, wait } from './test-helpers'
 
 test('a call whose hooks take longer than its run shows the run on its row; the turn split is unchanged', async ($, on) => {
   const db = capture(on, 'TT')
@@ -36,9 +18,11 @@ test('a call whose hooks take longer than its run shows the run on its row; the 
   await $.tool.call({ tool: 'Edit', tool_use_id: 'tt1', file_path: '/home/u/a.ts' } as any)
   const to = Date.now()
   const m = await pane($)
-  await m.press({ key: (await m.find({ type: 'Button', text: /^Edit a\.ts$/ }))!.key! })
-  expect(await m.find({ text: /around it, in their own rows$/ })).toBeDefined()
-  await m.press({ key: 'back' })
+  try {
+    await m.press({ key: (await m.find({ type: 'Button', text: /^Edit a\.ts$/ }))!.key! })
+    expect(await m.find({ text: /around it, in their own rows$/ })).toBeDefined()
+    await m.press({ key: 'back' })
+  } finally { await m.unmount() }
   const rows = (await flushed($, 'TT', db)).filter(x => x.use === 'tt1')
   const call = rows.find(x => x.kind === 'tool')!, hooks = rows.filter(x => x.kind === 'hook')
   expect(hooks.map(x => x.origin)).toEqual(['PreToolUse', 'PostToolUse'])

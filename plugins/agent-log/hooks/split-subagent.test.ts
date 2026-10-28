@@ -1,8 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import { ASKED, splitOf } from './agent-log'
-
-// main's Agent row carries the agent it spawned as child; that agent's rows carry it as agent (a grandchild's, its own id)
-const x = (t: number, kind: string, ms: number | undefined, extra: object = {}) => ({ t, kind, name: 'Read', detail: '', outcome: '', ms, ...extra })
+import { x } from './test-helpers' // a grandchild's rows carry its own id as agent
 
 test('a foreground agent\'s permission prompt, decision waits and hooks split as main\'s own do', () => {
   const xs = [

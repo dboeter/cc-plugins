@@ -1,22 +1,7 @@
 // A turn's split when a full log evicts its rows as they come: the module's state is shared, as in agent-log.test.ts
 import { test, expect } from 'claude-code/testing'
+import { capture, flushed, pane, wait } from './test-helpers'
 
-// a store the test reads back: what agent-log wrote, by key. session.end flushes the log's last second
-const capture = (on: any, id: string) => {
-  const db: Record<string, any> = {}
-  on('session.id', () => ({ value: id }))
-  on('agent.list', () => ({ value: [] }))
-  on('config.list', () => ({ value: [] }))
-  on('ui.panes', () => ({ value: [{ id: 'agent-log' }] }))
-  on('store.get', (_$: any, e: any) => ({ value: db[e.key] }))
-  on('store.set', (_$: any, e: any) => { db[e.key] = e.value; return { value: undefined } })
-  on('store.delete', (_$: any, e: any) => { delete db[e.key]; return { value: undefined } })
-  on('store.keys', () => ({ value: Object.keys(db) }))
-  on('session.end', (_$: any, e: any) => ({ sessionId: e.sessionId }))
-  return db
-}
-const flushed = async ($: any, id: string, db: Record<string, any>) => { await $.session.end({ reason: 'other', sessionId: id }); return (db[`r:${id}`]?.entries ?? []) as any[] }
-const wait = (ms: number) => new Promise(res => (globalThis as any).setTimeout(res, ms)) // no DOM or node lib in this tsconfig
 const drain = async (s: any) => { let n: any; while (!(n = await s.next()).done) {} return n.value }
 const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`
 
@@ -44,15 +29,17 @@ test('a full log evicting a turn\'s text-less requests as they come keeps their 
     await $.tool.call({ tool: 'Read', tool_use_id: `tu${i}`, file_path: `/y/${i}.ts` } as any) // the turn's rows that stay: its header draws over them
   }
   await ($ as any).turn.complete({ reason: 'answer', answer: '', durationMs: Date.now() - t0, usage: undefined })
-  const m = await ($ as any).ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { title: 'Agent log', isFocused: false, placement: 'dock', bodyColumns: 120, scroll: { offset: 0, bodyRows: 40 } } })
-  const rows = await flushed($, 'SE', db)
-  expect(rows.filter(x => x.kind === 'step').length).toBe(0) // all four went on their own push
-  const y = rows.find(x => x.kind === 'turn' && x.turn === 2)
-  expect(y.split[6]).toBeGreaterThanOrEqual(4 * W) // model: each request's whole time, none of it other
-  const model = `model ${secs(y.split[6])}`
-  expect(await m.find({ text: new RegExp(`· ${model}\\b`) })).toBeDefined() // the header's two largest parts
-  await m.press({ key: 'bturn2' }) // the inspector's whole split
-  expect(await m.find({ text: new RegExp(`^${model}\\b`) })).toBeDefined()
+  const m = await pane($, 120)
+  try {
+    const rows = await flushed($, 'SE', db)
+    expect(rows.filter(x => x.kind === 'step').length).toBe(0) // all four went on their own push
+    const y = rows.find(x => x.kind === 'turn' && x.turn === 2)
+    expect(y.split[6]).toBeGreaterThanOrEqual(4 * W) // model: each request's whole time, none of it other
+    const model = `model ${secs(y.split[6])}`
+    expect(await m.find({ text: new RegExp(`· ${model}\\b`) })).toBeDefined() // the header's two largest parts
+    await m.press({ key: 'bturn2' }) // the inspector's whole split
+    expect(await m.find({ text: new RegExp(`^${model}\\b`) })).toBeDefined()
+  } finally { await m.unmount() }
 })
 
 test('a full log evicting a foreground agent\'s hook rows as they come keeps their time as hooks, not agents', async ($, on) => {

@@ -1,7 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import { STREAMING, splitOf, unusualOf } from './agent-log'
-
-const x = (t: number, kind: string, ms: number | undefined, extra: object = {}) => ({ t, kind, name: 'Read', detail: '', outcome: '', ms, ...extra })
+import { x } from './test-helpers'
 
 test('answering an AskUserQuestion or approving an ExitPlanMode plan splits as you, however its wait is labelled', () => {
   const turn = (extra: object) => [

@@ -1,21 +1,8 @@
 // The setup page's totals and the turn times "the usual" is measured against cover the whole session, rows a full log evicted
 // included: the module's state is shared, as in agent-log.test.ts
 import { test, expect } from 'claude-code/testing'
+import { capture } from './test-helpers'
 
-// a store the test reads back: what agent-log wrote, by key. session.end flushes the log's last second
-const capture = (on: any, id: string, panes = [{ id: 'agent-log' }]) => {
-  const db: Record<string, any> = {}
-  on('session.id', () => ({ value: id }))
-  on('agent.list', () => ({ value: [] }))
-  on('config.list', () => ({ value: [] }))
-  on('ui.panes', () => ({ value: panes }))
-  on('store.get', (_$: any, e: any) => ({ value: db[e.key] }))
-  on('store.set', (_$: any, e: any) => { db[e.key] = e.value; return { value: undefined } })
-  on('store.delete', (_$: any, e: any) => { delete db[e.key]; return { value: undefined } })
-  on('store.keys', () => ({ value: Object.keys(db) }))
-  on('session.end', (_$: any, e: any) => ({ sessionId: e.sessionId }))
-  return db
-}
 const PANE = { plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { title: 'Agent log', isFocused: false, placement: 'dock', bodyColumns: 120, scroll: { offset: 0, bodyRows: 80 } } }
 // the setup page's model-use lines and its problems title, then back to the log (s on the page again would close it)
 const setupOf = async ($: any) => {
@@ -87,7 +74,7 @@ test('"the usual" is the median of the kept turn times, the evicted turns\' incl
   await ($ as any).session.start({ cwd: '/w', surface: 'terminal', isInteractive: true, source: 'resume' }) // loads the session's store
   await ($ as any).turn.complete({ reason: 'answer', answer: '', durationMs: 40_000, usage: undefined })
   const band = await $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'AbovePrompt', props: { isWorking: false, hasSurvey: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 } } as any })
-  expect(await band.find({ text: /^#\d+ took 40\.0s, 4× the usual$/ })).toBeDefined()
+  try { expect(await band.find({ text: /^#\d+ took 40\.0s, 4× the usual$/ })).toBeDefined() } finally { await band.unmount() }
 })
 
 test('a text-less request a full log evicted on its own push still adds the price its collector record brings later', async ($, on) => {
