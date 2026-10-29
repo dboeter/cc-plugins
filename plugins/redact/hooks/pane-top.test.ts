@@ -56,6 +56,24 @@ test('with no rule on and the env files off, the status line warns that nothing 
   expect(top.props).toMatchObject({ color: 'warning', wrap: 'wrap' })
 })
 
+test('with no rule on but the env files on, the status line says masking, no warning', async ($, on) => {
+  world(on, {}, { [RULES]: file(EXAMPLES) })
+  const m = await mount($)
+  const top = await firstText(m)
+  expect(top.text).toBe('● masking: env files')
+  expect(top.props).toMatchObject({ color: 'green' })
+  expect(await m.find({ text: /nothing is masked/ })).toBeUndefined()
+})
+
+test('rules turned on that all fail to read count as none on: the status line warns, the marker counts them', async ($, on) => {
+  world(on, {}, { [RULES]: file([{ pattern: '(', replacement: 'X', enabled: true }, { pattern: 'zz_[0-9]+', replacement: 'zz', enabled: true }], { envFiles: false }) })
+  const m = await mount($)
+  const top = await firstText(m)
+  expect(top.text).toBe('○ nothing is masked: turn on a rule (r)')
+  expect(top.props).toMatchObject({ color: 'warning' })
+  expect((await m.find({ text: /^⚠ 2 rules invalid$/ }))?.props.color).toBe('red')
+})
+
 test('the tabs: This session keeps its count, Rules carries none', async ($, on) => {
   world(on, HOLDS_GH, { [RULES]: file(ON) })
   const m = await mount($)
