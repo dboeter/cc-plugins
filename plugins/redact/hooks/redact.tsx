@@ -879,7 +879,8 @@ export const register: Register = (on, options) => {
     const pattern = (text: string) => <Box flexShrink={1}><Text wrap="truncate-middle">{text}</Text></Box>
     const skip = (f: string | undefined) => f ? <Text color="red"> skipped: {f}</Text> : null
     const broken = rules.filter(fault).length + settings.filter(lineFault).length + (kept.broken ? 1 : 0)
-    const label = (r: unknown) => fault(r) ? null : <Text dimColor> as {spec(r).label}</Text>
+    // the placeholder a rule writes, `_n` for its number: no digits, so no restore reads it as one
+    const label = (r: unknown) => fault(r) ? null : <Text dimColor>{` → ${OPEN}${spec(r).label}_n⟧`}</Text>
     const lit = kept.compiled.length
     const trial = fresh()
     const preview = sample ? mask(sample, trial, [...kept.compiled, ...fromSettings]) : ''
@@ -952,62 +953,69 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    const rulesTab = () => (
-      <Box flexDirection="column" gap={1}>
-        <Box flexDirection="column">
-          <Box gap={1}>
-            <Box flexShrink={1}>{section('sec-test', 'Test', sample ? `${hits.length} matched` : 'without saving')}</Box>
-            {sample && <Box flexShrink={0}><Button key="clear-test" label="clear" plain onPress={() => { kept.sample = ''; $.ui.invalidate('ui.render') }}><Text color="red">✗</Text></Button></Box>}
-          </Box>
-          {testField}
-          {sample && (
-            <Box flexDirection="column">
-              <Text>  → {preview}</Text>
-              {hits.length === 0
-                ? <Text dimColor>    {lit + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on'}</Text>
-                : hits.map(x => <Text key={x.p} dimColor>    {x.p} {shown(x.p, x.v)} · masked by {x.by}</Text>)}
-            </Box>
-          )}
-        </Box>
-        <Box flexDirection="column">
-          {section('sec-rules', 'Rules', `${lit} of ${rules.length} on`)}
-          <Text dimColor>  in {file}, for every project; edit it by hand or here</Text>
-          {kept.broken && <Text color="red">  {FILE} {kept.broken}: masking with the last rules read until it is fixed by hand</Text>}
-          {addField}
-          {rules.length === 0 && <Text dimColor>  none yet</Text>}
-          {rules.map((r: any, i) => {
-            const src = typeof r?.pattern === 'string' ? r.pattern : JSON.stringify(r)
-            const name = typeof r?.name === 'string' && r.name ? r.name : undefined
-            const f = fault(r), enabled = isOn(r)
-            return (
-              <Box key={`rule-${i}`} flexDirection="column">
-                {/* a named rule gets its name on its own line and the regex dimmed below it:
-                    on one line, a long regex buried the name */}
-                <Box gap={1}>
-                  <Box flexShrink={1}>{pattern(`  ${i + 1}. ${name ?? src}`)}{label(r)}{skip(f)}</Box>
-                  <Box flexShrink={0}>{toggle(`turn-${i}`, enabled, enabled ? 'turn off' : 'turn on', async () => redraw(await turn($, kept, `${i + 1}`, !enabled)), f)}</Box>
-                  <Box flexShrink={0}><Button key={`remove-${i}`} label="remove" plain onPress={async () => redraw(await remove($, kept, `${i + 1}`))}><Text color="red">✗</Text></Button></Box>
+    // Awaited here, as the return below calls it sync: the folder the env files are read in
+    // (seedHere's fallback), ~ for the home folder; a failed read drops it from the Env files line.
+    const rulesTab = await (async () => {
+      const home = await $.env.get('HOME') || await $.env.get('USERPROFILE')
+      const cwd = await $.session.cwd().catch(() => undefined)
+      const here = cwd && home && cwd.startsWith(home) && /^(?:[\\/]|$)/.test(cwd.slice(home.length)) ? '~' + cwd.slice(home.length) : cwd
+      return () => (
+        <Box flexDirection="column" gap={1}>
+          <Box flexDirection="column">
+            {section('sec-rules', 'Rules', `${lit} of ${rules.length} on`)}
+            <Text dimColor>  in {file}, for every project; edit it by hand or here</Text>
+            {kept.broken && <Text color="red">  {FILE} {kept.broken}: masking with the last rules read until it is fixed by hand</Text>}
+            {addField}
+            {rules.length === 0 && <Text dimColor>  none yet</Text>}
+            {rules.map((r: any, i) => {
+              const src = typeof r?.pattern === 'string' ? r.pattern : JSON.stringify(r)
+              const name = typeof r?.name === 'string' && r.name ? r.name : undefined
+              const f = fault(r), enabled = isOn(r)
+              return (
+                <Box key={`rule-${i}`} flexDirection="column">
+                  {/* a named rule gets its name on its own line and the regex dimmed below it:
+                      on one line, a long regex buried the name */}
+                  <Box gap={1}>
+                    <Box flexShrink={1}>{pattern(`  ${i + 1}. ${name ?? src}`)}{label(r)}{skip(f)}</Box>
+                    <Box flexShrink={0}>{toggle(`turn-${i}`, enabled, enabled ? 'turn off' : 'turn on', async () => redraw(await turn($, kept, `${i + 1}`, !enabled)), f)}</Box>
+                    <Box flexShrink={0}><Button key={`remove-${i}`} label="remove" plain onPress={async () => redraw(await remove($, kept, `${i + 1}`))}><Text dimColor>✗</Text></Button></Box>
+                  </Box>
+                  {name && <Text dimColor wrap="truncate-middle">{`     ${src}`}</Text>}
                 </Box>
-                {name && <Text dimColor wrap="truncate-middle">{`     ${src}`}</Text>}
+              )
+            })}
+          </Box>
+          <Box flexDirection="column">
+            {section('sec-env', 'Env files', kept.envOn === false ? 'off' : 'on')}
+            <Box gap={1}>
+              <Box flexShrink={1}><Text dimColor>  secret-looking values from .env files{here ? ` in ${here}` : ''}</Text></Box>
+              <Box flexShrink={0}>{toggle('env', kept.envOn !== false, kept.envOn === false ? 'turn on' : 'turn off', async () => redraw(await envTurn($, kept, kept.envOn === false)))}</Box>
+            </Box>
+          </Box>
+          <Box flexDirection="column">
+            {section('sec-settings', 'From settings', settings.length ? `${settings.length} set` : 'none')}
+            <Text dimColor>  the patterns option in settings.json, always on</Text>
+            {settings.length === 0 && <Text dimColor>  none</Text>}
+            {settings.map((src, i) => <Box key={`set-${i}`}>{pattern(`  ${src}`)}{lineFault(src) ? null : label(read(src))}{skip(lineFault(src))}</Box>)}
+          </Box>
+          <Box flexDirection="column">
+            <Box gap={1}>
+              <Box flexShrink={1}>{section('sec-test', 'Test', sample ? `${hits.length} matched` : 'without saving')}</Box>
+              {sample && <Box flexShrink={0}><Button key="clear-test" label="clear" plain onPress={() => { kept.sample = ''; $.ui.invalidate('ui.render') }}><Text dimColor>✗</Text></Button></Box>}
+            </Box>
+            {testField}
+            {sample && (
+              <Box flexDirection="column">
+                <Text>  → {preview}</Text>
+                {hits.length === 0
+                  ? <Text dimColor>    {lit + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on'}</Text>
+                  : hits.map(x => <Text key={x.p} dimColor>    {x.p} {shown(x.p, x.v)} · masked by {x.by}</Text>)}
               </Box>
-            )
-          })}
-        </Box>
-        <Box flexDirection="column">
-          {section('sec-env', 'Env files', kept.envOn === false ? 'off' : 'on')}
-          <Box gap={1}>
-            <Box flexShrink={1}><Text dimColor>  secret-shaped values of .env, .envrc, .dev.vars and the like where a session starts, read again when they change</Text></Box>
-            <Box flexShrink={0}>{toggle('env', kept.envOn !== false, kept.envOn === false ? 'turn on' : 'turn off', async () => redraw(await envTurn($, kept, kept.envOn === false)))}</Box>
+            )}
           </Box>
         </Box>
-        <Box flexDirection="column">
-          {section('sec-settings', 'From settings', settings.length ? `${settings.length} set` : 'none')}
-          <Text dimColor>  the patterns option in settings.json, always on</Text>
-          {settings.length === 0 && <Text dimColor>  none</Text>}
-          {settings.map((src, i) => <Box key={`set-${i}`}>{pattern(`  ${src}`)}{lineFault(src) ? null : label(read(src))}{skip(lineFault(src))}</Box>)}
-        </Box>
-      </Box>
-    )
+      )
+    })()
 
     const guideTab = () => (
       <Box flexDirection="column" gap={1}>

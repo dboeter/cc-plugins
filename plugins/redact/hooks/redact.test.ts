@@ -299,7 +299,7 @@ test('a new rules file holds the two examples, off: nothing is masked, and the s
   expect(await m.find({ text: /0 of 2 on/ })).toBeDefined()
   expect(await m.find({ text: /^  1\. Example: vendor tokens/ })).toBeDefined()
   expect(await m.find({ text: /^  2\. Example: email addresses$/ })).toBeDefined()
-  expect(await m.find({ text: / as EMAIL/ })).toBeDefined()
+  expect(await m.find({ text: / → ⟦EMAIL_n⟧/ })).toBeDefined()
   expect(await m.find({ text: /○ off/ })).toBeDefined()
 })
 
@@ -440,7 +440,7 @@ test('the pane lists every rule by its replacement, and adds and removes one', a
   const m = await mount($)
   await m.press({ key: 'tab-rules' })
   expect(await m.find({ text: /1\. first_/ })).toBeDefined()
-  expect(await m.find({ text: / as FIRST/ })).toBeDefined()
+  expect(await m.find({ text: / → ⟦FIRST_n⟧/ })).toBeDefined()
   await m.input({ key: 'add', text: 'acme_[a-z0-9]{8}', kind: 'submit' })
   expect(rulesOf(files)).toEqual([{ pattern: 'first_[0-9]+', replacement: 'FIRST', enabled: true }, { pattern: 'acme_[a-z0-9]{8}', replacement: 'SECRET', enabled: true }])
   expect(await m.find({ text: /added as #2/ })).toBeDefined()
