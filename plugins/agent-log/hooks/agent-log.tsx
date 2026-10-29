@@ -910,7 +910,7 @@ async function loadNow($: EngineInterface): Promise<void> {
   if (key) { stepOf.clear(); bills = []; unbilled = [] } // the old session's requests; not on the first load, which a step's push can trigger after its pairing was queued
   if (setup.runsOf !== id) { setup.runs.clear(); setup.runsOf = id } // the old session's hook runs; ones the new session's records counted before this load stay
   key = k
-  words.clear(); openTurns.clear(); sel = undefined // the old session's prompts (never stored, so a resumed session's turns have none), opened turns, the cursor
+  words.clear(); openTurns.clear(); hookOpen.clear(); sel = undefined // the old session's prompts (never stored, so a resumed session's turns have none), opened turns and setup-page hook events, the cursor
   entries = Array.isArray(v) ? v : Array.isArray(v?.entries) ? v.entries : []
   turnNo = typeof v?.turn === 'number' ? v.turn : Math.max(0, ...entries.map(x => x.turn ?? 0)) // stores from before turns hold none: start at 0
   seen = v?.seen && !Array.isArray(v) ? v.seen : seed(entries)
@@ -2329,6 +2329,8 @@ export const register: Register = (on, options) => {
       const plugN = new Set(Object.values(hookCfg ?? {}).flat().filter(h => h.plugin).map(h => h.cmd ?? h.name)).size
       const ran = [...setup.runs.values()].reduce((a, r) => ({ n: a.n + r.n, ms: a.ms + r.ms }), { n: 0, ms: 0 })
       const timing = hookCfg && hookTimes(hookCfg)
+      // with only plugin hooks, the line still says why they are dimmed
+      const timesLine = [timing && timing !== 'no settings hooks' && `per-hook times ${timing}`, plugN && 'plugin hooks, dimmed, are not timed'].filter(Boolean).join('; ')
       // Plugins: the collector's, else the ones your settings enable, a line per marketplace
       const markets = enabled.reduce((m, id) => { const [n, mk = '—'] = id.split('@'); return m.set(mk, [...m.get(mk) ?? [], n!]) }, new Map<string, string[]>())
       const kwP = kwOf(widthOf(setup.plugins.size ? [...setup.plugins.keys()] : [...markets.keys()]))
@@ -2356,7 +2358,7 @@ export const register: Register = (on, options) => {
           {kwW('calls outside', outs.length ? outs.slice(0, 12).map(([p, n]) => `${p === '~' ? '~ (home)' : p} ${calls(n)}`).join(', ') + (outs.length > 12 ? `, +${outs.length - 12} more` : '') : 'none reached outside the root')}
           {!problems.length && broke}
           {title('hk', [`Hooks: ${hookN} command${hookN === 1 ? '' : 's'}${plugN ? `, ${plugN} from plugins` : ''}`, setup.runs.size && `${runs(ran.n)} · ${exact(ran.ms)}`].filter(Boolean).join(' · '))}
-          {timing && timing !== 'no settings hooks' && <Text key="hktimes" dimColor wrap="wrap">{`per-hook times ${timing}${plugN ? '; plugin hooks, dimmed, are not timed' : ''}`}</Text>}
+          {!!timesLine && <Text key="hktimes" dimColor wrap="wrap">{timesLine}</Text>}
           {events.flatMap(hookRows)}
           {title('pl', setup.plugins.size || !plugins ? `Plugins: ${plugins || 'none'}` : `Plugins: ${plugins} enabled in your settings, by marketplace`)}
           {setup.plugins.size ? [...setup.plugins].map(([n, pl]) => kwP(n, [pl.version, pl.scope, pl.hooks && 'hooks', pl.mcp && 'MCP'].filter(Boolean).join(' · '), `pl${n}`))
@@ -2415,7 +2417,7 @@ export const register: Register = (on, options) => {
     // The cursor's move: by `move` rows that open something (pressable), in the log's order, stopping at either end. None yet, or
     // its row gone (evicted, another view) or out of the window the last draw showed (a ^↑↓, a wheel, a page scroll), it starts
     // there: j on the window's first such row, k on its last. The window below keeps it in view. The agent tree's stops sit
-    // above the window: k on its first stop climbs into the tree, j off the tree's last lands on that first stop
+    // above the window: k on the log's first stop climbs into the tree (on a later one it moves up the log), j off the tree's last lands on the window's first stop
     let moved = false
     if (move) {
       const ts = rows.flatMap((r, i) => pressable.has(String(r.props?.key)) ? [[String(r.props.key), i] as const] : [])
@@ -2428,7 +2430,7 @@ export const register: Register = (on, options) => {
         if (to < treeStops.length) sel = treeStops[Math.max(0, to)]
         else if (top >= 0) sel = ts[top]![0]
         moved = true
-      } else if (treeStops.length && i >= 0 && i === top && move < 0) { sel = treeStops.at(-1); moved = true }
+      } else if (treeStops.length && i === 0 && top === 0 && move < 0) { sel = treeStops.at(-1); moved = true }
       else {
         const to = i >= 0 ? Math.max(0, Math.min(ts.length - 1, i + move))
           : move > 0 ? (first < 0 ? ts.length - 1 : first) : Math.max(0, ts.findLastIndex(([, at]) => at <= winEnd))

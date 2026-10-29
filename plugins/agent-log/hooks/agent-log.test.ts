@@ -619,6 +619,17 @@ test('k on the window\'s first row climbs into the agent tree, j comes back, and
   expect(await m.find({ text: /^Read a\.ts$/ })).toBe(undefined)
 })
 
+test('while the agent tree shows, k on the window\'s first row moves up the log until its first row, then climbs into the tree', async ($, on) => {
+  session(on, 'TK', steps(), { names: { A: 'scout' }, agents: [{ id: 'A', type: 'scout', description: 'look around', status: 'running' }] })
+  const m = await pane($, 14, 100)
+  expect(await m.find({ text: /^Step 1$/ })).toBe(undefined)
+  for (let i = 0; i < 30; i++) await m.press({ key: 'cup' }) // from the window's last row to Step 1, the window scrolling up with it
+  expect(await m.find({ text: /^Step 1$/ })).toBeDefined()
+  await m.press({ key: 'cup' }); await m.press({ key: 'cdown' }) // into the tree and back
+  expect(await m.find({ text: /^Step 1$/ })).toBeDefined()
+  await m.press({ key: 'jump' })
+})
+
 test('a turn with no end and hidden rows is a cursor stop, and o opens its hidden rows', async ($, on) => {
   const T = Date.now() - 60000
   session(on, 'HZ', [{ t: T, turn: 1, kind: 'step', name: 'claude-opus-5-5', detail: '', outcome: '', status: 'ok', ms: 400, step: 'k0', stop: 'tool_use', asked: ['Read'] }, ...reads(T + 500, { step: 'k0' }, ['a'])])
@@ -1758,6 +1769,41 @@ test('the setup page lists hook runs in a column, dims a plugin\'s hooks, opens 
   expect(await m.find({ text: '2 runs · 200ms' })).toBeDefined() // plan's own runs
   expect(await m.find({ text: '2 runs · not timed' })).toBeDefined() // the plugin's
   await m.press({ key: 'hkStop' })
+  await m.press({ key: 'back' })
+  await reset()
+})
+
+test('a hook event opened on the setup page is closed again in the next session', async ($, on) => {
+  const rows = [hookRow({ name: 'plan', origin: 'Stop', detail: '', ms: 120 })]
+  let id = 'HA' // /clear or a resume: the same process, another session id
+  on('session.id', () => ({ value: id }))
+  on('agent.list', () => ({ value: [] }))
+  on('config.list', () => ({ value: [] }))
+  on('ui.panes', () => ({ value: [{ id: 'agent-log' }] }))
+  mock.store(on, { 'r:HA': { entries: rows, seen: {}, turn: 1, names: {} }, 'r:HB': { entries: rows, seen: {}, turn: 1, names: {} } })
+  const reset = await withSettings($, on, () => ({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: '$HOME/.claude/hooks/plan.sh' }] }] } }))
+  const m = await pane($)
+  await m.press({ key: 'fsetup' })
+  await m.press({ key: 'hkStop' })
+  expect(await m.find({ type: 'Button', text: /^▾ Stop/ })).toBeDefined()
+  await m.press({ key: 'back' })
+  id = 'HB'
+  await m.redraw()
+  await m.press({ key: 'fsetup' })
+  expect(await m.find({ type: 'Button', text: /^▸ Stop/ })).toBeDefined()
+  await m.press({ key: 'back' })
+  await reset()
+})
+
+test('with only plugin hooks, the setup page still says why they are dimmed', async ($, on) => {
+  session(on, 'PO')
+  const reset = await withSettings($, on, () => ({ enabledPlugins: { 'tidy@market': true } }), {
+    '/home/u/.claude/plugins/installed_plugins.json': () => JSON.stringify({ plugins: { 'tidy@market': [{ installPath: '/plugins/tidy' }] } }),
+    '/plugins/tidy/hooks/hooks.json': () => JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'node stop.mjs' }] }] } }),
+  })
+  const m = await pane($, 60, 160)
+  await m.press({ key: 'fsetup' })
+  expect(await m.find({ text: 'plugin hooks, dimmed, are not timed' })).toBeDefined()
   await m.press({ key: 'back' })
   await reset()
 })
