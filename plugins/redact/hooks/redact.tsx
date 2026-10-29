@@ -897,22 +897,34 @@ export const register: Register = (on, options) => {
       <Button key={key} label={label} plain onPress={onPress}><Text color={active && !faulty ? 'green' : undefined} dimColor={!active || !!faulty}>{active ? '● on' : '○ off'}</Text></Button>
     )
 
+    const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
+    // what masks from now on: the rules on (file and settings) and the env files
+    const masking = [lit + fromSettings.length ? count(lit + fromSettings.length, 'rule') : '', kept.envOn !== false ? 'env files' : ''].filter(Boolean)
+    const status = masking.length
+      ? <Text color="green" wrap="wrap">● masking: {masking.join(' + ')}{vault.length ? ` · ${count(vault.length, 'value')} hidden from the model` : ''}</Text>
+      : <Text color="warning" wrap="wrap">○ nothing is masked: turn on a rule (r)</Text>
+    // the draw switch's two states, the one drawn now bold and the other dim
+    const drawState = (title: string, active: boolean) => <Text dimColor={!active} weight={active ? 'bold' : undefined}>{title}</Text>
     const topBar = () => (
       <Box flexDirection="column">
+        {status}
         <Box flexWrap="wrap" columnGap={2} justifyContent="space-between">
           <Box flexWrap="wrap" columnGap={2}>
             {tabBtn('session', `This session (${vault.length})`, 's')}
-            {tabBtn('rules', `Rules (${lit + fromSettings.length} on)`, 'r')}
+            {tabBtn('rules', 'Rules', 'r')}
             {tabBtn('help', 'Guide', 'h')}
-            {broken > 0 && <Text color="red">✗ {broken} skipped</Text>}
+            {broken > 0 && <Text color="red">⚠ {count(broken, 'rule')} invalid</Text>}
           </Box>
           {e.surface === 'terminal' && (
             <Box gap={1}>
-              <Text dimColor>terminal draws: {kept.raw ? 'as the model reads it' : 'the real values'}</Text>
-              <Button key="raw" label="switch" hotkey="d" onPress={async () => { kept.raw = !kept.raw; badge($, kept, await hold($, kept)); $.ui.invalidate('ui.render') }} />
+              <Text dimColor>show:</Text>
+              <Button key="raw" label={kept.raw ? 'show real values' : 'show placeholders'} hotkey="d" plain onPress={async () => { kept.raw = !kept.raw; badge($, kept, await hold($, kept)); $.ui.invalidate('ui.render') }}>
+                <Text>{drawState('real values', !kept.raw)}<Text dimColor> · </Text>{drawState('placeholders', kept.raw)}</Text>
+              </Button>
             </Box>
           )}
         </Box>
+        <Text dimColor wrap="wrap">the model sees {OPEN}LABEL_n⟧ · your tools get the real value</Text>
         {note && <Text color={REFUSED.test(note) ? 'warning' : undefined} dimColor={!REFUSED.test(note)}>{note}</Text>}
       </Box>
     )

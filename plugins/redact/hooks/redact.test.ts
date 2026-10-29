@@ -409,7 +409,7 @@ test('a rules file that does not parse keeps the last rules read, says so, and i
   expect(statuses.at(-1)).toBe('redact: 2 masked · redact-rules.json is no JSON object with a rules list, last rules kept (/redact rules)')
   expect(await run('add x_[0-9]+')).toContain('not saved')
   expect(files.get(RULES)).toBe('{ broken')
-  expect(await (await mount($)).find({ text: /1 skipped/ })).toBeDefined()
+  expect(await (await mount($)).find({ text: /⚠ 1 rule invalid/ })).toBeDefined()
 })
 
 test('a patterns file of the version before moves into the rules file once: its patterns on, an example on where its rule was', async ($, on) => {
@@ -430,7 +430,7 @@ test('a rule masks its v group under its replacement, with its options; one that
   const { entered } = world(on, {}, { [RULES]: file([{ pattern: '(?<pre>id=)(?<v>\\w+)', replacement: 'ID', min: 4 }, { pattern: 'zz_[0-9]+', replacement: 'zz' }, { pattern: '(' }]) })
   expect(await entered($, 'id=Ab12 id=Ab1 id=abcd zz_12')).toBe(`id=${ph('ID')} id=Ab1 id=abcd zz_12`)
   const m = await mount($)
-  expect(await m.find({ text: /2 skipped/ })).toBeDefined()
+  expect(await m.find({ text: /⚠ 2 rules invalid/ })).toBeDefined()
   await m.press({ key: 'tab-rules' })
   expect(await m.find({ text: /skipped: replacement is not capitals/ })).toBeDefined()
 })
@@ -525,7 +525,7 @@ test('/redact show clears the last note', async ($, on) => {
 test('a settings pattern that does not compile is marked; mobile, with no field, points to /redact add', { options: { patterns: ['('] } }, async ($, on) => {
   world(on)
   const m = await mount($, 'mobile')
-  expect(await m.find({ text: /skipped/ })).toBeDefined()
+  expect(await m.find({ text: /⚠ 1 rule invalid/ })).toBeDefined()
   await m.press({ key: 'tab-rules' })
   expect(await m.find({ key: 'add' })).toBeUndefined()
   expect(await m.find({ text: /\/redact add/ })).toBeDefined()
