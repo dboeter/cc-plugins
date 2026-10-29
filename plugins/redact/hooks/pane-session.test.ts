@@ -59,6 +59,23 @@ test('on a narrow pane the value truncates; the source and ✗ keep their width'
     [`reveal-${ph('PRIVATE_KEY')}`, 0], ['env file: .env', 0], [`forget-${ph('PRIVATE_KEY')}`, 0]])
 })
 
+test('a multi-line value stays on its line, cut or revealed, with its source and ✗', async ($, on) => {
+  const KEY = 'PRIV' + 'ATE KEY-----'
+  world(on, { 'vault:s1': { at: 39 * DAY, n: { PRIVATE_KEY: 1 }, ph: { [ph('PRIVATE_KEY')]: `-----BEGIN RSA ${KEY}\r\nMIIEowIBAAKCAQEA\nabc+/=` }, by: { [ph('PRIVATE_KEY')]: 'env file: .env' } } })
+  const m = await mount($)
+  const row = async () => {
+    const parts = kids(await m.find({ key: ph('PRIVATE_KEY') })) as any[]
+    return { value: strings(parts[0]).join(''), rest: parts.slice(1).map(c => keys(c)[0] ?? strings(c).join('')) }
+  }
+  const cut = await row()
+  expect(cut.value).not.toMatch(/[\r\n]/)
+  expect(cut.rest).toEqual([`reveal-${ph('PRIVATE_KEY')}`, 'env file: .env', `forget-${ph('PRIVATE_KEY')}`])
+  await m.press({ key: `reveal-${ph('PRIVATE_KEY')}` })
+  const open = await row()
+  expect(open.value).toBe(`  ${ph('PRIVATE_KEY')}  →  -----BEGIN RSA ${KEY}⏎MIIEowIBAAKCAQEA⏎abc+/=`)
+  expect(open.rest).toEqual(cut.rest)
+})
+
 test('no section header: the tab carries the count, ✗ all sits on the hint line', async ($, on) => {
   world(on, TWO)
   const m = await mount($)

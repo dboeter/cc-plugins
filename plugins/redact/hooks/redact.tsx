@@ -927,10 +927,11 @@ export const register: Register = (on, options) => {
               {vault.length > 1 && <Box flexShrink={0}><Button key="forget-all" label="forget all" plain onPress={async () => redraw(await forgetAll($, kept))}><Text dimColor>✗ all</Text></Button></Box>}
             </Box>
           )}
-        {/* one line per value; only the value shrinks, so the source and ✗ stay on a narrow pane */}
+        {/* one line per value, a revealed one too (its line breaks draw as ⏎); only the value
+            shrinks, so the source and ✗ stay on a narrow pane */}
         {vault.map(({ p, v, by }) => (
           <Box key={p} gap={3}>
-            <Box flexShrink={1}><Text wrap="truncate-end">  {p}  →  {shown(p, v)}</Text></Box>
+            <Box flexShrink={1}><Text wrap="truncate-end">  {p}  →  {shown(p, v).replace(/\r\n|\r|\n/g, '⏎')}</Text></Box>
             {long(v) && <Box flexShrink={0}><Button key={`reveal-${p}`} label={kept.revealed.has(p) ? 'hide' : 'reveal'} plain dimColor onPress={() => reveal(p)}>{kept.revealed.has(p) ? '▾' : '▸'}</Button></Box>}
             <Box flexShrink={0}><Text dimColor>{by}</Text></Box>
             <Box flexShrink={0}><Button key={`forget-${p}`} label="forget" plain onPress={async () => redraw(await forget($, kept, p))}><Text dimColor>✗</Text></Button></Box>
