@@ -130,7 +130,7 @@ test('the review\'s session at 100×60: every level, view and page draws', async
   expect(all.some(l => /‹blue:↩ 1\.3s›/.test(l))).toBe(true)
   // the header: the controls, what broke and the setup packed in two rows, then the rule; no agent tree while none runs
   expect(ruleAt(all)).toBe(2)
-  expect(all.some(l => /^k: ↑  ‹red:✗ 1 API error \+1›  ‹magenta:↗ 1 other project›  s: setup · Opus 5\.5/.test(l))).toBe(true)
+  expect(all.some(l => /^k: ↑  z: ▸▾  ‹red:✗ 1 API error \+1›  ‹magenta:↗ 1 other project›  s: setup · Opus 5\.5/.test(l))).toBe(true)
   expect(all.some(l => /^\*?main\*?\s*$|done ▸/.test(plainOf(l)))).toBe(false)
   // a turn's hidden rows open in place under its header, dim
   await m.press({ key: 'hid0' })
@@ -194,8 +194,8 @@ test('the review\'s session at 100×60: every level, view and page draws', async
 test('the review\'s session at 60×20: the header leaves the log its room', async ($, on) => {
   const m = await mountAt($, on, 'RV2', 60, 20)
   const lines = await frame(m, 60, 'default at 60×20')
-  // the controls in rows of the width, none clipped: three here, two without the two badges; then the rule, no agent tree
-  expect(ruleAt(lines)).toBe(3)
-  for (const l of lines.slice(0, 3)) expect(plainOf(l).length).toBeLessThanOrEqual(59)
+  // the controls in rows of the width, none clipped: four here, three without the two badges; then the rule, no agent tree
+  expect(ruleAt(lines)).toBe(4)
+  for (const l of lines.slice(0, 4)) expect(plainOf(l).length).toBeLessThanOrEqual(59)
   expect(lines.length).toBe(20) // the window fills the rest
 })
