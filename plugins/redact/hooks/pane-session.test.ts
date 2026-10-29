@@ -1,31 +1,10 @@
-import { test, expect, mock } from 'claude-code/testing'
+import { test, expect } from 'claude-code/testing'
+import { DAY, RULES, file, mount, world } from './pane-helpers'
 
 // The pane's This session tab: one line per vault entry, a hint line, and its empty states.
-// Helpers copied from redact.test.ts; fixtures split as there, so no literal is secret-shaped.
+// Fixtures split as in redact.test.ts, so no literal is secret-shaped.
 const GH = 'ghp_' + 'a'.repeat(36)
 const ph = (label: string, n = 1) => `⟦${label}_${n}⟧`
-
-const world = (on: any, entries: Record<string, unknown> = {}, given: Record<string, string> = {}) => {
-  const store = new Map(Object.entries(entries))
-  const files = new Map(Object.entries(given))
-  mock.clock(on, { now: 40 * DAY })
-  on('session.id', () => ({ value: 's1' }))
-  on('store.get', (_$: any, e: any) => ({ value: store.get(e.key) }))
-  on('store.set', (_$: any, e: any) => { store.set(e.key, e.value); return { value: undefined } })
-  on('store.delete', (_$: any, e: any) => { store.delete(e.key); return { value: undefined } })
-  on('store.keys', () => ({ value: [...store.keys()] }))
-  on('env.get', (_$: any, e: any) => ({ value: e.name === 'HOME' ? '/h' : undefined }))
-  on('fs.exists', (_$: any, e: any) => ({ value: files.has(e.path) }))
-  on('fs.read', (_$: any, e: any) => { if (!files.has(e.path)) throw new Error(`ENOENT ${e.path}`); return { value: files.get(e.path) } })
-  on('fs.write', (_$: any, e: any) => { files.set(e.path, e.text); return { value: undefined } })
-  on('fs.stat', (_$: any, e: any) => ({ value: { kind: 'file', size: files.get(e.path)?.length ?? 0, mtimeMs: 0, isLink: false, realPath: e.path } }))
-  return { store, files }
-}
-const DAY = 24 * 3600 * 1000
-const RULES = '/h/.claude/redact-rules.json'
-const rulesFile = (rules: unknown[], extra: object = {}) => JSON.stringify({ rules, ...extra }, null, 2) + '\n'
-const PROPS = { title: 'redact', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 30 } } as any
-const mount = ($: any, bodyColumns = 80) => $.ui.mount({ plugin: 'redact', surface: 'terminal', component: 'Pane', requestId: 'redact', props: { ...PROPS, bodyColumns } })
 
 // an element's own children, from a find (top level) or nested in a tree (in props)
 const kids = (el: any): unknown[] => el?.children ?? el?.props?.children ?? []
@@ -50,7 +29,7 @@ test('each vault entry is one line: placeholder → value, then its source, then
 test('on a narrow pane the value truncates; the source, cut to a third of the pane, and ✗ do not shrink', async ($, on) => {
   const KEY = 'PRIV' + 'ATE KEY-----'
   world(on, { 'vault:s1': { at: 39 * DAY, n: { PRIVATE_KEY: 1 }, ph: { [ph('PRIVATE_KEY')]: `-----BEGIN RSA ${KEY}\nMIIEowIBAAKCAQEA\nabc+/=` }, by: { [ph('PRIVATE_KEY')]: 'env file: .env' } } })
-  const m = await mount($, 30)
+  const m = await mount($, { bodyColumns: 30 })
   const [value, ...rest] = kids(await m.find({ key: ph('PRIVATE_KEY') })) as any[]
   expect(value.props.flexShrink).toBe(1)
   expect(kids(value)[0]).toMatchObject({ type: 'Text', props: { wrap: 'truncate-end' } })
@@ -95,7 +74,7 @@ test('a value with no recorded rule reads rule unknown', async ($, on) => {
 })
 
 test('empty, with no file rule, no settings pattern and env files off: no rule is on', async ($, on) => {
-  world(on, {}, { [RULES]: rulesFile([], { envFiles: false }) })
+  world(on, {}, { [RULES]: file([], { envFiles: false }) })
   expect(await (await mount($)).find({ text: /nothing masked: no rule is on \(r\)/ })).toBeDefined()
 })
 
@@ -106,17 +85,17 @@ const yet = async ($: any) => {
 }
 
 test('empty, with a settings pattern: nothing masked yet', { options: { patterns: ['zz_[0-9]+'] } }, async ($, on) => {
-  world(on, {}, { [RULES]: rulesFile([], { envFiles: false }) })
+  world(on, {}, { [RULES]: file([], { envFiles: false }) })
   expect(await yet($)).toEqual([true, false])
 })
 
 test('empty, with a file rule on: nothing masked yet', async ($, on) => {
-  world(on, {}, { [RULES]: rulesFile([{ pattern: 'acme_[a-z0-9]{8}', replacement: 'SECRET', enabled: true }], { envFiles: false }) })
+  world(on, {}, { [RULES]: file([{ pattern: 'acme_[a-z0-9]{8}', replacement: 'SECRET', enabled: true }], { envFiles: false }) })
   expect(await yet($)).toEqual([true, false])
 })
 
 test('empty, with env files on: nothing masked yet', async ($, on) => {
-  world(on, {}, { [RULES]: rulesFile([]) })
+  world(on, {}, { [RULES]: file([]) })
   expect(await yet($)).toEqual([true, false])
 })
 
@@ -131,7 +110,7 @@ const WIDE = 'rule: Example: vendor tokens (sk-, gh*_, github_pat_, AKIA, ASIA, 
 for (const cols of [80, 30])
   test(`a source wider than the pane is cut to a third of it (${cols} columns), so ✗ stays on the row`, async ($, on) => {
     world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: 'hunter2isgood' }, by: { [ph('SECRET')]: WIDE } } })
-    const parts = kids(await (await mount($, cols)).find({ key: ph('SECRET') })) as any[]
+    const parts = kids(await (await mount($, { bodyColumns: cols })).find({ key: ph('SECRET') })) as any[]
     const src = strings(parts[1]).join('')
     expect([...src].length).toBe(Math.max(8, Math.floor(cols / 3)))
     expect(src.endsWith('…') && WIDE.startsWith(src.slice(0, -1))).toBe(true)
@@ -143,8 +122,8 @@ const LIT = 'tok' + 'en4f9a2c71'
 for (const surface of ['mobile', 'desktop'] as const)
   test(`${surface}: a rule's text that holds a value shows its placeholder, on This session and Rules`, async ($, on) => {
     world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: LIT }, by: { [ph('SECRET')]: `rule: ${LIT}` } } },
-      { [RULES]: rulesFile([{ pattern: LIT, enabled: true }]) })
-    const m = await $.ui.mount({ plugin: 'redact', surface, component: 'Pane', requestId: 'redact', props: PROPS })
+      { [RULES]: file([{ pattern: LIT, enabled: true }]) })
+    const m = await mount($, { surface })
     const all = async () => (await m.findAll({ type: 'Text' })).flatMap(strings).join('\n')
     const session = await all()
     expect(session).toContain(`rule: ${ph('SECRET')}`)

@@ -888,8 +888,10 @@ export const register: Register = (on, options) => {
     const pattern = (text: string) => <Box flexShrink={1}><Text wrap="truncate-middle">{offTerminal(text)}</Text></Box>
     const skip = (f: string | undefined) => f ? <Text color="red"> skipped: {f}</Text> : null
     const broken = rules.filter(fault).length + settings.filter(lineFault).length + (kept.broken ? 1 : 0)
-    // the placeholder a rule writes, `_n` for its number: no digits, so no restore reads it as one
-    const label = (r: unknown) => fault(r) ? null : <Text dimColor>{` → ${OPEN}${spec(r).label}_n⟧`}</Text>
+    // a placeholder as the pane writes it, `_n` for its number: no digits, so no restore reads it as
+    // one; `open` ESC writes the escaped form
+    const notation = (label: string, open = OPEN) => `${open}${label}_n⟧`
+    const label = (r: unknown) => fault(r) ? null : <Text dimColor>{` → ${notation(spec(r).label)}`}</Text>
     const lit = kept.compiled.length
     const trial = fresh()
     const preview = sample ? mask(sample, trial, [...kept.compiled, ...fromSettings]) : ''
@@ -911,8 +913,8 @@ export const register: Register = (on, options) => {
     // what masks from now on: the rules on (file and settings) and the env files
     const masking = [lit + fromSettings.length ? count(lit + fromSettings.length, 'rule') : '', kept.envOn !== false ? 'env files' : ''].filter(Boolean)
     const status = masking.length
-      ? <Text color="green" wrap="wrap">● masking: {masking.join(' + ')}{vault.length ? ` · ${count(vault.length, 'value')} hidden from the model` : ''}</Text>
-      : <Text color="warning" wrap="wrap">○ nothing is masked: turn on a rule (r)</Text>
+      ? <Text color="green" wrap="wrap">● masking: {masking.join(' + ')}{vault.length ? ` · ${count(vault.length, 'value')} masked` : ''}</Text>
+      : <Text color="warning" wrap="wrap">○ nothing masked: no rule is on (r)</Text>
     // the draw switch's two states, the one drawn now bold and the other dim
     const drawState = (title: string, active: boolean) => <Text dimColor={!active} weight={active ? 'bold' : undefined}>{title}</Text>
     const topBar = () => (
@@ -934,7 +936,7 @@ export const register: Register = (on, options) => {
             </Box>
           )}
         </Box>
-        <Text dimColor wrap="wrap">the model sees {OPEN}LABEL_n⟧ · your tools get the real value</Text>
+        <Text dimColor wrap="wrap">{`the model sees ${notation('LABEL')} · your tools get the real value`}</Text>
         {note && <Text color={REFUSED.test(note) ? 'warning' : undefined} dimColor={!REFUSED.test(note)}>{note}</Text>}
       </Box>
     )
@@ -1002,7 +1004,7 @@ export const register: Register = (on, options) => {
             </Box>
           </Box>
           <Box flexDirection="column">
-            {section('sec-settings', 'From settings', settings.length ? `${settings.length} set` : 'none')}
+            {section('sec-settings', 'From settings', settings.length ? `${settings.length} on` : 'none')}
             <Text dimColor>  the patterns option in settings.json, always on</Text>
             {settings.length === 0 && <Text dimColor>  none</Text>}
             {settings.map((src, i) => <Box key={`set-${i}`}>{pattern(`  ${src}`)}{lineFault(src) ? null : label(read(src))}{skip(lineFault(src))}</Box>)}
@@ -1033,14 +1035,14 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" gap={1}>
           <Box flexDirection="column">
             {section('sec-how', 'How it works')}
-            {row('your text', `masked to placeholders (${OPEN}LABEL_n⟧) before the model sees it`)}
+            {row('your text', `masked to placeholders (${notation('LABEL')}) before the model sees it`)}
             {row('tool calls', 'get the real values back before they run')}
             {row('the vault', 'holds the real values and stays on this machine')}
           </Box>
           <Box flexDirection="column">
             {section('sec-format', 'Rule format', FILE)}
             {row('pattern', 'a JavaScript regex; each match is masked whole')}
-            {row('replacement', 'the placeholder\'s label, capitals, digits and _: API_KEY masks as API_KEY_n')}
+            {row('replacement', `the placeholder's label, capitals, digits and _: API_KEY masks as ${notation('API_KEY')}`)}
             {row('enabled', 'false turns a rule off; the two examples start off')}
             {row('name', 'what the pane and the vault call it')}
             {row('options', 'ignoreCase, strong, prose: true; min: N')}
@@ -1053,7 +1055,7 @@ export const register: Register = (on, options) => {
             {row('env files', 'a session starts with the secret-shaped values of the env files where it starts; /redact env off')}
             {row('unknown', 'a placeholder not in this session\'s vault refuses the tool call')}
             {row('forget', 'drops a value from the vault; a call naming its placeholder is refused, and the value, matched again, masks under a new number')}
-            {row(`${ESC}LABEL_n⟧`, `! after ${OPEN} writes the literal placeholder without restoring it`)}
+            {row(notation('LABEL', ESC), `! after ${OPEN} writes the literal placeholder without restoring it`)}
           </Box>
           <Box flexDirection="column">
             {section('sec-restore', 'Where real values go')}
