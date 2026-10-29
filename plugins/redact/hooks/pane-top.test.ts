@@ -12,13 +12,13 @@ const ON = EXAMPLES.map(r => ({ ...r, enabled: true }))
 const HOLDS_GH = { 'vault:s1': { at: 39 * DAY, n: { API_KEY: 1 }, ph: { [ph('API_KEY')]: GH } } }
 const firstText = async (m: any) => (await m.findAll({ type: 'Text' }))[0]
 
-test('the status line, first on every tab, counts the rules on, the env files and the values hidden', async ($, on) => {
+test('the status line, first on every tab, counts the rules on and the env files, the values left to the Session tab', async ($, on) => {
   world(on, HOLDS_GH, { [RULES]: file(ON) })
   const m = await mount($)
   for (const tab of ['tab-session', 'tab-rules', 'tab-help']) {
     await m.press({ key: tab })
     const top = await firstText(m)
-    expect(top.text).toBe('● masking: 2 rules + env files · 1 value masked')
+    expect(top.text).toBe('● masking: 2 rules + env files')
     expect(top.props).toMatchObject({ color: 'green', wrap: 'wrap' })
   }
 })
@@ -53,10 +53,10 @@ test('rules turned on that all fail to read count as none on: the status line wa
   expect((await m.find({ text: /^⚠ 2 rules invalid$/ }))?.props.color).toBe('red')
 })
 
-test('the tabs: This session keeps its count, Rules carries none', async ($, on) => {
+test('the tabs: Session keeps its count, Rules carries none', async ($, on) => {
   world(on, HOLDS_GH, { [RULES]: file(ON) })
   const m = await mount($)
-  expect((await m.find({ key: 'tab-session' }))?.props.label).toMatch(/^This session \(1\)/)
+  expect((await m.find({ key: 'tab-session' }))?.props.label).toMatch(/^Session \(1\)/)
   expect((await m.find({ key: 'tab-rules' }))?.props.label).toMatch(/^Rules[ •]$/)
 })
 
@@ -68,18 +68,20 @@ test('a rule that does not read is marked in red as invalid, no longer as skippe
   expect(await m.find({ text: /✗ \d+ skipped/ })).toBeUndefined()
 })
 
-test('the draw switch reads show: real values · placeholders, the state drawn now bold, d flips it', async ($, on) => {
+test('the draw switch names the transcript, the state drawn now bracketed and bold, d flips it at one width', async ($, on) => {
   world(on, HOLDS_GH)
   const m = await mount($)
   const state = async (title: string) => (await m.find({ text: new RegExp(`^${title}$`) }))?.props
   const raw = await m.find({ key: 'raw' })
   expect(raw?.props.hotkey).toBe('d')
-  expect(raw?.text).toMatch(/real values · placeholders/)
-  expect(await m.find({ text: /^show:$/ })).toBeDefined()
-  expect(await state('real values')).toMatchObject({ weight: 'bold' })
-  expect(await state('placeholders')).toMatchObject({ dimColor: true })
+  const before = raw?.text
+  expect(before).toBe('[real values] placeholders ')
+  expect(await m.find({ text: /^transcript shows:$/ })).toBeDefined()
+  expect(await state('\\[real values\\]')).toMatchObject({ weight: 'bold' })
+  expect(await state(' placeholders ')).toMatchObject({ dimColor: true })
   await m.press({ key: 'raw' })
-  expect(await state('placeholders')).toMatchObject({ weight: 'bold' })
-  expect(await state('real values')).toMatchObject({ dimColor: true })
+  expect([...(await m.find({ key: 'raw' }))?.text].length).toBe([...before].length)
+  expect(await state('\\[placeholders\\]')).toMatchObject({ weight: 'bold' })
+  expect(await state(' real values ')).toMatchObject({ dimColor: true })
   expect(await (await mount($, { surface: 'mobile' })).find({ key: 'raw' })).toBeUndefined()
 })

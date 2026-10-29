@@ -454,8 +454,8 @@ test('the pane lists what this session masked, the whole value on the terminal o
   const ran: any[] = []
   on('tool.call', async (_$: any, e: any) => { ran.push(e); return { result: {} } as any })
   const m = await mount($)
-  expect(await m.find({ text: /This session/ })).toBeDefined()
-  expect(await m.find({ text: new RegExp(`${ph('API_KEY')}  →  ${GH}`) })).toBeDefined()
+  expect((await m.find({ key: 'tab-session' }))?.props.label).toMatch(/^Session/)
+  expect(await m.find({ text: new RegExp(`^ +${GH}$`) })).toBeDefined()
   expect(await m.find({ text: /^rule unknown$/ })).toBeDefined()
   await m.press({ key: `forget-${ph('API_KEY')}` })
   expect((store.get('vault:s1') as any)).toMatchObject({ n: { API_KEY: 1 }, ph: {} })
@@ -473,7 +473,7 @@ test('the pane names the rule that masked each value; the model reads it masked 
   expect((store.get('vault:s1') as any).by).toEqual({
     [ph('API_KEY')]: expect.stringMatching(/^rule: Example: vendor tokens/), [ph('SECRET')]: 'rule: acme_[a-z0-9]{8}' })
   const m = await mount($)
-  expect(await m.find({ text: new RegExp(`${ph('SECRET')}  →  ${ACME}`) })).toBeDefined()
+  expect(await m.find({ text: new RegExp(`^ +${ACME}$`) })).toBeDefined()
   expect(await m.find({ text: /^rule: acme_/ })).toBeDefined()
   // the pane read back off the screen, as `tmux capture-pane` would return it
   await $.session.append({ door: 'tool-result', origin: { kind: 'tool', tool: 'Bash' }, uuid: 'u1',
@@ -598,26 +598,28 @@ test('crafted output is masked in linear time', () => {
   }
 })
 
-test('the pane opens on This session, a long value cut to its ends until revealed, and forgets all at once', async ($, on) => {
+test('the pane opens on Session, a long value cut to its ends until revealed, and forgets all at once', async ($, on) => {
   const KEY = 'PRIV' + 'ATE KEY-----'
   const pem = `-----BEGIN RSA ${KEY}\nMIIEowIBAAKCAQEA\nabc+/=`
   const { store } = world(on, { 'vault:s1': { at: 39 * DAY, n: { API_KEY: 1, PRIVATE_KEY: 1 }, ph: { [ph('API_KEY')]: GH, [ph('PRIVATE_KEY')]: pem } } })
   const m = await mount($)
-  expect(await m.find({ text: /✗ forgets a value/ })).toBeDefined()
+  expect(await m.find({ key: 'cdown' })).toBeDefined()
   expect(await m.find({ text: /^Rules$/ })).toBeUndefined()
   expect(await m.find({ text: /-----B…c\+\/= \(3 lines, \d+ chars\)/ })).toBeDefined()
   expect(await m.find({ text: /MIIEow/ })).toBeUndefined()
+  await m.press({ key: 'cdown' })
   await m.press({ key: `reveal-${ph('PRIVATE_KEY')}` })
   expect(await m.find({ text: /MIIEow/ })).toBeDefined()
   await m.press({ key: `reveal-${ph('PRIVATE_KEY')}` })
   expect(await m.find({ text: /MIIEow/ })).toBeUndefined()
+  await m.press({ key: `pick-${ph('API_KEY')}` })
   expect(await m.find({ key: `reveal-${ph('API_KEY')}` })).toBeUndefined()
   await m.press({ key: 'forget-all' })
   expect(store.get('vault:s1')).toMatchObject({ n: { API_KEY: 1, PRIVATE_KEY: 1 }, ph: {} })
   expect(await m.find({ text: /forgot 2/ })).toBeDefined()
 })
 
-test('tabs switch between This session, Rules and Guide, and test previews masking on submit or /redact test without saving', async ($, on) => {
+test('tabs switch between Session, Rules and Guide, and test previews masking on submit or /redact test without saving', async ($, on) => {
   const { store } = world(on, {}, { [RULES]: file([...ON, { pattern: 'acme_[a-z0-9]{8}', replacement: 'SECRET' }]) })
   on('ui.open', () => ({ value: { isPlaced: true } }) as any)
   const toasts = toasted(on)

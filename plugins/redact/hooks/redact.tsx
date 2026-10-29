@@ -282,7 +282,7 @@ export const migrate = (t: string) => {
 type Tab = 'session' | 'rules' | 'help'
 const TABS: Record<string, Tab> = { '': 'session', show: 'session', session: 'session', rules: 'rules', patterns: 'rules', test: 'rules', guide: 'help', help: 'help' }
 type Kept = { rules: unknown[]; compiled: Pattern[]; broken?: string; last?: string; file?: Promise<string>; seeded?: boolean; note: string; extra: number
-  vault?: { id: string; held: Promise<Held> }; env?: { id: string; seen: Seen }; envOn?: boolean; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; opened?: boolean; tab: Tab; sample: string }
+  vault?: { id: string; held: Promise<Held> }; env?: { id: string; seen: Seen }; envOn?: boolean; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; cursor?: string; opened?: boolean; tab: Tab; sample: string }
 // CLAUDE_CONFIG_DIR, else ~/.claude; USERPROFILE is Windows' HOME
 const place = ($: EngineInterface, k: Kept) => k.file ??= (async () => {
   const dir = await $.env.get('CLAUDE_CONFIG_DIR') || `${await $.env.get('HOME') || await $.env.get('USERPROFILE') || '~'}/.claude`
@@ -878,11 +878,6 @@ export const register: Register = (on, options) => {
     // A rule with no name is drawn by its regex, and a literal regex is the value itself: off the
     // terminal, rule text is masked by the vault like any other text.
     const offTerminal = (s: string) => e.surface === 'terminal' ? s : mask(s, held, [])
-    // a value's source on its row: one line, at most a third of the pane, so ✗ stays on a narrow one
-    const source = (by: string) => {
-      const s = offTerminal(by).replace(/\r\n|\r|\n/g, '⏎'), max = Math.max(8, Math.floor(w / 3))
-      return len(s) > max ? [...s].slice(0, max - 1).join('') + '…' : s
-    }
     const reveal = (p: string) => { kept.revealed.has(p) ? kept.revealed.delete(p) : kept.revealed.add(p); $.ui.invalidate('ui.render') }
     // a long pattern is cut in the middle, so its row keeps the remove button on a narrow terminal
     const pattern = (text: string) => <Box flexShrink={1}><Text wrap="truncate-middle">{offTerminal(text)}</Text></Box>
@@ -912,53 +907,83 @@ export const register: Register = (on, options) => {
     const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
     // what masks from now on: the rules on (file and settings) and the env files
     const masking = [lit + fromSettings.length ? count(lit + fromSettings.length, 'rule') : '', kept.envOn !== false ? 'env files' : ''].filter(Boolean)
+    // the value count is the Session tab's, not repeated here
     const status = masking.length
-      ? <Text color="green" wrap="wrap">● masking: {masking.join(' + ')}{vault.length ? ` · ${count(vault.length, 'value')} masked` : ''}</Text>
+      ? <Text color="green" wrap="wrap">● masking: {masking.join(' + ')}</Text>
       : <Text color="warning" wrap="wrap">○ nothing masked: no rule is on (r)</Text>
-    // the draw switch's two states, the one drawn now bold and the other dim
-    const drawState = (title: string, active: boolean) => <Text dimColor={!active} weight={active ? 'bold' : undefined}>{title}</Text>
+    // The draw switch's two states, the one drawn now bracketed and bold, the other dim and padded to
+    // the same width, so a flip moves nothing. It switches the transcript, not this pane: named so.
+    const drawState = (title: string, active: boolean) => <Text dimColor={!active} weight={active ? 'bold' : undefined}>{active ? `[${title}]` : ` ${title} `}</Text>
     const topBar = () => (
       <Box flexDirection="column">
-        {status}
-        <Box flexWrap="wrap" columnGap={2} justifyContent="space-between">
-          <Box flexWrap="wrap" columnGap={2}>
-            {tabBtn('session', `This session (${vault.length})`, 's')}
-            {tabBtn('rules', 'Rules', 'r')}
-            {tabBtn('help', 'Guide', 'h')}
-            {broken > 0 && <Text color="red">⚠ {count(broken, 'rule')} invalid</Text>}
-          </Box>
-          {e.surface === 'terminal' && (
-            <Box gap={1}>
-              <Text dimColor>show:</Text>
-              <Button key="raw" label={kept.raw ? 'show real values' : 'show placeholders'} hotkey="d" plain onPress={async () => { kept.raw = !kept.raw; badge($, kept, await hold($, kept)); $.ui.invalidate('ui.render') }}>
-                <Text>{drawState('real values', !kept.raw)}<Text dimColor> · </Text>{drawState('placeholders', kept.raw)}</Text>
-              </Button>
-            </Box>
-          )}
+        <Box flexWrap="wrap" columnGap={2}>
+          {status}
+          {tabBtn('session', `Session (${vault.length})`, 's')}
+          {tabBtn('rules', 'Rules', 'r')}
+          {tabBtn('help', 'Guide', 'h')}
+          {broken > 0 && <Text color="red">⚠ {count(broken, 'rule')} invalid</Text>}
         </Box>
-        <Text dimColor wrap="wrap">{`the model sees ${notation('LABEL')} · your tools get the real value`}</Text>
+        {e.surface === 'terminal' && (
+          <Box gap={1}>
+            <Text dimColor>transcript shows:</Text>
+            <Button key="raw" label={kept.raw ? 'show real values' : 'show placeholders'} hotkey="d" plain onPress={async () => { kept.raw = !kept.raw; badge($, kept, await hold($, kept)); $.ui.invalidate('ui.render') }}>
+              <Text>{drawState('real values', !kept.raw)}{drawState('placeholders', kept.raw)}</Text>
+            </Button>
+          </Box>
+        )}
         {note && <Text color={REFUSED.test(note) ? 'warning' : undefined} dimColor={!REFUSED.test(note)}>{note}</Text>}
       </Box>
     )
 
+    // The values under the rule or file that masked each, in the vault's order, which the row cursor
+    // walks. Only the cursor's row draws its actions, so no row carries a column of ✗.
+    const groups = new Map<string, typeof vault>()
+    for (const x of vault) groups.set(x.by, [...groups.get(x.by) ?? [], x])
+    const order = [...groups.values()].flat()
+    const at = Math.max(0, order.findIndex(x => x.p === kept.cursor))
+    const cur = order[at]?.p
+    const aim = (p: string | undefined) => { kept.cursor = p; $.ui.invalidate('ui.render') }
+    const step = (d: 1 | -1) => aim(order[Math.min(order.length - 1, Math.max(0, at + d))]?.p)
+    const pw = Math.max(0, ...vault.map(x => len(x.p)))
     const sessionTab = () => (
       <Box flexDirection="column">
         {vault.length === 0
-          ? <Text dimColor>  {lit + fromSettings.length === 0 && kept.envOn === false ? 'nothing masked: no rule is on (r)' : 'nothing masked yet'}</Text>
+          ? (
+            <Box flexDirection="column">
+              <Text dimColor>  {lit + fromSettings.length === 0 && kept.envOn === false ? 'nothing masked: no rule is on (r)' : 'nothing masked yet'}</Text>
+              <Text dimColor wrap="wrap">{`  the model will see ${notation('LABEL')} · your tools get the real value`}</Text>
+            </Box>
+          )
           : (
             <Box justifyContent="space-between">
-              <Text dimColor>  ✗ forgets a value</Text>
-              {vault.length > 1 && <Box flexShrink={0}><Button key="forget-all" label="forget all" plain onPress={async () => redraw(await forgetAll($, kept))}><Text dimColor>✗ all</Text></Button></Box>}
+              <Box columnGap={2}>
+                <Text> </Text>
+                <Button key="cdown" label="↓" hotkey="j" plain dimColor onPress={() => step(1)} />
+                <Button key="cup" label="↑" hotkey="k" plain dimColor onPress={() => step(-1)} />
+              </Box>
+              {vault.length > 1 && <Box flexShrink={0}><Button key="forget-all" label="forget all" plain dimColor onPress={async () => redraw(await forgetAll($, kept))} /></Box>}
             </Box>
           )}
-        {/* one line per value, a revealed one too (its line breaks draw as ⏎); the value shrinks
-            first, and the source, cut to a third of the pane, keeps ✗ on a narrow one */}
-        {vault.map(({ p, v, by }) => (
-          <Box key={p} gap={3}>
-            <Box flexShrink={1}><Text wrap="truncate-end">  {p}  →  {shown(p, v).replace(/\r\n|\r|\n/g, '⏎')}</Text></Box>
-            {long(v) && <Box flexShrink={0}><Button key={`reveal-${p}`} label={kept.revealed.has(p) ? 'hide' : 'reveal'} plain dimColor onPress={() => reveal(p)}>{kept.revealed.has(p) ? '▾' : '▸'}</Button></Box>}
-            <Box flexShrink={0}><Text dimColor wrap="truncate-end">{source(by)}</Text></Box>
-            <Box flexShrink={0}><Button key={`forget-${p}`} label="forget" plain onPress={async () => redraw(await forget($, kept, p))}><Text dimColor>✗</Text></Button></Box>
+        {[...groups].map(([by, xs]) => (
+          <Box key={`by-${by}`} flexDirection="column">
+            {section(`src-${by}`, offTerminal(by).replace(/\r\n|\r|\n/g, '⏎'))}
+            {/* one line per value, a revealed one too (its line breaks draw as ⏎): the value shrinks,
+                the placeholder, padded to the widest, and the cursor's actions do not */}
+            {xs.map(({ p, v }) => (
+              <Box key={p} justifyContent="space-between" columnGap={2}>
+                <Box flexShrink={1}>
+                  <Text>{p === cur ? '› ' : '  '}</Text>
+                  <Box flexShrink={0}><Button key={`pick-${p}`} label={p} plain onPress={() => aim(p)} /></Box>
+                  <Box flexShrink={1}><Text wrap="truncate-end">{' '.repeat(pw - len(p) + 2)}{shown(p, v).replace(/\r\n|\r|\n/g, '⏎')}</Text></Box>
+                </Box>
+                {p === cur && (
+                  <Box flexShrink={0} columnGap={2}>
+                    {long(v) && <Button key={`reveal-${p}`} label={kept.revealed.has(p) ? 'hide' : 'reveal'} hotkey="v" plain dimColor onPress={() => reveal(p)} />}
+                    <Button key={`forget-${p}`} label="forget" hotkey="x" plain dimColor onPress={async () => { kept.cursor = (order[at + 1] ?? order[at - 1])?.p; redraw(await forget($, kept, p)) }} />
+                  </Box>
+                )}
+              </Box>
+            ))}
           </Box>
         ))}
       </Box>
