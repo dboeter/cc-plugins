@@ -996,32 +996,43 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    const guideTab = () => (
-      <Box flexDirection="column" gap={1}>
-        <Box flexDirection="column">
-          {section('sec-format', 'Rule format', FILE)}
-          <Text dimColor>{'  pattern         a JavaScript regex; each match is masked whole'}</Text>
-          <Text dimColor>{'  replacement     the placeholder\'s label, capitals, digits and _: API_KEY masks as API_KEY_n'}</Text>
-          <Text dimColor>{'  enabled         false turns a rule off; the two examples start off'}</Text>
-          <Text dimColor>{'  name            what the pane and the vault call it'}</Text>
-          <Text dimColor>{'  options         ignoreCase, strong, prose: true; min: N'}</Text>
-          <Text dimColor>{'  (?<v>...)       masks only group v (or v2), keeping prefix and suffix around it'}</Text>
-          <Text dimColor>{'  /redact add     LABEL [i min=N strong prose]: regex, or a bare regex as SECRET'}</Text>
+    const guideTab = () => {
+      // a key at normal weight in a 16-column field, its description dim
+      const row = (k: string, d: string) => <Text>{`  ${k.padEnd(14)}`}<Text dimColor>{d}</Text></Text>
+      return (
+        <Box flexDirection="column" gap={1}>
+          <Box flexDirection="column">
+            {section('sec-how', 'How it works')}
+            {row('your text', `masked to placeholders (${OPEN}LABEL_n⟧) before the model sees it`)}
+            {row('tool calls', 'get the real values back before they run')}
+            {row('the vault', 'holds the real values and stays on this machine')}
+          </Box>
+          <Box flexDirection="column">
+            {section('sec-format', 'Rule format', FILE)}
+            {row('pattern', 'a JavaScript regex; each match is masked whole')}
+            {row('replacement', 'the placeholder\'s label, capitals, digits and _: API_KEY masks as API_KEY_n')}
+            {row('enabled', 'false turns a rule off; the two examples start off')}
+            {row('name', 'what the pane and the vault call it')}
+            {row('options', 'ignoreCase, strong, prose: true; min: N')}
+            {row('(?<v>...)', 'masks only group v (or v2), keeping prefix and suffix around it')}
+            {row('/redact add', 'LABEL [i min=N strong prose]: regex, or a bare regex as SECRET')}
+          </Box>
+          <Box flexDirection="column">
+            {section('sec-escape', 'Placeholders & escaping')}
+            {row('once matched', 'a value keeps its placeholder all session and masks as a whole word')}
+            {row('env files', 'a session starts with the secret-shaped values of the env files where it starts; /redact env off')}
+            {row('unknown', 'a placeholder not in this session\'s vault refuses the tool call')}
+            {row('forget', 'drops a value from the vault; a call naming its placeholder is refused, and the value, matched again, masks under a new number')}
+            {row(`${ESC}LABEL_n⟧`, `! after ${OPEN} writes the literal placeholder without restoring it`)}
+          </Box>
+          <Box flexDirection="column">
+            {section('sec-restore', 'Where real values go')}
+            {row('tools', 'every tool call (Bash, Edit, WebFetch, WebSearch, MCP) gets real values')}
+            {row('surfaces', 'only the terminal draws real values; desktop, VS Code and mobile keep placeholders')}
+          </Box>
         </Box>
-        <Box flexDirection="column">
-          {section('sec-escape', 'Placeholders & escaping')}
-          <Text dimColor>{'  once matched    a value keeps its placeholder all session and masks as a whole word'}</Text>
-          <Text dimColor>{'  env files       a session starts with the secret-shaped values of the env files where it starts; /redact env off'}</Text>
-          <Text dimColor>{'  unknown         a placeholder not in this session\'s vault refuses the tool call'}</Text>
-          <Text dimColor>{`  ${ESC}LABEL_n⟧     ! after ${OPEN} writes the literal placeholder without restoring it`}</Text>
-        </Box>
-        <Box flexDirection="column">
-          {section('sec-restore', 'Where real values go')}
-          <Text dimColor>{'  tools           every tool call (Bash, Edit, WebFetch, WebSearch, MCP) gets real values'}</Text>
-          <Text dimColor>{'  surfaces        only the terminal draws real values; desktop, VS Code and mobile keep placeholders'}</Text>
-        </Box>
-      </Box>
-    )
+      )
+    }
 
     return <Box flexDirection="column" gap={1}>{topBar()}{tab === 'session' && sessionTab()}{tab === 'rules' && rulesTab()}{tab === 'help' && guideTab()}</Box>
   })
