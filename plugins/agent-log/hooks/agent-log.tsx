@@ -209,6 +209,24 @@ export const hookTimes = (cfg: HookCfg) => {
   return !own.length ? 'no settings hooks' : !n ? 'off: no settings hook runs through hook-timer (README: Per-hook times)'
     : `on for ${n} of ${own.length} settings hook${own.length === 1 ? '' : 's'}`
 }
+// hook events in the order a session meets them, for the setup page; one not listed goes last, in the order it came
+const LIFECYCLE = ['SessionStart', 'InstructionsLoaded', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure',
+  'PostToolBatch', 'Notification', 'SubagentStart', 'SubagentStop', 'Stop', 'PreCompact', 'ConfigChange', 'SessionEnd']
+export const byLifecycle = (evs: string[]) => {
+  const at = (ev: string) => { const i = LIFECYCLE.indexOf(ev); return i < 0 ? LIFECYCLE.length : i }
+  return [...evs].sort((a, b) => at(a) - at(b))
+}
+// the places calls reached, each counted for the shallowest other place it lies under (`~/cc-plugins/plugins` for `~/cc-plugins`),
+// most calls first. Home and `/` take nothing in: every place lies under them
+export const placesOf = (outs: [string, number][]): [string, number][] => {
+  const roots = outs.map(([p]) => p).filter(p => p !== '~' && p !== '/')
+  const m = new Map<string, number>()
+  for (const [p, n] of outs) {
+    const r = roots.filter(q => p.startsWith(`${q}/`)).sort((a, b) => a.length - b.length)[0] ?? p
+    m.set(r, (m.get(r) ?? 0) + n)
+  }
+  return [...m].sort((p, q) => q[1] - p[1])
+}
 // whether hook-timer wraps any hook this event runs: else there is nothing to read
 const wraps = (cfg: HookCfg, event: string, target?: string) => (cfg[event] ?? []).some(h => timed(h) && fits(h.matcher, target))
 // code points hook-timer keeps of a say (its `line`, jq .[0:80]): a say that long may be cut mid-word, so it matches as a prefix only
@@ -319,6 +337,7 @@ let key = '' // this session's store key; one per session so concurrent sessions
 let inspect: Entry | undefined // the entry shown in full; set, the pane draws it in place of the log (a second pane cannot take the keys from this one)
 let page: 'setup' | 'keys' | undefined // the setup page or the keys page (what each mark and key means), drawn in place of the log as the inspector is
 let pageBack = false // the inspector opened from the setup page: back returns to the page, not the log
+const hookOpen = new Set<string>() // the setup page's hook events opened to each hook's runs
 // The session's setup as the hooks saw it, for the setup button and page, in memory only: the main loop's last model and effort
 // (asked at session.start, then its steps), the permission mode (every classic event carries it), rate limits (session.measure),
 // and from the collector: the plugins the engine loaded and the MCP servers it connected
@@ -2265,46 +2284,91 @@ export const register: Register = (on, options) => {
         return [...m]
       }
       const bad = xs(x => (x.kind === 'hook' && stat(x) === 'failed') || (x.kind === 'event' && BAD.has(stat(x))))
-      const events = [...new Set([...Object.keys(hookCfg ?? {}), ...setup.runs.keys()])]
+      const events = byLifecycle([...new Set([...Object.keys(hookCfg ?? {}), ...setup.runs.keys()])])
       const steps = xs(x => x.kind === 'step')
       const added = [...new Set(xs(x => x.kind === 'event' && x.name === 'directory added').map(x => x.detail))]
-      const outs = [...xs(x => !!x.out).reduce((m, x) => m.set(x.out!, (m.get(x.out!) ?? 0) + 1), new Map<string, number>())].sort((p, q) => q[1] - p[1])
-      // the key column fits the longest key (hook events like PermissionRequest, plugin and server names), capped at a third of the
-      // pane; a key past the cap is cut, never wrapped into its value
-      const keys = ['calls outside', ...(hookCfg ? ['per-hook times'] : []), ...events, ...(setup.plugins.size ? setup.plugins.keys() : enabled.map(id => id.split('@')[0]!))]
-      const keyW = Math.max(15, Math.min(Math.max(...keys.map(k => k.length)) + 2, Math.floor(cols / 3)))
-      const kw = (k: string, v: string, id = k) => <Box key={`k${id}`} flexDirection="row"><Box flexShrink={0} width={keyW}><Text dimColor wrap="truncate-end">{fit(k, keyW - 2)}</Text></Box><Text wrap="wrap">{v}</Text></Box>
+      const outs = placesOf([...xs(x => !!x.out).reduce((m, x) => m.set(x.out!, (m.get(x.out!) ?? 0) + 1), new Map<string, number>())])
+      const calls = (n: number) => `${n} call${n === 1 ? '' : 's'}`
+      const runs = (n: number) => `${n} run${n === 1 ? '' : 's'}`
+      // each section's key column fits its own longest key, capped at a third of the pane; a key past the cap is cut, never wrapped
+      // into its value. One width for the page would push Session's values out to where a plugin's name ends
+      const widthOf = (ks: string[], pad = 0) => Math.max(6, Math.min(Math.max(0, ...ks.map(k => k.length)) + pad + 2, Math.floor(cols / 3)))
+      const kwOf = (w: number) => (k: string, v: string, id = k) => <Box key={`k${id}`} flexDirection="row"><Box flexShrink={0} width={w}><Text dimColor wrap="truncate-end">{fit(k, w - 2)}</Text></Box><Text wrap="wrap">{v}</Text></Box>
       const title = (k: string, t: string) => [<Text key={`gap${k}`}> </Text>, <Text key={`t${k}`} weight="semibold">{t}</Text>]
+      const kwS = kwOf(widthOf(['model', 'mode']))
+      const kwW = kwOf(widthOf(['root', 'cwd', 'added', 'calls outside']))
+      // Hooks: per event its runs in a column of their own, then its hooks, a plugin's dimmed (hook-timer cannot time them). An event
+      // with hook rows in the log opens (▸) to each hook's runs and time as those rows hold them, slowest first
+      const hookW = widthOf(events, 2)
+      const ranOf = (ev: string) => { const r = setup.runs.get(ev); return r ? [runs(r.n), exact(r.ms), r.errors && `${r.errors} failed`, r.cancelled && `${r.cancelled} cancelled`].filter(Boolean).join(' · ') : '—' }
+      const statW = setup.runs.size ? Math.max(...events.map(ev => ranOf(ev).length)) + 2 : 0
+      const eachHook = (ev: string) => {
+        const m = new Map<string, { n: number; ms: number; timed: boolean }>()
+        for (const x of entries) if (x.kind === 'hook' && x.origin === ev) for (const y of splitHooks(x)) {
+          const r = m.get(y.name) ?? { n: 0, ms: 0, timed: false }
+          m.set(y.name, { n: r.n + 1, ms: r.ms + (y.ms ?? 0), timed: r.timed || y.ms != null })
+        }
+        return [...m].sort((p, q) => q[1].ms - p[1].ms)
+      }
+      const hookRows = (ev: string) => {
+        const hs = hookCfg?.[ev] ?? [], own = [...new Set(hs.filter(h => !h.plugin).map(h => h.name))]
+        const theirs = [...new Set(hs.filter(h => h.plugin).map(h => h.name))].filter(n => !own.includes(n))
+        const each = eachHook(ev), open = hookOpen.has(ev) && each.length > 0
+        const flip = () => { if (!hookOpen.delete(ev)) hookOpen.add(ev); $.ui.invalidate('ui.render') }
+        return [
+          <Box key={`khk${ev}`} flexDirection="row">
+            <Box flexShrink={0} width={hookW}>{each.length ? <Button key={`hk${ev}`} label={fit(`${open ? '▾' : '▸'} ${ev}`, hookW - 2)} plain dimColor onPress={flip} />
+              : <Text dimColor wrap="truncate-end">{fit(`  ${ev}`, hookW - 2)}</Text>}</Box>
+            {statW > 0 && <Box flexShrink={0} width={statW}><Text dimColor={!setup.runs.has(ev)}>{ranOf(ev)}</Text></Box>}
+            <Text wrap="wrap">{own.join(', ') || (theirs.length ? '' : 'no hook in your settings')}{theirs.length > 0 && <Text dimColor>{`${own.length ? ', ' : ''}${theirs.join(', ')}`}</Text>}</Text>
+          </Box>,
+          ...(open ? each.map(([n, r]) => <Box key={`khk${ev}:${n}`} flexDirection="row"><Box flexShrink={0} width={hookW}><Text dimColor wrap="truncate-end">{fit(`    ${n}`, hookW - 2)}</Text></Box>
+            <Text dimColor>{`${runs(r.n)} · ${r.timed ? exact(r.ms) : 'not timed'}`}</Text></Box>) : []),
+        ]
+      }
+      const plugN = new Set(Object.values(hookCfg ?? {}).flat().filter(h => h.plugin).map(h => h.cmd ?? h.name)).size
+      const ran = [...setup.runs.values()].reduce((a, r) => ({ n: a.n + r.n, ms: a.ms + r.ms }), { n: 0, ms: 0 })
+      const timing = hookCfg && hookTimes(hookCfg)
+      // Plugins: the collector's, else the ones your settings enable, a line per marketplace
+      const markets = enabled.reduce((m, id) => { const [n, mk = '—'] = id.split('@'); return m.set(mk, [...m.get(mk) ?? [], n!]) }, new Map<string, string[]>())
+      const kwP = kwOf(widthOf(setup.plugins.size ? [...setup.plugins.keys()] : [...markets.keys()]))
+      const sides = by('side', xs(x => x.kind === 'side' && x.src !== 'plugin')), forks = by('plugin', xs(x => (x.kind === 'side' && x.src === 'plugin') || x.kind === 'fork'))
+      const kwU = kwOf(widthOf(['main', 'subagents', ...sides.map(([n]) => SIDE[n] ?? n), ...forks.map(([n]) => n)]))
+      const kwB = kwOf(widthOf([...(setup.bg?.tasks.map(t => t.type) ?? []), ...(setup.bg?.crons.length ? ['cron'] : [])]))
+      // what broke: first on the page while there is any, else a line between where the session is and its hooks
+      const broke = [
+        ...title('pb', problems.length ? `Problems: ${problems.join(', ')}` : 'Problems: none this session'),
+        ...bad.slice(-20).map(x => <Box key={`p${idOf(x)}`} flexDirection="row"><Button key={`pb${idOf(x)}`} label={fit(`✗ ${action(x)}`, cols - 4)} plain onPress={() => show(x)} /></Box>),
+        // the counted problems a full log evicted or /agentlog clear cleared: no row left to open
+        ...Object.entries(totals.bad).map(([k, c]) => !!c && <Text key={`pe${k}`} wrap="truncate-end">{`✗ ${problem(k, c)}, no longer in the log`}</Text>),
+      ]
       return (
         <Box key="setup" flexDirection="column" width={e.props.bodyColumns}>
           <Box flexDirection="row" columnGap={2}><Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} /></Box>
+          {problems.length > 0 && broke}
           {title('cc', 'Session')}
-          {kw('model', setup.model ? `${modelName(setup.model)} (${setup.model})${setup.effort != null ? ` · effort ${setup.effort}` : ''}` : '—')}
-          {kw('mode', setup.mode ?? '—')}
+          {kwS('model', setup.model ? `${modelName(setup.model)} (${setup.model})${setup.effort != null ? ` · effort ${setup.effort}` : ''}` : '—')}
+          {kwS('mode', setup.mode ?? '—')}
           {title('wh', 'Where')}
-          {at && kw('root', tilde(at[0], at[2]))}
-          {at && at[1] !== at[0] && kw('cwd', tilde(at[1], at[2]))}
-          {added.length > 0 && kw('added', added.join(', '))}
-          {kw('calls outside', outs.length ? outs.slice(0, 12).map(([p, n]) => n > 1 ? `${p} ×${n}` : p).join(', ') + (outs.length > 12 ? `, +${outs.length - 12} more` : '') : 'none reached outside the root')}
-          {title('pb', problems.length ? `Problems: ${problems.join(', ')}` : 'Problems: none this session')}
-          {bad.slice(-20).map(x => <Box key={`p${idOf(x)}`} flexDirection="row"><Button key={`pb${idOf(x)}`} label={fit(`✗ ${action(x)}`, cols - 4)} plain onPress={() => show(x)} /></Box>)}
-          {/* the counted problems a full log evicted or /agentlog clear cleared: no row left to open */}
-          {Object.entries(totals.bad).map(([k, c]) => !!c && <Text key={`pe${k}`} wrap="truncate-end">{`✗ ${problem(k, c)}, no longer in the log`}</Text>)}
-          {title('hk', `Hooks: ${hookN} distinct settings and plugin hook commands${setup.runs.size ? '; runs as the collector counted them' : ''}`)}
-          {hookCfg && kw('per-hook times', hookTimes(hookCfg))}
-          {events.map(ev => { const r = setup.runs.get(ev), names = [...new Set((hookCfg?.[ev] ?? []).map(h => h.name))]
-            return kw(ev, [names.join(', ') || 'no hook in your settings', r && `${r.n} run${r.n === 1 ? '' : 's'} · ${exact(r.ms)}${r.errors ? ` · ${r.errors} failed` : ''}${r.cancelled ? ` · ${r.cancelled} cancelled` : ''}`].filter(Boolean).join(' — '), `hk${ev}`) })}
-          {title('pl', `Plugins: ${plugins}`)}
-          {setup.plugins.size ? [...setup.plugins].map(([n, pl]) => kw(n, [pl.version, pl.scope, pl.hooks && 'hooks', pl.mcp && 'MCP'].filter(Boolean).join(' · '), `pl${n}`))
-            : enabled.map(id => kw(id.split('@')[0]!, `enabled in your settings (${id.split('@')[1] ?? ''})`, `pl${id}`))}
+          {at && kwW('root', tilde(at[0], at[2]))}
+          {at && at[1] !== at[0] && kwW('cwd', tilde(at[1], at[2]))}
+          {added.length > 0 && kwW('added', added.join(', '))}
+          {kwW('calls outside', outs.length ? outs.slice(0, 12).map(([p, n]) => `${p === '~' ? '~ (home)' : p} ${calls(n)}`).join(', ') + (outs.length > 12 ? `, +${outs.length - 12} more` : '') : 'none reached outside the root')}
+          {!problems.length && broke}
+          {title('hk', [`Hooks: ${hookN} command${hookN === 1 ? '' : 's'}${plugN ? `, ${plugN} from plugins` : ''}`, setup.runs.size && `${runs(ran.n)} · ${exact(ran.ms)}`].filter(Boolean).join(' · '))}
+          {timing && timing !== 'no settings hooks' && <Text key="hktimes" dimColor wrap="wrap">{`per-hook times ${timing}${plugN ? '; plugin hooks, dimmed, are not timed' : ''}`}</Text>}
+          {events.flatMap(hookRows)}
+          {title('pl', setup.plugins.size || !plugins ? `Plugins: ${plugins || 'none'}` : `Plugins: ${plugins} enabled in your settings, by marketplace`)}
+          {setup.plugins.size ? [...setup.plugins].map(([n, pl]) => kwP(n, [pl.version, pl.scope, pl.hooks && 'hooks', pl.mcp && 'MCP'].filter(Boolean).join(' · '), `pl${n}`))
+            : [...markets].map(([mk, ns]) => kwP(mk, ns.join(', '), `pl${mk}`))}
           {title('us', 'Model use this session')}
-          {kw('main', use('main', steps.filter(x => !x.agent)))}
-          {(steps.some(x => x.agent) || totals.use.agents) && kw('subagents', use('agents', steps.filter(x => x.agent)))}
-          {by('side', xs(x => x.kind === 'side' && x.src !== 'plugin')).map(([n, ys]) => kw(SIDE[n] ?? n, use(`side:${n}`, ys), `us${n}`))}
-          {by('plugin', xs(x => (x.kind === 'side' && x.src === 'plugin') || x.kind === 'fork')).map(([n, ys]) => kw(n, `${use(`plugin:${n}`, ys)} (plugin)`, `up${n}`))}
+          {kwU('main', use('main', steps.filter(x => !x.agent)))}
+          {(steps.some(x => x.agent) || totals.use.agents) && kwU('subagents', use('agents', steps.filter(x => x.agent)))}
+          {sides.map(([n, ys]) => kwU(SIDE[n] ?? n, use(`side:${n}`, ys), `us${n}`))}
+          {forks.map(([n, ys]) => kwU(n, `${use(`plugin:${n}`, ys)} (plugin)`, `up${n}`))}
           {title('bg', !setup.bg ? 'Background: told at the end of each turn' : bgN + cronN ? 'Background: in flight when the last turn ended' : 'Background: nothing in flight when the last turn ended')}
-          {setup.bg?.tasks.map((t, i) => kw(t.type, `${t.status}: ${fit(t.command ?? t.description, 200)}`, `bg${i}`))}
-          {setup.bg?.crons.map((c, i) => kw('cron', `${c.schedule}${c.recurring ? '' : ' (once)'}: ${fit(first(c.prompt), 200)}`, `cr${i}`))}
+          {setup.bg?.tasks.map((t, i) => kwB(t.type, `${t.status}: ${fit(t.command ?? t.description, 200)}`, `bg${i}`))}
+          {setup.bg?.crons.map((c, i) => kwB('cron', `${c.schedule}${c.recurring ? '' : ' (once)'}: ${fit(first(c.prompt), 200)}`, `cr${i}`))}
         </Box>
       )
     }

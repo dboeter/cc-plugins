@@ -1,6 +1,6 @@
 // Pane tests share the module's state (level, folds, finished agents shown): a test that changes one sets it back before it ends.
 import { test, expect, mock, type TestBody } from 'claude-code/testing'
-import { ASKED, costOf, scrub, ctxOf, harnessOf, hookName, hookTimes, markAgain, modelName, outsideOf, pack, pickRuns, rootOf, routine, runNames, keepRun, scriptName, speaker, targetOf, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
+import { ASKED, byLifecycle, costOf, scrub, ctxOf, harnessOf, hookName, hookTimes, markAgain, modelName, outsideOf, pack, pickRuns, placesOf, rootOf, routine, runNames, keepRun, scriptName, speaker, targetOf, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
 
 // the shape hooksOf builds: settings hooks by script name, plugin hooks by plugin. Texts are real rows from the store
 const cfg = {
@@ -1713,15 +1713,61 @@ test('the setup page shows per-hook times off, then on once a settings hook runs
   const reset = await withSettings($, on, () => ({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: cmd }] }] } }))
   const m = await pane($, 60, 160)
   await m.press({ key: 'fsetup' })
-  expect(await m.find({ type: 'Text', text: 'per-hook times' })).toBeDefined()
-  expect(await m.find({ text: /^off: no settings hook runs through hook-timer/ })).toBeDefined()
+  expect(await m.find({ text: /^per-hook times off: no settings hook runs through hook-timer/ })).toBeDefined()
   await m.press({ key: 'back' })
   cmd = `$HOME/.claude/hooks/hook-timer ${cmd}`
   await ($ as any).classic.ConfigChange({ source: 'user_settings' })
   await m.press({ key: 'fsetup' })
-  expect(await m.find({ text: 'on for 1 of 1 settings hook' })).toBeDefined()
+  expect(await m.find({ text: 'per-hook times on for 1 of 1 settings hook' })).toBeDefined()
   await m.press({ key: 'back' })
   await reset()
+})
+
+test('the setup page counts a place for the shallowest other place it lies under, but never for home; hook events go in session order', () => {
+  expect(placesOf([['~/x/a/b', 52], ['~/x', 14], ['~/x/a', 3], ['~', 1], ['~/y', 2], ['/tmp', 1]])).toEqual([['~/x', 69], ['~/y', 2], ['~', 1], ['/tmp', 1]])
+  expect(placesOf([['~/xy', 1], ['~/x', 1]])).toEqual([['~/xy', 1], ['~/x', 1]]) // a name's prefix is no parent
+  expect(byLifecycle(['Stop', 'Custom', 'PreToolUse', 'SessionStart', 'ConfigChange'])).toEqual(['SessionStart', 'PreToolUse', 'Stop', 'ConfigChange', 'Custom'])
+})
+
+test('the setup page lists hook runs in a column, dims a plugin\'s hooks, opens an event to each hook\'s runs, and groups plugins by marketplace', async ($, on) => {
+  const T = '$HOME/.claude/hooks/hook-timer $HOME/.claude/hooks/'
+  session(on, 'SP', [
+    hookRow({ name: 'plan, tidy', origin: 'Stop', detail: '', each: { plan: 120 }, ms: 300 }),
+    hookRow({ t: T0 + 1, name: 'plan, tidy', origin: 'Stop', detail: '', each: { plan: 80 }, ms: 200 }),
+    call({ t: T0 + 2, out: '~/x/a' }), call({ t: T0 + 3, out: '~/x' }), call({ t: T0 + 4, out: '~' }),
+  ])
+  const reset = await withSettings($, on, () => ({
+    hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: `${T}plan.sh` }] }], PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `${T}guard.sh` }] }] },
+    enabledPlugins: { 'tidy@market': true, 'neat@market': true, 'lsp@other': true },
+  }), {
+    '/home/u/.claude/plugins/installed_plugins.json': () => JSON.stringify({ plugins: { 'tidy@market': [{ installPath: '/plugins/tidy' }] } }),
+    '/plugins/tidy/hooks/hooks.json': () => JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'node stop.mjs' }] }] } }),
+  })
+  const m = await pane($, 60, 160)
+  await m.press({ key: 'fsetup' })
+  expect(await m.find({ text: '~/x 2 calls, ~ (home) 1 call' })).toBeDefined()
+  expect(await m.find({ text: /^Hooks: 3 commands, 1 from plugins/ })).toBeDefined()
+  expect(await m.find({ text: 'per-hook times on for 2 of 2 settings hooks; plugin hooks, dimmed, are not timed' })).toBeDefined()
+  expect((await m.findAll({ type: 'Text', text: ', tidy' })).some((x: any) => x.props.dimColor)).toBe(true)
+  expect(await m.find({ type: 'Button', text: /PreToolUse/ })).toBe(undefined) // no hook row in the log: nothing to open
+  expect(await m.find({ text: 'Plugins: 3 enabled in your settings, by marketplace' })).toBeDefined()
+  expect(await m.find({ text: 'tidy, neat' })).toBeDefined()
+  expect(await m.find({ text: /2 runs · 200ms/ })).toBe(undefined)
+  await m.press({ key: 'hkStop' })
+  expect(await m.find({ type: 'Button', text: /^▾ Stop/ })).toBeDefined()
+  expect(await m.find({ text: '2 runs · 200ms' })).toBeDefined() // plan's own runs
+  expect(await m.find({ text: '2 runs · not timed' })).toBeDefined() // the plugin's
+  await m.press({ key: 'hkStop' })
+  await m.press({ key: 'back' })
+  await reset()
+})
+
+test('the setup page puts what broke first while anything did', async ($, on) => {
+  const m = await mountWith($, on, 'PF', [hookRow({ name: 'guard', outcome: 'error' })], 1, 60)
+  await m.press({ key: 'fsetup' })
+  const titles = (await m.findAll({ type: 'Text', text: /^(Problems|Session|Where|Hooks)\b/ })).map((x: any) => String(x.props.children ?? x.text))
+  expect(titles[0]).toMatch(/^Problems: /)
+  await m.press({ key: 'back' })
 })
 
 test('a hook-times file over the 4 MiB a read takes shows on the setup page as per-hook times stopped', async ($, on) => {
