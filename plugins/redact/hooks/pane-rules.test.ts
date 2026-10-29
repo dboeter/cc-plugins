@@ -55,6 +55,22 @@ test('a pattern from settings shows its placeholder too, SECRET when it names no
   expect((await m.findAll({ text: /^ → ⟦/ })).map((x: any) => x.text)).toEqual([' → ⟦ACME_n⟧', ' → ⟦SECRET_n⟧'])
 })
 
+// the Text a Button draws as its glyph, and its color props
+const glyph = async (m: any, key: string) => (await m.find({ key }))?.children.find((c: any) => typeof c === 'object')?.props
+test('red marks only errors: the remove and clear ✗ are dim, a skipped rule and a broken file stay red', async ($, on) => {
+  const { files } = world(on, { [RULES]: file([{ pattern: 'tok_[0-9]+', replacement: 'API_KEY' }, { pattern: 'zz_[0-9]+', replacement: 'zz' }]) })
+  const m = await rulesTab($)
+  expect(await glyph(m, 'remove-0')).toMatchObject({ dimColor: true })
+  expect((await glyph(m, 'remove-0')).color).toBeUndefined()
+  await m.input({ key: 'test', text: 'tok_12', kind: 'submit' })
+  expect(await glyph(m, 'clear-test')).toMatchObject({ dimColor: true })
+  expect((await glyph(m, 'clear-test')).color).toBeUndefined()
+  expect((await m.find({ type: 'Text', text: /^ skipped: replacement is not capitals/ }))?.props.color).toBe('red')
+  files.set(RULES, '{ broken')
+  await m.press({ key: 'tab-rules' }) // redrawn, it reads the file again
+  expect((await m.find({ type: 'Text', text: /^  redact-rules\.json .*masking with the last rules read until it is fixed by hand$/ }))?.props.color).toBe('red')
+})
+
 test('the env files line names the folder the session started in, ~ for the home folder', async ($, on) => {
   world(on, { [RULES]: file(EXAMPLES) }, '/h/app')
   expect(await (await rulesTab($)).find({ text: /^  secret-looking values from \.env files in ~\/app$/ })).toBeDefined()
