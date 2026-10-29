@@ -47,7 +47,7 @@ test('each vault entry is one line: placeholder → value, then its source, then
   expect(await m.find({ text: /masked by/ })).toBeUndefined()
 })
 
-test('on a narrow pane the value truncates; the source and ✗ keep their width', async ($, on) => {
+test('on a narrow pane the value truncates; the source, cut to a third of the pane, and ✗ do not shrink', async ($, on) => {
   const KEY = 'PRIV' + 'ATE KEY-----'
   world(on, { 'vault:s1': { at: 39 * DAY, n: { PRIVATE_KEY: 1 }, ph: { [ph('PRIVATE_KEY')]: `-----BEGIN RSA ${KEY}\nMIIEowIBAAKCAQEA\nabc+/=` }, by: { [ph('PRIVATE_KEY')]: 'env file: .env' } } })
   const m = await mount($, 30)
@@ -56,7 +56,7 @@ test('on a narrow pane the value truncates; the source and ✗ keep their width'
   expect(kids(value)[0]).toMatchObject({ type: 'Text', props: { wrap: 'truncate-end' } })
   // the reveal, the source and the forget, each on the value's line and never shrunk
   expect(rest.map(c => [keys(c)[0] ?? strings(c).join(''), c.props.flexShrink])).toEqual([
-    [`reveal-${ph('PRIVATE_KEY')}`, 0], ['env file: .env', 0], [`forget-${ph('PRIVATE_KEY')}`, 0]])
+    [`reveal-${ph('PRIVATE_KEY')}`, 0], ['env file:…', 0], [`forget-${ph('PRIVATE_KEY')}`, 0]])
 })
 
 test('a multi-line value stays on its line, cut or revealed, with its source and ✗', async ($, on) => {
@@ -118,4 +118,44 @@ test('empty, with a file rule on: nothing masked yet', async ($, on) => {
 test('empty, with env files on: nothing masked yet', async ($, on) => {
   world(on, {}, { [RULES]: rulesFile([]) })
   expect(await yet($)).toEqual([true, false])
+})
+
+test('a source with a line break draws on its row as ⏎', async ($, on) => {
+  world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: 'hunter2isgood' }, by: { [ph('SECRET')]: 'rule: first\nsecond' } } })
+  const parts = kids(await (await mount($)).find({ key: ph('SECRET') })) as any[]
+  expect(parts.map(c => keys(c)[0] ?? strings(c).join('')).slice(1)).toEqual(['rule: first⏎second', `forget-${ph('SECRET')}`])
+})
+
+// the first example rule's source, unnamed in a file of an older shape: wider than an 80-column pane
+const WIDE = 'rule: Example: vendor tokens (sk-, gh*_, github_pat_, AKIA, ASIA, xox*-, AIza, sk_live_, glpat-, npm_, dckr_pat_, SG., hf_, ya29.) and JWTs'
+for (const cols of [80, 30])
+  test(`a source wider than the pane is cut to a third of it (${cols} columns), so ✗ stays on the row`, async ($, on) => {
+    world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: 'hunter2isgood' }, by: { [ph('SECRET')]: WIDE } } })
+    const parts = kids(await (await mount($, cols)).find({ key: ph('SECRET') })) as any[]
+    const src = strings(parts[1]).join('')
+    expect([...src].length).toBe(Math.max(8, Math.floor(cols / 3)))
+    expect(src.endsWith('…') && WIDE.startsWith(src.slice(0, -1))).toBe(true)
+    expect(keys(parts[2])).toEqual([`forget-${ph('SECRET')}`])
+  })
+
+// an unnamed rule whose regex is the value itself names the value as its source
+const LIT = 'tok' + 'en4f9a2c71'
+for (const surface of ['mobile', 'desktop'] as const)
+  test(`${surface}: a rule's text that holds a value shows its placeholder, on This session and Rules`, async ($, on) => {
+    world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: LIT }, by: { [ph('SECRET')]: `rule: ${LIT}` } } },
+      { [RULES]: rulesFile([{ pattern: LIT, enabled: true }]) })
+    const m = await $.ui.mount({ plugin: 'redact', surface, component: 'Pane', requestId: 'redact', props: PROPS })
+    const all = async () => (await m.findAll({ type: 'Text' })).flatMap(strings).join('\n')
+    const session = await all()
+    expect(session).toContain(`rule: ${ph('SECRET')}`)
+    expect(session).not.toContain(LIT)
+    await m.press({ key: 'tab-rules' })
+    const rules = await all()
+    expect(rules).toContain(`1. ${ph('SECRET')}`)
+    expect(rules).not.toContain(LIT)
+  })
+
+test('the terminal shows a rule\'s text as written', async ($, on) => {
+  world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: LIT }, by: { [ph('SECRET')]: `rule: ${LIT}` } } })
+  expect(strings(await (await mount($)).find({ key: ph('SECRET') })).join('')).toContain(`rule: ${LIT}`)
 })

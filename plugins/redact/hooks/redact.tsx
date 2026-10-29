@@ -834,7 +834,8 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     await sync($, kept)
     const file = await place($, kept)
-    const vault = masked(await hold($, kept))
+    const held = await hold($, kept)
+    const vault = masked(held)
     const { rules, note, tab, sample } = kept
     const { Box, Text, Button } = $.ui.resolve(e)
     const w = Math.max(1, e.props.bodyColumns ?? 80)
@@ -874,9 +875,17 @@ export const register: Register = (on, options) => {
       const ends = v.length > 20 ? `${v.slice(0, 6)}…${v.slice(-4)} `.replace(/\r?\n/g, '⏎') : ''
       return ends + size
     }
+    // A rule with no name is drawn by its regex, and a literal regex is the value itself: off the
+    // terminal, rule text is masked by the vault like any other text.
+    const offTerminal = (s: string) => e.surface === 'terminal' ? s : mask(s, held, [])
+    // a value's source on its row: one line, at most a third of the pane, so ✗ stays on a narrow one
+    const source = (by: string) => {
+      const s = offTerminal(by).replace(/\r\n|\r|\n/g, '⏎'), max = Math.max(8, Math.floor(w / 3))
+      return len(s) > max ? [...s].slice(0, max - 1).join('') + '…' : s
+    }
     const reveal = (p: string) => { kept.revealed.has(p) ? kept.revealed.delete(p) : kept.revealed.add(p); $.ui.invalidate('ui.render') }
     // a long pattern is cut in the middle, so its row keeps the remove button on a narrow terminal
-    const pattern = (text: string) => <Box flexShrink={1}><Text wrap="truncate-middle">{text}</Text></Box>
+    const pattern = (text: string) => <Box flexShrink={1}><Text wrap="truncate-middle">{offTerminal(text)}</Text></Box>
     const skip = (f: string | undefined) => f ? <Text color="red"> skipped: {f}</Text> : null
     const broken = rules.filter(fault).length + settings.filter(lineFault).length + (kept.broken ? 1 : 0)
     // the placeholder a rule writes, `_n` for its number: no digits, so no restore reads it as one
@@ -940,13 +949,13 @@ export const register: Register = (on, options) => {
               {vault.length > 1 && <Box flexShrink={0}><Button key="forget-all" label="forget all" plain onPress={async () => redraw(await forgetAll($, kept))}><Text dimColor>✗ all</Text></Button></Box>}
             </Box>
           )}
-        {/* one line per value, a revealed one too (its line breaks draw as ⏎); only the value
-            shrinks, so the source and ✗ stay on a narrow pane */}
+        {/* one line per value, a revealed one too (its line breaks draw as ⏎); the value shrinks
+            first, and the source, cut to a third of the pane, keeps ✗ on a narrow one */}
         {vault.map(({ p, v, by }) => (
           <Box key={p} gap={3}>
             <Box flexShrink={1}><Text wrap="truncate-end">  {p}  →  {shown(p, v).replace(/\r\n|\r|\n/g, '⏎')}</Text></Box>
             {long(v) && <Box flexShrink={0}><Button key={`reveal-${p}`} label={kept.revealed.has(p) ? 'hide' : 'reveal'} plain dimColor onPress={() => reveal(p)}>{kept.revealed.has(p) ? '▾' : '▸'}</Button></Box>}
-            <Box flexShrink={0}><Text dimColor>{by}</Text></Box>
+            <Box flexShrink={0}><Text dimColor wrap="truncate-end">{source(by)}</Text></Box>
             <Box flexShrink={0}><Button key={`forget-${p}`} label="forget" plain onPress={async () => redraw(await forget($, kept, p))}><Text dimColor>✗</Text></Button></Box>
           </Box>
         ))}
@@ -980,7 +989,7 @@ export const register: Register = (on, options) => {
                     <Box flexShrink={0}>{toggle(`turn-${i}`, enabled, enabled ? 'turn off' : 'turn on', async () => redraw(await turn($, kept, `${i + 1}`, !enabled)), f)}</Box>
                     <Box flexShrink={0}><Button key={`remove-${i}`} label="remove" plain onPress={async () => redraw(await remove($, kept, `${i + 1}`))}><Text dimColor>✗</Text></Button></Box>
                   </Box>
-                  {name && <Text dimColor wrap="truncate-middle">{`     ${src}`}</Text>}
+                  {name && <Text dimColor wrap="truncate-middle">{`     ${offTerminal(src)}`}</Text>}
                 </Box>
               )
             })}
@@ -1009,7 +1018,7 @@ export const register: Register = (on, options) => {
                 <Text>  → {preview}</Text>
                 {hits.length === 0
                   ? <Text dimColor>    {lit + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on'}</Text>
-                  : hits.map(x => <Text key={x.p} dimColor>    {x.p} {shown(x.p, x.v)} · masked by {x.by}</Text>)}
+                  : hits.map(x => <Text key={x.p} dimColor>    {x.p} {shown(x.p, x.v)} · masked by {offTerminal(x.by)}</Text>)}
               </Box>
             )}
           </Box>
