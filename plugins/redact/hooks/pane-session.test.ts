@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import { DAY, RULES, file, mount, world } from './pane-helpers'
 
-// The pane's This session tab: one line per vault entry, a hint line, and its empty states.
+// The pane's Session tab: one line per vault entry under its source, the row cursor, and its empty states.
 // Fixtures split as in redact.test.ts, so no literal is secret-shaped.
 const GH = 'ghp_' + 'a'.repeat(36)
 const ph = (label: string, n = 1) => `⟦${label}_${n}⟧`
@@ -12,65 +12,99 @@ const strings = (el: any): string[] => kids(el).flatMap(c => typeof c === 'strin
 const keys = (el: any): string[] => kids(el).flatMap(c => c && typeof c === 'object' ? [(c as any).props?.key, ...keys(c)].filter(Boolean) : [])
 
 const TWO = { 'vault:s1': { at: 39 * DAY, n: { API_KEY: 1, SECRET: 1 }, ph: { [ph('API_KEY')]: GH, [ph('SECRET')]: 'hunter2isgood' }, by: { [ph('SECRET')]: 'rule: pass' } } }
+// two values from one rule and one from another, the rule's second added last
+const THREE = { 'vault:s1': { at: 39 * DAY, n: { EMAIL: 2, API_KEY: 1 }, ph: { [ph('EMAIL')]: 'a@b.co', [ph('API_KEY')]: GH, [ph('EMAIL', 2)]: 'c@d.co' },
+  by: { [ph('EMAIL')]: 'rule: Email', [ph('API_KEY')]: 'env file: .env', [ph('EMAIL', 2)]: 'rule: Email' } } }
+// a row as drawn: its Texts with the placeholder Button's label in place
+const drawn = (el: any): string[] => kids(el).flatMap(c => typeof c === 'string' ? [c] : (c as any)?.type === 'Button' ? [(c as any).props.label] : c && typeof c === 'object' ? drawn(c) : [])
+const line = async (m: any, p: string) => drawn(await m.find({ key: p })).join('')
+const actions = async (m: any) => (await m.findAll({ type: 'Button' })).map((b: any) => b.props.key).filter((k: string) => /^(forget|reveal)-⟦/.test(k))
 
-test('each vault entry is one line: placeholder → value, then its source, then ✗', async ($, on) => {
-  world(on, TWO)
+test('values sit under a header naming what masked them, a source once, in the vault\'s order', async ($, on) => {
+  world(on, THREE)
   const m = await mount($)
-  const row = await m.find({ key: ph('SECRET') })
-  expect(row?.props.flexDirection).not.toBe('column')
-  const parts = kids(row) as any[]
-  const at = (s: string) => parts.findIndex(c => strings(c).join('').includes(s) || keys(c).includes(s))
-  expect(strings(parts[0]).join('')).toBe(`  ${ph('SECRET')}  →  hunter2isgood`)
-  expect(at('rule: pass')).toBeGreaterThan(0)
-  expect(at(`forget-${ph('SECRET')}`)).toBeGreaterThan(at('rule: pass'))
-  expect(await m.find({ text: /masked by/ })).toBeUndefined()
+  const heads = await m.findAll({ type: 'Text', text: /^(rule: Email|env file: \.env)$/ })
+  expect(heads.map((t: any) => t.text)).toEqual(['rule: Email', 'env file: .env'])
+  expect(keys(await m.find({ key: 'by-rule: Email' })).filter(k => k.startsWith('⟦'))).toEqual([ph('EMAIL'), ph('EMAIL', 2)])
+  expect(await m.find({ text: /→/ })).toBeUndefined()
 })
 
-test('on a narrow pane the value truncates; the source, cut to a third of the pane, and ✗ do not shrink', async ($, on) => {
+test('placeholders are padded to the widest, so every value starts in one column', async ($, on) => {
+  world(on, THREE)
+  const m = await mount($)
+  const [first, other] = [await line(m, ph('EMAIL')), await line(m, ph('API_KEY'))]
+  expect(first.startsWith(`› ${ph('EMAIL')}    `)).toBe(true)
+  expect(other.startsWith(`  ${ph('API_KEY')}  ghp_`)).toBe(true)
+  expect(other.indexOf('ghp_')).toBe(first.indexOf('@') - 1)
+})
+
+test('the cursor starts on the first row, the only one with actions; j and k move it, x forgets its value', async ($, on) => {
+  const { store } = world(on, THREE)
+  const m = await mount($)
+  expect([(await m.find({ key: 'cdown' }))?.props.hotkey, (await m.find({ key: 'cup' }))?.props.hotkey]).toEqual(['j', 'k'])
+  expect(await actions(m)).toEqual([`forget-${ph('EMAIL')}`])
+  expect((await m.find({ key: `forget-${ph('EMAIL')}` }))?.props.hotkey).toBe('x')
+  await m.press({ key: 'cdown' })
+  expect(await actions(m)).toEqual([`forget-${ph('EMAIL', 2)}`])
+  await m.press({ key: 'cdown' })
+  await m.press({ key: 'cdown' }) // past the last row it stays there
+  expect(await actions(m)).toEqual([`forget-${ph('API_KEY')}`])
+  await m.press({ key: 'cup' })
+  await m.press({ key: `forget-${ph('EMAIL', 2)}` })
+  expect(Object.keys((store.get('vault:s1') as any).ph)).toEqual([ph('EMAIL'), ph('API_KEY')])
+  // the cursor goes on to the next row
+  expect(await actions(m)).toEqual([`forget-${ph('API_KEY')}`])
+  expect(await m.find({ text: /forgot .*refused/ })).toBeDefined()
+})
+
+test('clicking a placeholder puts the cursor on its row', async ($, on) => {
+  world(on, THREE)
+  const m = await mount($)
+  await m.press({ key: `pick-${ph('API_KEY')}` })
+  expect(await actions(m)).toEqual([`forget-${ph('API_KEY')}`])
+  expect((await line(m, ph('API_KEY'))).startsWith('›')).toBe(true)
+})
+
+test('on a narrow pane the value truncates; the placeholder and the cursor\'s actions do not shrink', async ($, on) => {
   const KEY = 'PRIV' + 'ATE KEY-----'
   world(on, { 'vault:s1': { at: 39 * DAY, n: { PRIVATE_KEY: 1 }, ph: { [ph('PRIVATE_KEY')]: `-----BEGIN RSA ${KEY}\nMIIEowIBAAKCAQEA\nabc+/=` }, by: { [ph('PRIVATE_KEY')]: 'env file: .env' } } })
   const m = await mount($, { bodyColumns: 30 })
-  const [value, ...rest] = kids(await m.find({ key: ph('PRIVATE_KEY') })) as any[]
-  expect(value.props.flexShrink).toBe(1)
+  const [left, acts] = kids(await m.find({ key: ph('PRIVATE_KEY') })) as any[]
+  expect(left.props.flexShrink).toBe(1)
+  const [, pick, value] = kids(left) as any[]
+  expect([pick.props.flexShrink, value.props.flexShrink]).toEqual([0, 1])
   expect(kids(value)[0]).toMatchObject({ type: 'Text', props: { wrap: 'truncate-end' } })
-  // the reveal, the source and the forget, each on the value's line and never shrunk
-  expect(rest.map(c => [keys(c)[0] ?? strings(c).join(''), c.props.flexShrink])).toEqual([
-    [`reveal-${ph('PRIVATE_KEY')}`, 0], ['env file:…', 0], [`forget-${ph('PRIVATE_KEY')}`, 0]])
+  expect([acts.props.flexShrink, keys(acts)]).toEqual([0, [`reveal-${ph('PRIVATE_KEY')}`, `forget-${ph('PRIVATE_KEY')}`]])
 })
 
-test('a multi-line value stays on its line, cut or revealed, with its source and ✗', async ($, on) => {
+test('a multi-line value stays on its line, cut or revealed with v', async ($, on) => {
   const KEY = 'PRIV' + 'ATE KEY-----'
   world(on, { 'vault:s1': { at: 39 * DAY, n: { PRIVATE_KEY: 1 }, ph: { [ph('PRIVATE_KEY')]: `-----BEGIN RSA ${KEY}\r\nMIIEowIBAAKCAQEA\nabc+/=` }, by: { [ph('PRIVATE_KEY')]: 'env file: .env' } } })
   const m = await mount($)
-  const row = async () => {
-    const parts = kids(await m.find({ key: ph('PRIVATE_KEY') })) as any[]
-    return { value: strings(parts[0]).join(''), rest: parts.slice(1).map(c => keys(c)[0] ?? strings(c).join('')) }
-  }
-  const cut = await row()
-  expect(cut.value).not.toMatch(/[\r\n]/)
-  expect(cut.rest).toEqual([`reveal-${ph('PRIVATE_KEY')}`, 'env file: .env', `forget-${ph('PRIVATE_KEY')}`])
+  expect(await line(m, ph('PRIVATE_KEY'))).not.toMatch(/[\r\n]|MIIEow/)
+  expect((await m.find({ key: `reveal-${ph('PRIVATE_KEY')}` }))?.props.hotkey).toBe('v')
   await m.press({ key: `reveal-${ph('PRIVATE_KEY')}` })
-  const open = await row()
-  expect(open.value).toBe(`  ${ph('PRIVATE_KEY')}  →  -----BEGIN RSA ${KEY}⏎MIIEowIBAAKCAQEA⏎abc+/=`)
-  expect(open.rest).toEqual(cut.rest)
+  expect(await line(m, ph('PRIVATE_KEY'))).toContain(`-----BEGIN RSA ${KEY}⏎MIIEowIBAAKCAQEA⏎abc+/=`)
 })
 
-test('no section header: the tab carries the count, ✗ all sits on the hint line', async ($, on) => {
+test('the Session tab carries the count; forget all shows with more than one value', async ($, on) => {
   world(on, TWO)
   const m = await mount($)
-  expect(await m.findAll({ type: 'Text', text: /This session|\d+ masked/ })).toEqual([])
   expect((await m.find({ key: 'tab-session' }))?.props.label).toContain('(2)')
-  // the Box whose own Text is the hint
-  const hint = (await m.findAll({ type: 'Box' })).find((b: any) => kids(b).some((c: any) => c?.type === 'Text' && strings(c).join('') === '  ✗ forgets a value'))
-  expect(keys(hint)).toEqual(['forget-all'])
-  expect(await m.find({ text: /forget drops one/ })).toBeUndefined()
+  expect(await m.find({ key: 'forget-all' })).toBeDefined()
+  expect(await m.find({ text: /forgets a value/ })).toBeUndefined()
+  await m.press({ key: `forget-${ph('API_KEY')}` })
+  expect(await m.find({ key: 'forget-all' })).toBeUndefined()
 })
 
-test('a value with no recorded rule reads rule unknown', async ($, on) => {
+test('a value with no recorded rule sits under rule unknown', async ($, on) => {
   world(on, TWO)
-  const m = await mount($)
-  expect(strings(await m.find({ key: ph('API_KEY') })).join('')).toContain('rule unknown')
-  expect(await m.find({ text: /not recorded/ })).toBeUndefined()
+  expect(await (await mount($)).find({ text: /^rule unknown$/ })).toBeDefined()
+})
+
+test('empty, the tab says what the model will see', async ($, on) => {
+  world(on)
+  expect(await (await mount($)).find({ text: /the model will see ⟦LABEL_n⟧ · your tools get the real value/ })).toBeDefined()
 })
 
 test('empty, with no file rule, no settings pattern and env files off: no rule is on', async ($, on) => {
@@ -99,28 +133,15 @@ test('empty, with env files on: nothing masked yet', async ($, on) => {
   expect(await yet($)).toEqual([true, false])
 })
 
-test('a source with a line break draws on its row as ⏎', async ($, on) => {
+test('a source with a line break draws in its header as ⏎', async ($, on) => {
   world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: 'hunter2isgood' }, by: { [ph('SECRET')]: 'rule: first\nsecond' } } })
-  const parts = kids(await (await mount($)).find({ key: ph('SECRET') })) as any[]
-  expect(parts.map(c => keys(c)[0] ?? strings(c).join('')).slice(1)).toEqual(['rule: first⏎second', `forget-${ph('SECRET')}`])
+  expect(await (await mount($)).find({ text: /^rule: first⏎second$/ })).toBeDefined()
 })
-
-// the first example rule's source, unnamed in a file of an older shape: wider than an 80-column pane
-const WIDE = 'rule: Example: vendor tokens (sk-, gh*_, github_pat_, AKIA, ASIA, xox*-, AIza, sk_live_, glpat-, npm_, dckr_pat_, SG., hf_, ya29.) and JWTs'
-for (const cols of [80, 30])
-  test(`a source wider than the pane is cut to a third of it (${cols} columns), so ✗ stays on the row`, async ($, on) => {
-    world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: 'hunter2isgood' }, by: { [ph('SECRET')]: WIDE } } })
-    const parts = kids(await (await mount($, { bodyColumns: cols })).find({ key: ph('SECRET') })) as any[]
-    const src = strings(parts[1]).join('')
-    expect([...src].length).toBe(Math.max(8, Math.floor(cols / 3)))
-    expect(src.endsWith('…') && WIDE.startsWith(src.slice(0, -1))).toBe(true)
-    expect(keys(parts[2])).toEqual([`forget-${ph('SECRET')}`])
-  })
 
 // an unnamed rule whose regex is the value itself names the value as its source
 const LIT = 'tok' + 'en4f9a2c71'
 for (const surface of ['mobile', 'desktop'] as const)
-  test(`${surface}: a rule's text that holds a value shows its placeholder, on This session and Rules`, async ($, on) => {
+  test(`${surface}: a rule's text that holds a value shows its placeholder, on Session and Rules`, async ($, on) => {
     world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: LIT }, by: { [ph('SECRET')]: `rule: ${LIT}` } } },
       { [RULES]: file([{ pattern: LIT, enabled: true }]) })
     const m = await mount($, { surface })
@@ -136,5 +157,5 @@ for (const surface of ['mobile', 'desktop'] as const)
 
 test('the terminal shows a rule\'s text as written', async ($, on) => {
   world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: LIT }, by: { [ph('SECRET')]: `rule: ${LIT}` } } })
-  expect(strings(await (await mount($)).find({ key: ph('SECRET') })).join('')).toContain(`rule: ${LIT}`)
+  expect(await (await mount($)).find({ text: new RegExp(`^rule: ${LIT}$`) })).toBeDefined()
 })
