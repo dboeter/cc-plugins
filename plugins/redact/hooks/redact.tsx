@@ -241,7 +241,7 @@ const parse = (text: string): Line[] => {
   })
 }
 const PANE = 'redact'
-const TITLE = 'Redact rules'
+const TITLE = 'redact'
 // The rules /redact and the pane keep: a JSON file of the user's, per user, for every project,
 // next to settings.json, so they can edit it by hand. A new one holds EXAMPLES.
 const FILE = 'redact-rules.json'
@@ -379,6 +379,8 @@ const remove = async ($: EngineInterface, k: Kept, ref: string) => {
   if (i < 0) return NONE
   return await save($, k, rules => rules.filter((_, j) => j !== i)) ?? `removed #${i + 1}`
 }
+// the refusal prefixes of turn, add, remove and save's replies, which the pane's note draws as a warning
+const REFUSED = /^(not added|not saved|nothing added|already|no such)/
 
 // /redact's reply to its arguments, undefined for the pane. It answers in a toast, never as text:
 // a command's output row is one the model reads, and none of /redact is its business
@@ -889,129 +891,138 @@ export const register: Register = (on, options) => {
       testField = <Input key="test" value={sample} label="  test " placeholder="sample text; Enter previews what these patterns mask" submitLabel="test" onSubmit={v => { kept.sample = v; $.ui.invalidate('ui.render') }} />
       addField = <Input key="add" label="  add  " placeholder="LABEL [i min=N strong prose]: regex, or a bare regex, masked as SECRET" submitLabel="add" onSubmit={async v => redraw(await add($, kept, v.trim()))} />
     }
-    return (
-      <Box flexDirection="column" gap={1}>
-        <Box flexDirection="column">
-          <Box flexWrap="wrap" columnGap={2} justifyContent="space-between">
-            <Box flexWrap="wrap" columnGap={2}>
-              {tabBtn('session', `This session (${vault.length})`, 's')}
-              {tabBtn('rules', `Rules (${lit + fromSettings.length} on)`, 'r')}
-              {tabBtn('help', 'Guide', 'h')}
-              {broken > 0 && <Text color="red">✗ {broken} skipped</Text>}
-            </Box>
-            {e.surface === 'terminal' && (
-              <Box gap={1}>
-                <Text dimColor>terminal draws: {kept.raw ? 'as the model reads it' : 'the real values'}</Text>
-                <Button key="raw" label="switch" hotkey="d" onPress={async () => { kept.raw = !kept.raw; badge($, kept, await hold($, kept)); $.ui.invalidate('ui.render') }} />
-              </Box>
-            )}
+    // a rule's or the env files' on/off button: green when on, dim when off or the rule is skipped
+    // `active`, not `on`: the hook loader refuses a name that shadows on()
+    const toggle = (key: string, active: boolean, label: string, onPress: () => void, faulty?: string) => (
+      <Button key={key} label={label} plain onPress={onPress}><Text color={active && !faulty ? 'green' : undefined} dimColor={!active || !!faulty}>{active ? '● on' : '○ off'}</Text></Button>
+    )
+
+    const topBar = () => (
+      <Box flexDirection="column">
+        <Box flexWrap="wrap" columnGap={2} justifyContent="space-between">
+          <Box flexWrap="wrap" columnGap={2}>
+            {tabBtn('session', `This session (${vault.length})`, 's')}
+            {tabBtn('rules', `Rules (${lit + fromSettings.length} on)`, 'r')}
+            {tabBtn('help', 'Guide', 'h')}
+            {broken > 0 && <Text color="red">✗ {broken} skipped</Text>}
           </Box>
-          {note && <Text color={/^(not added|not saved|nothing added|already|no such)/.test(note) ? 'warning' : undefined} dimColor={!/^(not added|not saved|nothing added|already|no such)/.test(note)}>{note}</Text>}
-        </Box>
-        {tab === 'session' && (
-          <Box flexDirection="column">
+          {e.surface === 'terminal' && (
             <Box gap={1}>
-              <Box flexShrink={1}>{section('sec-session', 'This session', `${vault.length} masked`)}</Box>
-              {vault.length > 1 && <Box flexShrink={0}><Button key="forget-all" label="forget all" plain onPress={async () => redraw(await forgetAll($, kept))}><Text color="red">✗ all</Text></Button></Box>}
+              <Text dimColor>terminal draws: {kept.raw ? 'as the model reads it' : 'the real values'}</Text>
+              <Button key="raw" label="switch" hotkey="d" onPress={async () => { kept.raw = !kept.raw; badge($, kept, await hold($, kept)); $.ui.invalidate('ui.render') }} />
             </Box>
-            {vault.length === 0
-              ? <Text dimColor>  nothing masked yet</Text>
-              : <Text dimColor>  forget drops one from the vault: a call naming it is refused, and the value masks under a new number</Text>}
-            {vault.map(({ p, v, by }) => (
-              <Box key={p} flexDirection="column">
-                <Box gap={1}>
-                  <Box flexShrink={1}><Text>  {p} {shown(p, v)}</Text></Box>
-                  {long(v) && <Box flexShrink={0}><Button key={`reveal-${p}`} label={kept.revealed.has(p) ? 'hide' : 'reveal'} plain dimColor onPress={() => reveal(p)}>{kept.revealed.has(p) ? '▾' : '▸'}</Button></Box>}
-                  <Box flexShrink={0}><Button key={`forget-${p}`} label="forget" plain onPress={async () => redraw(await forget($, kept, p))}><Text color="red">✗</Text></Button></Box>
-                </Box>
-                <Text dimColor>    masked by {by}</Text>
-              </Box>
-            ))}
-          </Box>
-        )}
-        {tab === 'rules' && (
-          <Box flexDirection="column" gap={1}>
-            <Box flexDirection="column">
-              <Box gap={1}>
-                <Box flexShrink={1}>{section('sec-test', 'Test', sample ? `${hits.length} matched` : 'without saving')}</Box>
-                {sample && <Box flexShrink={0}><Button key="clear-test" label="clear" plain onPress={() => { kept.sample = ''; $.ui.invalidate('ui.render') }}><Text color="red">✗</Text></Button></Box>}
-              </Box>
-              {testField}
-              {sample && (
-                <Box flexDirection="column">
-                  <Text>  → {preview}</Text>
-                  {hits.length === 0
-                    ? <Text dimColor>    {lit + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on'}</Text>
-                    : hits.map(x => <Text key={x.p} dimColor>    {x.p} {shown(x.p, x.v)} · masked by {x.by}</Text>)}
-                </Box>
-              )}
-            </Box>
-            <Box flexDirection="column">
-              {section('sec-rules', 'Rules', `${lit} of ${rules.length} on`)}
-              <Text dimColor>  in {file}, for every project; edit it by hand or here</Text>
-              {kept.broken && <Text color="red">  {FILE} {kept.broken}: masking with the last rules read until it is fixed by hand</Text>}
-              {addField}
-              {rules.length === 0 && <Text dimColor>  none yet</Text>}
-              {rules.map((r: any, i) => {
-                const src = typeof r?.pattern === 'string' ? r.pattern : JSON.stringify(r)
-                const name = typeof r?.name === 'string' && r.name ? r.name : undefined
-                const f = fault(r), enabled = isOn(r)
-                return (
-                  <Box key={`rule-${i}`} flexDirection="column">
-                    {/* a named rule gets its name on its own line and the regex dimmed below it:
-                        on one line, a long regex buried the name */}
-                    <Box gap={1}>
-                      <Box flexShrink={1}>{pattern(`  ${i + 1}. ${name ?? src}`)}{label(r)}{skip(f)}</Box>
-                      <Box flexShrink={0}><Button key={`turn-${i}`} label={enabled ? 'turn off' : 'turn on'} plain onPress={async () => redraw(await turn($, kept, `${i + 1}`, !enabled))}><Text color={enabled && !f ? 'green' : undefined} dimColor={!enabled || !!f}>{enabled ? '● on' : '○ off'}</Text></Button></Box>
-                      <Box flexShrink={0}><Button key={`remove-${i}`} label="remove" plain onPress={async () => redraw(await remove($, kept, `${i + 1}`))}><Text color="red">✗</Text></Button></Box>
-                    </Box>
-                    {name && <Text dimColor wrap="truncate-middle">{`     ${src}`}</Text>}
-                  </Box>
-                )
-              })}
-            </Box>
-            <Box flexDirection="column">
-              {section('sec-env', 'Env files', kept.envOn === false ? 'off' : 'on')}
-              <Box gap={1}>
-                <Box flexShrink={1}><Text dimColor>  secret-shaped values of .env, .envrc, .dev.vars and the like where a session starts, read again when they change</Text></Box>
-                <Box flexShrink={0}><Button key="env" label={kept.envOn === false ? 'turn on' : 'turn off'} plain onPress={async () => redraw(await envTurn($, kept, kept.envOn === false))}><Text color={kept.envOn === false ? undefined : 'green'} dimColor={kept.envOn === false}>{kept.envOn === false ? '○ off' : '● on'}</Text></Button></Box>
-              </Box>
-            </Box>
-            <Box flexDirection="column">
-              {section('sec-settings', 'From settings', settings.length ? `${settings.length} set` : 'none')}
-              <Text dimColor>  the patterns option in settings.json, always on</Text>
-              {settings.length === 0 && <Text dimColor>  none</Text>}
-              {settings.map((src, i) => <Box key={`set-${i}`}>{pattern(`  ${src}`)}{lineFault(src) ? null : label(read(src))}{skip(lineFault(src))}</Box>)}
-            </Box>
-          </Box>
-        )}
-        {tab === 'help' && (
-          <Box flexDirection="column" gap={1}>
-            <Box flexDirection="column">
-              {section('sec-format', 'Rule format', FILE)}
-              <Text dimColor>{'  pattern         a JavaScript regex; each match is masked whole'}</Text>
-              <Text dimColor>{'  replacement     the placeholder\'s label, capitals, digits and _: API_KEY masks as API_KEY_n'}</Text>
-              <Text dimColor>{'  enabled         false turns a rule off; the two examples start off'}</Text>
-              <Text dimColor>{'  name            what the pane and the vault call it'}</Text>
-              <Text dimColor>{'  options         ignoreCase, strong, prose: true; min: N'}</Text>
-              <Text dimColor>{'  (?<v>...)       masks only group v (or v2), keeping prefix and suffix around it'}</Text>
-              <Text dimColor>{'  /redact add     LABEL [i min=N strong prose]: regex, or a bare regex as SECRET'}</Text>
-            </Box>
-            <Box flexDirection="column">
-              {section('sec-escape', 'Placeholders & escaping')}
-              <Text dimColor>{'  once matched    a value keeps its placeholder all session and masks as a whole word'}</Text>
-              <Text dimColor>{'  env files       a session starts with the secret-shaped values of the env files where it starts; /redact env off'}</Text>
-              <Text dimColor>{'  unknown         a placeholder not in this session\'s vault refuses the tool call'}</Text>
-              <Text dimColor>{`  ${ESC}LABEL_n⟧     ! after ${OPEN} writes the literal placeholder without restoring it`}</Text>
-            </Box>
-            <Box flexDirection="column">
-              {section('sec-restore', 'Where real values go')}
-              <Text dimColor>{'  tools           every tool call (Bash, Edit, WebFetch, WebSearch, MCP) gets real values'}</Text>
-              <Text dimColor>{'  surfaces        only the terminal draws real values; desktop, VS Code and mobile keep placeholders'}</Text>
-            </Box>
-          </Box>
-        )}
+          )}
+        </Box>
+        {note && <Text color={REFUSED.test(note) ? 'warning' : undefined} dimColor={!REFUSED.test(note)}>{note}</Text>}
       </Box>
     )
+
+    const sessionTab = () => (
+      <Box flexDirection="column">
+        <Box gap={1}>
+          <Box flexShrink={1}>{section('sec-session', 'This session', `${vault.length} masked`)}</Box>
+          {vault.length > 1 && <Box flexShrink={0}><Button key="forget-all" label="forget all" plain onPress={async () => redraw(await forgetAll($, kept))}><Text color="red">✗ all</Text></Button></Box>}
+        </Box>
+        {vault.length === 0
+          ? <Text dimColor>  nothing masked yet</Text>
+          : <Text dimColor>  forget drops one from the vault: a call naming it is refused, and the value masks under a new number</Text>}
+        {vault.map(({ p, v, by }) => (
+          <Box key={p} flexDirection="column">
+            <Box gap={1}>
+              <Box flexShrink={1}><Text>  {p} {shown(p, v)}</Text></Box>
+              {long(v) && <Box flexShrink={0}><Button key={`reveal-${p}`} label={kept.revealed.has(p) ? 'hide' : 'reveal'} plain dimColor onPress={() => reveal(p)}>{kept.revealed.has(p) ? '▾' : '▸'}</Button></Box>}
+              <Box flexShrink={0}><Button key={`forget-${p}`} label="forget" plain onPress={async () => redraw(await forget($, kept, p))}><Text color="red">✗</Text></Button></Box>
+            </Box>
+            <Text dimColor>    masked by {by}</Text>
+          </Box>
+        ))}
+      </Box>
+    )
+
+    const rulesTab = () => (
+      <Box flexDirection="column" gap={1}>
+        <Box flexDirection="column">
+          <Box gap={1}>
+            <Box flexShrink={1}>{section('sec-test', 'Test', sample ? `${hits.length} matched` : 'without saving')}</Box>
+            {sample && <Box flexShrink={0}><Button key="clear-test" label="clear" plain onPress={() => { kept.sample = ''; $.ui.invalidate('ui.render') }}><Text color="red">✗</Text></Button></Box>}
+          </Box>
+          {testField}
+          {sample && (
+            <Box flexDirection="column">
+              <Text>  → {preview}</Text>
+              {hits.length === 0
+                ? <Text dimColor>    {lit + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on'}</Text>
+                : hits.map(x => <Text key={x.p} dimColor>    {x.p} {shown(x.p, x.v)} · masked by {x.by}</Text>)}
+            </Box>
+          )}
+        </Box>
+        <Box flexDirection="column">
+          {section('sec-rules', 'Rules', `${lit} of ${rules.length} on`)}
+          <Text dimColor>  in {file}, for every project; edit it by hand or here</Text>
+          {kept.broken && <Text color="red">  {FILE} {kept.broken}: masking with the last rules read until it is fixed by hand</Text>}
+          {addField}
+          {rules.length === 0 && <Text dimColor>  none yet</Text>}
+          {rules.map((r: any, i) => {
+            const src = typeof r?.pattern === 'string' ? r.pattern : JSON.stringify(r)
+            const name = typeof r?.name === 'string' && r.name ? r.name : undefined
+            const f = fault(r), enabled = isOn(r)
+            return (
+              <Box key={`rule-${i}`} flexDirection="column">
+                {/* a named rule gets its name on its own line and the regex dimmed below it:
+                    on one line, a long regex buried the name */}
+                <Box gap={1}>
+                  <Box flexShrink={1}>{pattern(`  ${i + 1}. ${name ?? src}`)}{label(r)}{skip(f)}</Box>
+                  <Box flexShrink={0}>{toggle(`turn-${i}`, enabled, enabled ? 'turn off' : 'turn on', async () => redraw(await turn($, kept, `${i + 1}`, !enabled)), f)}</Box>
+                  <Box flexShrink={0}><Button key={`remove-${i}`} label="remove" plain onPress={async () => redraw(await remove($, kept, `${i + 1}`))}><Text color="red">✗</Text></Button></Box>
+                </Box>
+                {name && <Text dimColor wrap="truncate-middle">{`     ${src}`}</Text>}
+              </Box>
+            )
+          })}
+        </Box>
+        <Box flexDirection="column">
+          {section('sec-env', 'Env files', kept.envOn === false ? 'off' : 'on')}
+          <Box gap={1}>
+            <Box flexShrink={1}><Text dimColor>  secret-shaped values of .env, .envrc, .dev.vars and the like where a session starts, read again when they change</Text></Box>
+            <Box flexShrink={0}>{toggle('env', kept.envOn !== false, kept.envOn === false ? 'turn on' : 'turn off', async () => redraw(await envTurn($, kept, kept.envOn === false)))}</Box>
+          </Box>
+        </Box>
+        <Box flexDirection="column">
+          {section('sec-settings', 'From settings', settings.length ? `${settings.length} set` : 'none')}
+          <Text dimColor>  the patterns option in settings.json, always on</Text>
+          {settings.length === 0 && <Text dimColor>  none</Text>}
+          {settings.map((src, i) => <Box key={`set-${i}`}>{pattern(`  ${src}`)}{lineFault(src) ? null : label(read(src))}{skip(lineFault(src))}</Box>)}
+        </Box>
+      </Box>
+    )
+
+    const guideTab = () => (
+      <Box flexDirection="column" gap={1}>
+        <Box flexDirection="column">
+          {section('sec-format', 'Rule format', FILE)}
+          <Text dimColor>{'  pattern         a JavaScript regex; each match is masked whole'}</Text>
+          <Text dimColor>{'  replacement     the placeholder\'s label, capitals, digits and _: API_KEY masks as API_KEY_n'}</Text>
+          <Text dimColor>{'  enabled         false turns a rule off; the two examples start off'}</Text>
+          <Text dimColor>{'  name            what the pane and the vault call it'}</Text>
+          <Text dimColor>{'  options         ignoreCase, strong, prose: true; min: N'}</Text>
+          <Text dimColor>{'  (?<v>...)       masks only group v (or v2), keeping prefix and suffix around it'}</Text>
+          <Text dimColor>{'  /redact add     LABEL [i min=N strong prose]: regex, or a bare regex as SECRET'}</Text>
+        </Box>
+        <Box flexDirection="column">
+          {section('sec-escape', 'Placeholders & escaping')}
+          <Text dimColor>{'  once matched    a value keeps its placeholder all session and masks as a whole word'}</Text>
+          <Text dimColor>{'  env files       a session starts with the secret-shaped values of the env files where it starts; /redact env off'}</Text>
+          <Text dimColor>{'  unknown         a placeholder not in this session\'s vault refuses the tool call'}</Text>
+          <Text dimColor>{`  ${ESC}LABEL_n⟧     ! after ${OPEN} writes the literal placeholder without restoring it`}</Text>
+        </Box>
+        <Box flexDirection="column">
+          {section('sec-restore', 'Where real values go')}
+          <Text dimColor>{'  tools           every tool call (Bash, Edit, WebFetch, WebSearch, MCP) gets real values'}</Text>
+          <Text dimColor>{'  surfaces        only the terminal draws real values; desktop, VS Code and mobile keep placeholders'}</Text>
+        </Box>
+      </Box>
+    )
+
+    return <Box flexDirection="column" gap={1}>{topBar()}{tab === 'session' && sessionTab()}{tab === 'rules' && rulesTab()}{tab === 'help' && guideTab()}</Box>
   })
 }
