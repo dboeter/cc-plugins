@@ -455,8 +455,8 @@ test('the pane lists what this session masked, the whole value on the terminal o
   on('tool.call', async (_$: any, e: any) => { ran.push(e); return { result: {} } as any })
   const m = await mount($)
   expect(await m.find({ text: /This session/ })).toBeDefined()
-  expect(await m.find({ text: new RegExp(`${ph('API_KEY')} ${GH}`) })).toBeDefined()
-  expect(await m.find({ text: /masked by not recorded/ })).toBeDefined()
+  expect(await m.find({ text: new RegExp(`${ph('API_KEY')}  →  ${GH}`) })).toBeDefined()
+  expect(await m.find({ text: /^rule unknown$/ })).toBeDefined()
   await m.press({ key: `forget-${ph('API_KEY')}` })
   expect((store.get('vault:s1') as any)).toMatchObject({ n: { API_KEY: 1 }, ph: {} })
   expect(await m.find({ text: /forgot .*refused/ })).toBeDefined()
@@ -473,8 +473,8 @@ test('the pane names the rule that masked each value; the model reads it masked 
   expect((store.get('vault:s1') as any).by).toEqual({
     [ph('API_KEY')]: expect.stringMatching(/^rule: Example: vendor tokens/), [ph('SECRET')]: 'rule: acme_[a-z0-9]{8}' })
   const m = await mount($)
-  expect(await m.find({ text: new RegExp(`${ph('SECRET')} ${ACME}`) })).toBeDefined()
-  expect(await m.find({ text: /masked by rule: acme_/ })).toBeDefined()
+  expect(await m.find({ text: new RegExp(`${ph('SECRET')}  →  ${ACME}`) })).toBeDefined()
+  expect(await m.find({ text: /^rule: acme_/ })).toBeDefined()
   // the pane read back off the screen, as `tmux capture-pane` would return it
   await $.session.append({ door: 'tool-result', origin: { kind: 'tool', tool: 'Bash' }, uuid: 'u1',
     message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: `${ph('API_KEY')} ${GH}\n${ph('SECRET')} ${ACME}` }] } } as any)
@@ -603,7 +603,7 @@ test('the pane opens on This session, a long value cut to its ends until reveale
   const pem = `-----BEGIN RSA ${KEY}\nMIIEowIBAAKCAQEA\nabc+/=`
   const { store } = world(on, { 'vault:s1': { at: 39 * DAY, n: { API_KEY: 1, PRIVATE_KEY: 1 }, ph: { [ph('API_KEY')]: GH, [ph('PRIVATE_KEY')]: pem } } })
   const m = await mount($)
-  expect(await m.find({ text: /^This session$/ })).toBeDefined()
+  expect(await m.find({ text: /✗ forgets a value/ })).toBeDefined()
   expect(await m.find({ text: /^Rules$/ })).toBeUndefined()
   expect(await m.find({ text: /-----B…c\+\/= \(3 lines, \d+ chars\)/ })).toBeDefined()
   expect(await m.find({ text: /MIIEow/ })).toBeUndefined()
@@ -637,7 +637,7 @@ test('tabs switch between This session, Rules and Guide, and test previews maski
   expect(await m.find({ text: /^Rule format$/ })).toBeDefined()
   expect(await m.find({ text: /^Where real values go$/ })).toBeDefined()
   await m.press({ key: 'tab-session' })
-  expect(await m.find({ text: /^This session$/ })).toBeDefined()
+  expect(await m.find({ text: /nothing masked yet/ })).toBeDefined()
 })
 
 test('desktop keeps the placeholders: the pane shows lengths and has no draw toggle', async ($, on) => {

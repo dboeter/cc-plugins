@@ -471,7 +471,7 @@ const forgetAll = async ($: EngineInterface, k: Kept) => {
   return `forgot ${n}: a call naming one is refused from now on, and each value, matched again, masks under a new number`
 }
 // What the pane lists: each placeholder, its value, and the rule or pattern that masked it.
-const masked = (h: Held) => Object.entries(h.v.ph).map(([p, v]) => ({ p, v, by: h.v.by?.[p] ?? 'not recorded (masked before redact kept it)' }))
+const masked = (h: Held) => Object.entries(h.v.ph).map(([p, v]) => ({ p, v, by: h.v.by?.[p] ?? 'rule unknown' }))
 // Saves the vault when a masking added to it, one save at a time so an older copy never lands
 // last. A save that fails throws, and the hook withholds: a --resume would not find the value.
 const keep = ($: EngineInterface, k: Kept, h: Held) => {
@@ -919,21 +919,21 @@ export const register: Register = (on, options) => {
 
     const sessionTab = () => (
       <Box flexDirection="column">
-        <Box gap={1}>
-          <Box flexShrink={1}>{section('sec-session', 'This session', `${vault.length} masked`)}</Box>
-          {vault.length > 1 && <Box flexShrink={0}><Button key="forget-all" label="forget all" plain onPress={async () => redraw(await forgetAll($, kept))}><Text color="red">✗ all</Text></Button></Box>}
-        </Box>
         {vault.length === 0
-          ? <Text dimColor>  nothing masked yet</Text>
-          : <Text dimColor>  forget drops one from the vault: a call naming it is refused, and the value masks under a new number</Text>}
-        {vault.map(({ p, v, by }) => (
-          <Box key={p} flexDirection="column">
-            <Box gap={1}>
-              <Box flexShrink={1}><Text>  {p} {shown(p, v)}</Text></Box>
-              {long(v) && <Box flexShrink={0}><Button key={`reveal-${p}`} label={kept.revealed.has(p) ? 'hide' : 'reveal'} plain dimColor onPress={() => reveal(p)}>{kept.revealed.has(p) ? '▾' : '▸'}</Button></Box>}
-              <Box flexShrink={0}><Button key={`forget-${p}`} label="forget" plain onPress={async () => redraw(await forget($, kept, p))}><Text color="red">✗</Text></Button></Box>
+          ? <Text dimColor>  {lit + fromSettings.length === 0 && kept.envOn === false ? 'nothing masked: no rule is on (r)' : 'nothing masked yet'}</Text>
+          : (
+            <Box justifyContent="space-between">
+              <Text dimColor>  ✗ forgets a value</Text>
+              {vault.length > 1 && <Box flexShrink={0}><Button key="forget-all" label="forget all" plain onPress={async () => redraw(await forgetAll($, kept))}><Text dimColor>✗ all</Text></Button></Box>}
             </Box>
-            <Text dimColor>    masked by {by}</Text>
+          )}
+        {/* one line per value; only the value shrinks, so the source and ✗ stay on a narrow pane */}
+        {vault.map(({ p, v, by }) => (
+          <Box key={p} gap={3}>
+            <Box flexShrink={1}><Text wrap="truncate-end">  {p}  →  {shown(p, v)}</Text></Box>
+            {long(v) && <Box flexShrink={0}><Button key={`reveal-${p}`} label={kept.revealed.has(p) ? 'hide' : 'reveal'} plain dimColor onPress={() => reveal(p)}>{kept.revealed.has(p) ? '▾' : '▸'}</Button></Box>}
+            <Box flexShrink={0}><Text dimColor>{by}</Text></Box>
+            <Box flexShrink={0}><Button key={`forget-${p}`} label="forget" plain onPress={async () => redraw(await forget($, kept, p))}><Text dimColor>✗</Text></Button></Box>
           </Box>
         ))}
       </Box>
