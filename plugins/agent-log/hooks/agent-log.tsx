@@ -1882,7 +1882,7 @@ export const register: Register = (on, options) => {
     type Line = { k: string; act: string; press?: () => void; st?: [string, string?]; who?: string; tail?: string; disc?: [boolean, () => void]; indent?: number; rail?: string; mark?: string; link?: string; dim?: boolean; away?: string[] }
     const pressable = new Set<string>() // this draw's lines that open something: where the row cursor can stop
     // a stop whose ring is not its line's `b` Button: the tree's main and done toggle, a running turn's `N hidden ▸`. flips: what
-    // z presses on the cursor's line, its ▸ (an Agent fold, a turn's hidden rows, the finished agents)
+    // o presses on the cursor's line, its ▸ (an Agent fold, a turn's hidden rows, the finished agents)
     const aims = new Map<string, string>(), flips = new Map<string, () => void>()
     const aim = (k: string) => aims.get(k) ?? `b${k}`
     const line = ({ k, act, press, st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ', link, dim, away }: Line) => {
@@ -2144,9 +2144,7 @@ export const register: Register = (on, options) => {
       'before submit, in a turn\'s split: the engine\'s time from the turn\'s start to your prompt\'s submit, before its hooks ran',
       'other, in a turn\'s split: the engine\'s and plugins\' own work between steps']
     const KEYS: [string, string][] = [['a m h u', 'views: all, what the model did, the harness, outside the root'], ['l', 'level: info or notice (/agentlog level sets debug and error)'],
-      ['o', 'open or close every Agent fold'], ['s', 'the setup page'], ['i', 'this page'], ['j k', 'the row cursor down, up, over rows, turn headers and the agent tree (k on the window\'s first row enters it); in the inspector, the next or previous row'], ['↓ ↑', 'the row cursor too'],
-      ['z', 'open or close the ▸ on the cursor\'s line: its Agent fold, its turn\'s hidden rows, the finished agents'],
-      ['enter', 'open the row under the cursor'], ['e', 'the newest row'], ['^↑ ^↓', 'ctrl+↑ ↓: the row cursor to the first line of the previous or next turn'], ['b', 'back'], ['n p', 'in the inspector: the next or previous row'],
+      ['o', 'open or close the ▸ on the cursor\'s line (its Agent fold, its turn\'s hidden rows, the finished agents); on a line without one, every Agent fold'], ['s', 'the setup page'], ['i', 'this page'], ['j k', 'the row cursor down, up, over rows, turn headers and the agent tree (k on the window\'s first row enters it); in the inspector, the next or previous row'], ['↓ ↑', 'the row cursor too'],      ['enter', 'open the row under the cursor'], ['e', 'the newest row'], ['^↑ ^↓', 'ctrl+↑ ↓: the row cursor to the first line of the previous or next turn'], ['b', 'back'], ['n p', 'in the inspector: the next or previous row'],
       ['f', 'in an Agent row\'s inspector: only its agent\'s rows; elsewhere, clear that filter'], ['click', 'give the pane the keys: until then none of these reach it'], ['tab', 'move the focus over the buttons; enter presses one']]
     // `no agent entries for scout at notice or above · /agentlog level debug: every row · a: all views · main: clear the filter`; only the filters set
     const empty = () => {
@@ -2190,14 +2188,15 @@ export const register: Register = (on, options) => {
       if (page) return
       move = d; $.ui.invalidate('ui.render')
     }} />
-    // `z: ▸▾`, the ▸ on the row cursor's line (flips): its Agent fold, its turn's hidden rows, the finished agents. Not in the
-    // inspector or on a page, whose lines are not the log's
-    const zbtn = <Button key="flip" label="▸▾" hotkey="z" plain dimColor onPress={() => { if (!inspect && !page && sel) flips.get(sel)?.() }} />
     // `o: unfold` opens every fold while one is closed, `o: fold` closes them all; the nearest top row at or above the window's
-    // top keeps its line. Always drawn, one width (`fold` padded): a label that changed width could change how the controls
-    // pack, and with it the header's height, moving the anchored row
+    // top keeps its line. With the row cursor on a drawn line that has a ▸ (flips: an Agent fold, a turn's hidden rows, the
+    // finished agents), o opens or closes that one instead; not from the inspector or a page, whose lines are not the log's.
+    // Always drawn, one width (`fold` padded): a label that changed width could change how the controls pack, and with it the
+    // header's height, moving the anchored row
     const folds = foldsOf(top), shut = folds.some(id => !expanded.has(id))
     const obtn = <Button key="folds" label={shut || !folds.length ? 'unfold' : 'fold  '} hotkey="o" plain dimColor onPress={() => {
+      const i = sel ? rowAt(sel) : -1, flip = sel && !inspect && !page && (treeStops.includes(sel) || (i >= winStart && i <= winEnd)) ? flips.get(sel) : undefined
+      if (flip) return flip()
       for (const id of folds) if (shut) expanded.add(id); else expanded.delete(id)
       const at = rows.slice(0, win + 1).findLastIndex(r => tops.has(String(r.props?.key)))
       if (at >= 0) anchor = { k: String(rows[at].props.key), off: at - win }
@@ -2316,7 +2315,7 @@ export const register: Register = (on, options) => {
     const VIEW_KEYS: Partial<Record<View, string>> = { all: 'a', model: 'm', harness: 'h', outside: 'u' }
     const items: [number, any][] = SHOWN.map((v): [number, any] => [v.length + 4, vbtn(v, VIEW_KEYS[v]!)])
     const broke = problems.length ? `✗ ${problems[0]}${problems.length > 1 ? ` +${problems.length - 1}` : ''}` : '', away = elsewhere ? `↗ ${elsewhere} other project` : ''
-    const bare: [number, any][] = [...items, [LVW + 3, lbtn], [9, obtn], [7, kbtn], [8, tbtn], [4, cbtn(1)], [4, cbtn(-1)], [5, zbtn],
+    const bare: [number, any][] = [...items, [LVW + 3, lbtn], [9, obtn], [7, kbtn], [8, tbtn], [4, cbtn(1)], [4, cbtn(-1)],
       ...(broke ? [[broke.length, <Text key="broke" color="red">{broke}</Text>] as [number, any]] : []),
       ...(away ? [[away.length, <Text key="away" color="magenta">{away}</Text>] as [number, any]] : []),
       [setupText.length + 3, <Button key="fsetup" label={setupText} hotkey="s" plain dimColor={page !== 'setup'} onPress={() => openPage('setup')} />]]

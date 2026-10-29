@@ -162,7 +162,8 @@ test('a spawned agent\'s rows fold under its Agent row, which shows the agent\'s
   await m.press({ key: 'fclear' })
   expect(await m.find({ text: /^Main work$/ })).toBeDefined()
   await m.press({ key: 'fdone' }) // module state: finished agents folded again for the tests below
-  await m.press({ key: 'folds' }) // and A's and B's folds closed: o closes every fold once all are open
+  // and A's and B's folds closed, each by its ▾: back from B's inspector left the row cursor on B's Agent row, where o closes only its fold
+  for (const b of await m.findAll({ type: 'Button', text: /^▾$/ })) await m.press({ key: b.key! })
   expect(await m.find({ text: /List files A/ })).toBe(undefined)
 })
 
@@ -595,38 +596,38 @@ test('with no cursor, j starts on the window\'s first row and k on its last', as
   expect(await m.find({ text: /^Step 21$/ })).toBeDefined()
 })
 
-test('k on the window\'s first row climbs into the agent tree, j comes back, and z opens the ▸ on the cursor\'s line', async ($, on) => {
+test('k on the window\'s first row climbs into the agent tree, j comes back, and o opens the ▸ on the cursor\'s line', async ($, on) => {
   const agents = [{ id: 'A', type: 'scout', description: 'look around', status: 'running' }, { id: 'B', type: 'scout', description: 'probe', status: 'completed' }]
   session(on, 'TZ', spawn(Date.now() - 60000), { names: { A: 'scout' }, agents })
   const m = await pane($)
   await m.press({ key: 'cdown' }) // the Agent row, the window's first stop
   await m.press({ key: 'cup' }) // the tree's last stop: the done toggle
-  await m.press({ key: 'flip' })
+  await m.press({ key: 'folds' })
   expect(await m.find({ type: 'Button', text: /: probe$/ })).toBeDefined() // finished agents shown
-  await m.press({ key: 'flip' })
+  await m.press({ key: 'folds' })
   expect(await m.find({ type: 'Button', text: /: probe$/ })).toBe(undefined)
   for (let i = 0; i < 3; i++) await m.press({ key: 'cup' }) // A, main, and main again: the tree's top stops it
   await m.press({ key: 'cdown' }); await m.press({ key: 'cdown' }) // A, the done toggle
-  await m.press({ key: 'flip' })
+  await m.press({ key: 'folds' })
   expect(await m.find({ type: 'Button', text: /: probe$/ })).toBeDefined()
-  await m.press({ key: 'flip' }) // module state: finished agents folded again
+  await m.press({ key: 'folds' }) // module state: finished agents folded again
   await m.press({ key: 'cdown' }) // off the tree's last stop, onto the Agent row
   expect(await m.find({ text: /^Read a\.ts$/ })).toBe(undefined)
-  await m.press({ key: 'flip' }) // its fold
+  await m.press({ key: 'folds' }) // its fold
   expect(await m.find({ text: /^Read a\.ts$/ })).toBeDefined()
-  await m.press({ key: 'flip' })
+  await m.press({ key: 'folds' })
   expect(await m.find({ text: /^Read a\.ts$/ })).toBe(undefined)
 })
 
-test('a turn with no end and hidden rows is a cursor stop, and z opens its hidden rows', async ($, on) => {
+test('a turn with no end and hidden rows is a cursor stop, and o opens its hidden rows', async ($, on) => {
   const T = Date.now() - 60000
   session(on, 'HZ', [{ t: T, turn: 1, kind: 'step', name: 'claude-opus-5-5', detail: '', outcome: '', status: 'ok', ms: 400, step: 'k0', stop: 'tool_use', asked: ['Read'] }, ...reads(T + 500, { step: 'k0' }, ['a'])])
   const m = await pane($)
   expect(await m.find({ type: 'Button', text: /^1 hidden ▸$/ })).toBeDefined()
   await m.press({ key: 'cdown' }) // `#1`, the window's first stop, though it opens nothing
-  await m.press({ key: 'flip' })
+  await m.press({ key: 'folds' })
   expect(await m.find({ type: 'Button', text: /^hide 1 ▾$/ })).toBeDefined()
-  await m.press({ key: 'flip' })
+  await m.press({ key: 'folds' })
   expect(await m.find({ type: 'Button', text: /^1 hidden ▸$/ })).toBeDefined()
 })
 
