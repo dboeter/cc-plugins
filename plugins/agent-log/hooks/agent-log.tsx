@@ -165,7 +165,7 @@ export const targetOf = (e: any, event: string): string | undefined => e.tool ??
 // hooks it does not wrap (a plugin's) are still read from the settings and their text (hookName).
 // keep: the runs that count; reading goes newest first, line by line from the end (the file reaches 1 MB and is read on every
 // hooked event), and stops at the first run that ended LAG before `from`
-type Run = { name: string; ms: number; say?: string; exit?: number }
+type Run = { name: string; ms: number; say?: string; exit?: number; use?: string } // use: the call it ran on (tool_use_id)
 export const pickRuns = (text: string, keep: (r: any) => boolean, from: number): Run[] => {
   const out: Run[] = []
   for (let end = text.length; end > 0;) {
@@ -174,7 +174,7 @@ export const pickRuns = (text: string, keep: (r: any) => boolean, from: number):
     let r: any
     try { r = JSON.parse(line) } catch { continue }
     if (r.t1 < from - LAG) break
-    if (keep(r)) out.unshift({ name: String(r.name), ms: r.t1 - r.t0, say: r.say ?? undefined, exit: r.exit ?? undefined })
+    if (keep(r)) out.unshift({ name: String(r.name), ms: r.t1 - r.t0, say: r.say ?? undefined, exit: r.exit ?? undefined, use: r.use ?? undefined })
   }
   return out
 }
@@ -238,10 +238,14 @@ const says = (say: string, l: string) => {
   const s = say.trim()
   return l.startsWith(s) && ([...say].length >= CUT || !WORD.test(s.at(-1) ?? '') || !WORD.test(l[s.length] ?? ''))
 }
-export const speaker = (runs: Run[], text: string) => {
-  const lines = text.split('\n').map(l => l.trim().replace(FRAME, ''))
-  return [...runs].reverse().find(r => r.say?.trim() && lines.some(l => says(r.say!, l)))?.name
+// a blocking error's command, between FRAME's `from command:` and its `[…]: `, which hookName reads the hook's name from
+const QUOTED = /^"[^"\n]*":\s*(\[[^\]\n]*\]:\s*)?/
+// the wrapped runs that handed back a text, oldest first
+export const saidBy = (runs: Run[], text: string) => {
+  const lines = text.split('\n').map(l => l.trim().replace(FRAME, '').replace(QUOTED, ''))
+  return runs.filter(r => r.say?.trim() && lines.some(l => says(r.say!, l)))
 }
+export const speaker = (runs: Run[], text: string) => saidBy(runs, text).at(-1)?.name
 // a classic event's hooks, given its runs: each text (pieces) by its speaker, else by hookName; with nothing said, the wrapped
 // hooks that ran and the unwrapped ones that fit
 export const runNames = (cfg: HookCfg, event: string, target: string | undefined, runs: Run[], pieces: string[]) => {
@@ -287,6 +291,8 @@ const LABEL: Record<string, string> = {
   currentDate: 'date', userEmail: 'email', attachedProject: 'project', // first-message block keys, camelCase
 }
 const label = (type: string) => LABEL[type] ?? type.replace(/_/g, ' ')
+// a hook text row's kind: the engine calls every exit-2 text a blocking error, but after the fact (FEEDBACK) it refused nothing
+const textLabel = (x: Entry) => x.type === 'hook_blocking_error' && FEEDBACK.has(x.origin ?? '') ? 'feedback' : label(x.type ?? '')
 // per-turn chatter that drowned the log (>half of all entries): ranked debug (lvl), so hidden at the default level
 const DEBUG_ATTACHMENTS = new Set(['total_tokens_reminder', 'output_style', 'silent_turn_reminder'])
 // first-message blocks the engine sends as attachments, not as themselves (read from 2.1.296): email and project inside
@@ -562,7 +568,7 @@ const action = (x: Entry, bare = false): string => {
   }
   if (x.kind === 'prompt') {
     // `context-mode context on PreToolUse Bash`, `PreToolUse hook context on Bash`: the tool, so text whose call is not drawn still says which call it was for. A hook or plugin name is an identifier: never recased
-    if (x.src && x.src !== 'engine') { const on = [x.origin && !x.name.includes(x.origin) && x.origin, x.detail].filter(Boolean).join(' '); return `${x.name} ${label(x.type ?? '')}${!bare && on ? ` on ${on}` : ''}` }
+    if (x.src && x.src !== 'engine') { const on = [x.origin && !x.name.includes(x.origin) && x.origin, x.detail].filter(Boolean).join(' '); return `${x.name} ${textLabel(x)}${!bare && on ? ` on ${on}` : ''}` }
     const [k, tail = ''] = ctxOf(x)
     return cap(k) + tail
   }
@@ -631,15 +637,41 @@ const started = new Map<string, number>() // agent id -> spawn time; AgentInfo h
 // fork's plugin. Stored with the entries, so old turns keep their names. A fork has no agent.spawn and its SubagentStop's agent_type
 // is '' (probed on 2.1.294), so it is named `fork` there and by its plugin once that plugin's $.model.fork resolves (the model.fork hook)
 let names: Record<string, string> = {}
-// PostToolUse context to come, per call, in the order its hooks ran: its attachment names only the tool (`PostToolUse:Read hook …`),
+// PostToolUse texts to come, per call, in the order its hooks ran: its attachment names only the tool (`PostToolUse:Read hook …`),
 // and parallel calls of one tool run their hooks in turn, so the first waiting call of that tool is the one it belongs to.
+// ctx: its context texts, one per hook. block: its feedback texts, one per hook that exited 2: exact for wrapped hooks, and for
+// unwrapped ones that fit an upper bound, as the engine keeps only the last block's text (reason, its first line). t: when its
+// hooks ended; the loop's next request carries what they said, and drops the places left (dropPost).
 // A copy or a replay of an attachment takes no place: its call was served when it first came
-let postCtx: { use: string; tool: string; agent?: string; n: number }[] = []
-const takePost = (tool: string | undefined, agent: string | undefined): string | undefined => {
-  const w = postCtx.find(c => c.tool === tool && c.agent === agent)
-  if (w && !--w.n) postCtx = postCtx.filter(c => c !== w)
-  return w?.use
+type Owed = { use: string; tool: string; agent?: string; ctx: number; block: number; reason?: string; t: number }
+let postCtx: Owed[] = []
+const POST = /^PostToolUse(Failure)?$/ // the events whose hooks run after their call and send their texts with the next request
+// the engine's own PostToolUse text when a hook changed the file the call just edited (a formatter); group 1 is the file
+const REWROTE = /^\w+:\S+ hook additional context: PostToolUse hook modified (.+?) after your edit\b/
+// the loop's newest call that wrote the file the note names: by its path as written, else one of the two paths ending in the other
+// (a relative path, `~`). A symlink's other path does not match: the note goes with the loop's newest call of its tool (push's `after`)
+const editOf = async ($: EngineInterface, file: string, agent: string | undefined) => {
+  const home = await $.env.get('HOME').catch(() => undefined)
+  const abs = (p: string) => home && p.startsWith('~/') ? home + p.slice(1) : p.replace(/^\.\//, '')
+  const f = abs(file), tail = (p: string, q: string) => p === q || p.endsWith(`/${q}`) || q.endsWith(`/${p}`)
+  const writes = entries.filter(y => y.kind === 'tool' && !!y.use && y.agent === agent && /^(Edit|MultiEdit|Write|NotebookEdit)$/.test(y.name))
+  return (writes.findLast(y => abs(y.detail) === f) ?? writes.findLast(y => tail(abs(y.detail), f)))?.use
 }
+// the call a PostToolUse text goes with. A wrapped hook's text: the call whose run said it (hook-timer's `use`), the first of them
+// still owed one when several said the same. Else the first waiting call of that tool: by its block's own text, then in turn.
+// Only the kinds counted take a place; a system message has no count, and goes to its run's call or none
+const takePost = (tool: string | undefined, agent: string | undefined, type: string, text: string, runs: Run[]): string | undefined => {
+  const kind = type === 'hook_additional_context' ? 'ctx' : type === 'hook_blocking_error' ? 'block' : undefined
+  const waiting = postCtx.filter(c => c.tool === tool && c.agent === agent && (!kind || c[kind] > 0))
+  const uses = [...new Set(saidBy(runs, text).flatMap(r => r.use ? [r.use] : []))]
+  const w = uses.length ? waiting.find(c => uses.includes(c.use))
+    : kind === 'block' ? waiting.find(c => c.reason && text.includes(c.reason)) ?? waiting[0]
+    : kind ? waiting[0] : undefined
+  if (w && kind && !--w[kind] && !w.ctx && !w.block) postCtx = postCtx.filter(c => c !== w)
+  return w?.use ?? entries.findLast(y => y.kind === 'tool' && !!y.use && uses.includes(y.use) && y.agent === agent)?.use
+}
+// a loop's request is under way: every text owed by a call whose hooks ended before it began was carried by it, or never will be
+const dropPost = (agent: string | undefined, t0: number) => { postCtx = postCtx.filter(c => (c.agent ?? '') !== (agent ?? '') || c.t >= t0) }
 let stops: { id: string; t: number; text?: string }[] = [] // SubagentStops of loops no agent.spawn started, not yet tied to a fork
 // agent.spawn's Agent call -> the agent it started, until that call's tool.call takes it. Capped: a plugin's own $.agent.spawn
 // raises agent.spawn but no Agent tool.call, so its pair is never taken
@@ -1011,11 +1043,12 @@ function unlog($: EngineInterface, sig: string, t: number): void {
   }).catch(() => {})
 }
 
-// hook text logged before, word for word: every copy of x's text after the first in the log's order is `again`. Over the whole log,
+// hook text logged before, word for word: every copy of x's text after the first in the log's order is `again`. A block or
+// feedback answers its own call: the same lint text on another call is news, so only its own call's copies repeat it. Over the whole log,
 // not just x: x may have gone in above a copy logged earlier (push's `above`), which then is the repeat
 export const markAgain = (xs: Entry[], x: Entry) => {
   let seen = false
-  for (const y of xs) if (y.kind === 'prompt' && y.name === x.name && y.bytes === x.bytes && first(y.peek) === first(x.peek)) { y.again = seen || undefined; seen = true }
+  for (const y of xs) if (y.kind === 'prompt' && y.name === x.name && y.bytes === x.bytes && first(y.peek) === first(x.peek) && (y.type !== 'hook_blocking_error' || y.use === x.use)) { y.again = seen || undefined; seen = true }
 }
 
 // where a row goes among the rest: a tool row by when its call began, not its run, so a call stays ahead of a parallel one begun
@@ -1274,11 +1307,13 @@ export const register: Register = (on, options) => {
     $.ui.invalidate('ui.render')
     let ttft: number | undefined, think = 0, since: number | undefined, text = '', thought = '', r: TurnStepResult | undefined, err: unknown
     const asked: string[] = []
+    let sent = false
     // a redraw per phase, not per chunk: tick's poll counts the time up
     const phase = (p: NonNullable<Live['phase']>, said?: string) => { now.said = said; if (now.phase !== p) { now.phase = p; $.ui.invalidate('ui.render') } }
     const s = next(e)
     try {
       for await (const c of s) {
+        if (!sent) { sent = true; dropPost(e.agentId, t0) } // the request went out with its attachments
         if (c.kind !== 'engine' && c.kind !== 'stop') {
           const t = Date.now()
           ttft ??= t - t0
@@ -1294,6 +1329,7 @@ export const register: Register = (on, options) => {
       r = await s.result
     } catch (x) { err = x; throw x } finally {
       liveNow.delete(me)
+      if (!sent && r) dropPost(e.agentId, t0) // answered without a chunk; one that never went out may be sent again
       try {
         const end = Date.now()
         if (since != null) think += end - since
@@ -1373,7 +1409,6 @@ export const register: Register = (on, options) => {
     const ctx: string[] = r?.additionalContext ?? []
     const event = e.hook_event_name ?? 'PreToolUse' // classic.PreToolUse's envelope is tool.call's, which names no event
     if (event === 'PreToolUse' && e.tool_use_id && blocked) blockedUse.add(e.tool_use_id)
-    if (event === 'PostToolUse' && e.tool_use_id && ctx.length) postCtx = [...postCtx.slice(-19), { use: e.tool_use_id, tool: e.tool_name, agent: e.agent_id, n: ctx.length }]
     if (event === 'PreToolUse' && e.tool_use_id && ctx.length) preCtx.set(e.tool_use_id, ctx.length) // one attachment per entry
     const outcome = blocked ? 'block' : ctx.length ? `context x${ctx.length} ${kb(ctx.join('').length)}` : r?.preventContinuation ? 'stop' : ''
     // InstructionsLoaded/FileChanged: which file, and why it loaded
@@ -1392,6 +1427,11 @@ export const register: Register = (on, options) => {
     const cfg = await hooksOf($)
     // the wrapped hooks that ran on this event and call, within its span
     const runs = wraps(cfg, event, target) ? await runsOf($, keepRun(e, event, t0, Date.now()), t0) : []
+    // the texts this call's hooks send with the next request, one attachment each: its context, and a block's feedback, one per
+    // hook that exited 2, or may have: an unwrapped hook leaves no exit. Without the block's place a feedback text would go with
+    // the newest call of that tool (push's `after`)
+    const block = blocked ? Math.max(1, runs.filter(r => r.exit === 2).length + (cfg[event] ?? []).filter(h => !timed(h) && fits(h.matcher, target)).length) : 0
+    if (POST.test(event) && e.tool_use_id && (ctx.length || block)) postCtx = [...postCtx.slice(-19), { use: e.tool_use_id, tool: e.tool_name, agent: e.agent_id, ctx: ctx.length, block, reason: typeof blocked === 'string' ? first(blocked) || undefined : undefined, t: Date.now() }]
     // each context entry is one hook's: by the run that said it, else named in its own first line. Context leaves the silent hooks
     // in the name: they ran too, and the row counts them. A block keeps only its blocker, whom the call's ⊘ names (byOf)
     const spoke = runs.length ? runNames(cfg, event, target, runs, typeof blocked === 'string' ? [blocked] : ctx)
@@ -1436,28 +1476,33 @@ export const register: Register = (on, options) => {
   on('prompt.attachment', async ($, e, next) => {
     const r = await next(e)
     logSkipsIn($, next.trace)
-    // a PostToolUse hook's context takes the first call waiting for one, even when left out of the request: its place in the
-    // queue is spent either way, or the next attachment of that tool would go with this one's call. Not a copy or a replay
-    const isPost = e.origin.kind === 'hook' && e.origin.event === 'PostToolUse'
-    const postTool = isPost ? (r.text ?? e.text ?? '').trimStart().match(/^\w+:(\S+) hook\b/)?.[1] : undefined
-    if (r.text == null) { if (isPost) takePost(postTool, e.agentId); return r } // left out of the request: never entered the context
+    // a PostToolUse hook's text takes its call's place (takePost), even when left out of the request: its place in the queue is
+    // spent either way, or the next attachment of that tool would go with this one's call. Not a copy or a replay. The engine's own
+    // note that a hook rewrote the file takes none: it names its file, whose call it goes with
+    const raw = (r.text ?? e.text ?? '').trimStart()
+    // the engine's framing carries the target: `PreToolUse:Bash hook additional context:`
+    const target = raw.match(/^\w+:(\S+) hook\b/)?.[1]
+    const cfg = e.origin.kind === 'hook' ? await hooksOf($) : {}, ev = e.origin.kind === 'hook' ? e.origin.event : ''
+    // the wrapped runs of its event within the last LATE (PreToolUse context waits for the next request): who said it, and on which call
+    // read once, and only for a text that is logged or spends a place: a fork's copies and replays need none
+    let runs: Run[] | undefined
+    const heard = async () => runs ??= ev && wraps(cfg, ev, target) ? await runsOf($, x => x.event === ev && !!x.say, Date.now() - LATE) : []
+    const isPost = POST.test(ev)
+    const rewrote = isPost ? raw.match(REWROTE)?.[1] : undefined
+    if (r.text == null) { if (isPost && !rewrote) takePost(target, e.agentId, e.type, raw, await heard()); return r } // left out of the request: never entered the context
     await ready($)
     const origin = e.origin.kind === 'engine' ? undefined : e.origin.event
     if (await copied($, e.agentId, e.type, origin, r.text.length)) return r // a fork's copy of main's history: in its context, but not new
     if (replayed($, sigOf(e.type, origin, e.agentId, r.text.length), e.agentId)) return r // counted before the skips below, so noisy and skipped kinds replay-match too
-    const post = isPost ? takePost(postTool, e.agentId) : undefined
+    const post = rewrote ? await editOf($, rewrote, e.agentId) : isPost ? takePost(target, e.agentId, e.type, raw, await heard()) : undefined
     if (e.type === 'instructions' && r.text.length === memBytes) { memBytes = undefined; return r } // same bundle as the claudeMd block: log it once. One skip only, so a later re-injection (e.g. after compaction) still shows
-    // the hook's name; its event shows in the inspector. The engine's framing carries the target: `PreToolUse:Bash hook additional context:`
-    const target = r.text.trimStart().match(/^\w+:(\S+) hook\b/)?.[1]
-    // a hook's text: by the wrapped run that said it, within the last LATE (PreToolUse context waits for the next request), else
-    // named in its own first line
-    const cfg = e.origin.kind === 'hook' ? await hooksOf($) : {}, ev = e.origin.kind === 'hook' ? e.origin.event : ''
-    const by = ev && wraps(cfg, ev, target) ? speaker(await runsOf($, x => x.event === ev && !!x.say, Date.now() - LATE), r.text) : undefined
+    // the hook's name, its event shows in the inspector: by the wrapped run that said it, else named in its own first line
+    const by = ev ? speaker(await heard(), r.text) : undefined
     const name = e.origin.kind === 'hook' ? by ?? (hookName(cfg, ev, target, r.text) || `${ev} hook`)
       : origin ? `${origin} ${label(e.type)}` : label(e.type)
     // a queued prompt is the person's own typing. session_context carries their email (EMAIL)
     const text = e.type === 'queued_command' ? undefined : peek(e.type === 'session_context' ? r.text.replace(EMAIL, '***') : r.text)
-    try { push($, { kind: 'prompt', name, type: e.type, origin, detail: target ?? '', outcome: kb(r.text.length), src: e.origin.kind, bytes: r.text.length, agent: e.agentId, peek: text, use: post }, { above: e.origin.kind === 'hook' && e.origin.event === 'PreToolUse' ? target : undefined, after: e.origin.kind === 'hook' && e.origin.event === 'PostToolUse' ? target : undefined }) } catch {}
+    try { push($, { kind: 'prompt', name, type: e.type, origin, detail: target ?? '', outcome: kb(r.text.length), src: e.origin.kind, bytes: r.text.length, agent: e.agentId, peek: text, use: post }, { above: e.origin.kind === 'hook' && e.origin.event === 'PreToolUse' ? target : undefined, after: isPost ? target : undefined }) } catch {}
     return r
   })
 
@@ -1720,7 +1765,7 @@ export const register: Register = (on, options) => {
         : x.kind === 'fork' ? `The ${x.name} plugin forked the conversation: one tool-less question over main's transcript, answered in a loop of its own${stat(x) === 'aborted' ? ', cut off when the turn was interrupted' : stat(x) === 'failed' ? ', which got no reply' : ''}`
         : x.kind === 'tool' ? `${x.name} call by the ${who}${stat(x) === 'denied' ? ', refused before it ran' : stat(x) === 'failed' ? ', failed' : stat(x) === 'nomatch' ? ', found nothing' : ''}`
         : x.kind === 'hook' ? `${x.name === x.origin ? 'No hook' : x.name} ran on ${x.origin ?? 'an event'} and ${stat(x) === 'failed' ? `failed${x.exit != null ? ` with exit ${x.exit}` : ''}` : stat(x) === 'feedback' ? 'sent feedback to the model' : x.outcome.startsWith('block') ? 'blocked it' : x.outcome.startsWith('context') ? 'added context for the model' : x.outcome === 'stop' ? 'stopped the session' : 'changed nothing'}`
-        : x.kind === 'prompt' && x.src === 'hook' ? `${label(x.type ?? '')} of a ${x.origin ?? ''} hook, injected into the model's context`
+        : x.kind === 'prompt' && x.src === 'hook' ? `${textLabel(x)} of a ${x.origin ?? ''} hook, injected into the model's context`
         : x.kind === 'prompt' && x.src === 'plugin' ? `Context a plugin attached on ${x.origin ?? 'a chain'}`
         : x.kind === 'prompt' ? `Text the engine injected into the model's context (${x.type ?? x.name})`
         : x.kind === 'step' ? `A request to ${modelName(x.name)} by the ${who}${x.stop === 'max_tokens' ? ', cut off at the output limit' : stat(x) === 'aborted' ? ', interrupted before it ended'

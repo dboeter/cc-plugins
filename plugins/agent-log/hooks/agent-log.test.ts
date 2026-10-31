@@ -1038,6 +1038,71 @@ test('feedback reads as feedback in the inspector', async ($, on) => {
   await m.press({ key: 'back' })
 })
 
+test('PostToolUse feedback goes with the call whose hook blocked, and reads as feedback', async ($, on) => {
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  on('classic.PostToolUse', (_$, e: any) => (e.tool_use_id === 'fa' ? { block: 'a.sh has issues' } : {}) as any)
+  on('prompt.attachment', (_$, e: any) => ({ text: e.text }))
+  session(on, 'Q3')
+  await Promise.all(['a', 'b'].map(f => $.tool.call({ tool: 'Edit', tool_use_id: `f${f}`, file_path: `/home/u/${f}.sh` } as any)))
+  for (const f of ['a', 'b']) await ($ as any).classic.PostToolUse({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_use_id: `f${f}`, tool_input: {}, tool_response: 'ok' })
+  await $.prompt.attachment({ type: 'hook_blocking_error', text: 'PostToolUse:Edit hook blocking error from command: a.sh has issues', origin: { kind: 'hook', event: 'PostToolUse' } } as any)
+  const m = await pane($)
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Edit a\.sh$/ }))!.key! })
+  expect(await m.find({ text: /PostToolUse hook/ })).toBeDefined()
+  await m.press({ key: 'back' })
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Edit b\.sh$/ }))!.key! })
+  expect(await m.find({ text: /PostToolUse hook/ })).toBe(undefined)
+  await m.press({ key: 'back' })
+  expect(await m.find({ type: 'Button', text: / feedback$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: / block$/ })).toBe(undefined)
+})
+
+test('the engine\'s note that a hook rewrote a file goes with that file\'s call', async ($, on) => {
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  on('prompt.attachment', (_$, e: any) => ({ text: e.text }))
+  on('classic.PostToolUse', () => ({}) as any) // no hook said anything: the note is the engine's own
+  session(on, 'Q4')
+  await Promise.all(['a', 'b'].map(f => $.tool.call({ tool: 'Edit', tool_use_id: `r${f}`, file_path: `/home/u/${f}.py` } as any)))
+  for (const f of ['a', 'b']) await ($ as any).classic.PostToolUse({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_use_id: `r${f}`, tool_input: {}, tool_response: 'ok' })
+  await $.prompt.attachment({ type: 'hook_additional_context', text: 'PostToolUse:Edit hook additional context: PostToolUse hook modified /home/u/a.py after your edit (likely a formatter).', origin: { kind: 'hook', event: 'PostToolUse' } } as any)
+  const m = await pane($)
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Edit a\.py$/ }))!.key! })
+  expect(await m.find({ text: /PostToolUse hook/ })).toBeDefined()
+  await m.press({ key: 'back' })
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Edit b\.py$/ }))!.key! })
+  expect(await m.find({ text: /PostToolUse hook/ })).toBe(undefined)
+  await m.press({ key: 'back' })
+})
+
+test('a PostToolUse text the queue did not count takes no call\'s place', async ($, on) => {
+  const db = replay(on, 'SQ')
+  on('classic.PostToolUse', (_$: any, e: any) => (e.tool_use_id === 'sqa' ? { additionalContext: ['tip for a'] } : {}))
+  await $.prompt.attachment(START)
+  await Promise.all(['a', 'b'].map(f => $.tool.call({ tool: 'Read', tool_use_id: `sq${f}`, file_path: `/home/u/${f}.ts` } as any)))
+  for (const f of ['a', 'b']) await ($ as any).classic.PostToolUse({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_use_id: `sq${f}`, tool_input: {}, tool_response: 'ok' })
+  await $.prompt.attachment({ type: 'hook_system_message', text: 'PostToolUse:Read hook system message: heads up', origin: { kind: 'hook', event: 'PostToolUse' } } as any)
+  await $.prompt.attachment({ type: 'hook_additional_context', text: 'PostToolUse:Read hook additional context: tip for a', origin: { kind: 'hook', event: 'PostToolUse' } } as any)
+  const rows = (await flushed($, 'SQ', db)).filter(x => x.kind === 'prompt' && x.origin === 'PostToolUse')
+  expect(rows.find(x => x.type === 'hook_additional_context')?.use).toBe('sqa') // not pushed onto b by the system message
+})
+
+test('PostToolUseFailure context goes with the call whose hook added it', async ($, on) => {
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  on('classic.PostToolUseFailure', (_$, e: any) => (e.tool_use_id === 'ua' ? { additionalContext: ['retry with -f'] } : {}) as any)
+  on('prompt.attachment', (_$, e: any) => ({ text: e.text }))
+  session(on, 'Q6')
+  await Promise.all(['a', 'b'].map(f => $.tool.call({ tool: 'Read', tool_use_id: `u${f}`, file_path: `/home/u/${f}.ts` } as any)))
+  for (const f of ['a', 'b']) await ($ as any).classic.PostToolUseFailure({ hook_event_name: 'PostToolUseFailure', tool_name: 'Read', tool_use_id: `u${f}`, tool_input: {}, error: 'boom' })
+  await $.prompt.attachment({ type: 'hook_additional_context', text: 'PostToolUseFailure:Read hook additional context: retry with -f', origin: { kind: 'hook', event: 'PostToolUseFailure' } } as any)
+  const m = await pane($)
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Read a\.ts$/ }))!.key! })
+  expect(await m.find({ text: /PostToolUseFailure hook \(added text\)/ })).toBeDefined()
+  await m.press({ key: 'back' })
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Read b\.ts$/ }))!.key! })
+  expect(await m.find({ text: /PostToolUseFailure hook/ })).toBe(undefined)
+  await m.press({ key: 'back' })
+})
+
 test('a PostToolUse attachment left out of the request still spends its call\'s place in the queue', async ($, on) => {
   on('tool.call', () => ({ result: 'ok', text: 'ok' }))
   on('classic.PostToolUse', () => ({ additionalContext: ['tip'] }) as any)
@@ -1664,7 +1729,7 @@ test('hook-timer lines count for the event, call and span they ran in', () => {
     'not json', l({ name: 'test-gate', t0: 1010, t1: 1210, say: 'test-gate: run the tests first' }), '',
   ].join('\n')
   const keep = (r: any) => r.event === 'PreToolUse' && r.use === 'u1'
-  expect(pickRuns(text, keep, 1000)).toEqual([{ name: 'guard', ms: 50, say: undefined }, { name: 'test-gate', ms: 200, say: 'test-gate: run the tests first' }])
+  expect(pickRuns(text, keep, 1000)).toEqual([{ name: 'guard', ms: 50, say: undefined, use: 'u1' }, { name: 'test-gate', ms: 200, say: 'test-gate: run the tests first', use: 'u1' }])
   expect(pickRuns(text, r => r.event === 'Stop', 1000)).toEqual([])
 })
 
@@ -2080,4 +2145,82 @@ test('after a /clear, the new session\'s first system prompt logs under it rathe
   ids.id = 'CL2' // /clear: a new session id in this process
   await ($ as any).prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: [], tools: [], outputStyle: null, traits: [], sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' }] })
   expect((await flushed($, 'CL2', db)).map(x => x.name)).toEqual(['system prompt'])
+})
+
+// PostToolUse texts and their calls. post: one PostToolUse per call, in order; text: an attachment of the next request
+const post = ($: any, tool: string, use: string) => $.classic.PostToolUse({ hook_event_name: 'PostToolUse', tool_name: tool, tool_use_id: use, tool_input: {}, tool_response: 'ok' })
+const text = (type: string, body: string, tool = 'Edit') => ({ type, text: `PostToolUse:${tool} hook ${type === 'hook_blocking_error' ? `blocking error from command: "$HOME/.claude/hooks/lint.sh": [$HOME/.claude/hooks/lint.sh]: ` : type === 'hook_system_message' ? 'system message: ' : 'additional context: '}${body}`, origin: { kind: 'hook', event: 'PostToolUse' } }) as any
+const edits = ($: any, ...fs: string[]) => Promise.all(fs.map(f => $.tool.call({ tool: 'Edit', tool_use_id: f, file_path: `/home/u/proj/${f}.py` } as any)))
+const postRows = async ($: any, id: string, db: Record<string, any>) => (await flushed($, id, db)).filter(x => x.kind === 'prompt' && x.origin === 'PostToolUse')
+
+test('a wrapped hook\'s system message goes with the call whose run said it', async ($, on) => {
+  const db = replay(on, 'PS')
+  const now = Date.now(), run = (use: string, say: string | null) => JSON.stringify({ name: 'notify', event: 'PostToolUse', use, agent: null, t0: now - 50, t1: now - 40, exit: 0, say })
+  const reset = await withSettings($, on, () => ({ hooks: { PostToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: '$HOME/.claude/hooks/hook-timer $HOME/.claude/hooks/notify.sh' }] }] } }),
+    { '/home/u/.claude/hook-times/PS.jsonl': () => [run('pa', 'heads up from a'), run('pb', null)].join('\n') })
+  await $.prompt.attachment(START)
+  await edits($, 'pa', 'pb'); await post($, 'Edit', 'pa'); await post($, 'Edit', 'pb')
+  await $.prompt.attachment(text('hook_system_message', 'heads up from a'))
+  expect((await postRows($, 'PS', db)).map(x => x.use)).toEqual(['pa'])
+  await reset()
+})
+
+test('a place no text came for is dropped once the loop\'s next request goes out', async ($, on) => {
+  const db = replay(on, 'PD')
+  stepper(on)
+  on('classic.PostToolUse', (_$: any, e: any) => (e.tool_use_id === 'da' ? { block: 'lint: a bad' } : e.tool_use_id === 'db' ? { additionalContext: ['tip for b'] } : {}))
+  await $.prompt.attachment(START)
+  await edits($, 'da'); await post($, 'Edit', 'da') // its feedback is never sent
+  await wait(5)
+  await drain(($ as any).turn.step(STEP))
+  await edits($, 'db'); await post($, 'Edit', 'db')
+  await $.prompt.attachment(text('hook_additional_context', 'tip for b'))
+  expect((await postRows($, 'PD', db)).map(x => x.use)).toEqual(['db'])
+})
+
+test('unwrapped hooks that blocked: each text goes with the call whose block it is', async ($, on) => {
+  const db = replay(on, 'PU')
+  const hook = (name: string) => ({ type: 'command', command: `$HOME/.claude/hooks/${name}.sh` })
+  // a: both hooks blocked, the engine keeps the last's text; b: one did
+  on('classic.PostToolUse', (_$: any, e: any) => ({ block: e.tool_use_id === 'ua' ? 'lint: a bad' : 'fmt: b bad' }))
+  const reset = await withSettings($, on, () => ({ hooks: { PostToolUse: [{ matcher: 'Edit', hooks: [hook('lint'), hook('fmt')] }] } }))
+  await $.prompt.attachment(START)
+  await edits($, 'ua', 'ub'); await post($, 'Edit', 'ua'); await post($, 'Edit', 'ub')
+  for (const s of ['fmt: a first', 'lint: a bad', 'fmt: b bad']) await $.prompt.attachment(text('hook_blocking_error', s))
+  expect((await postRows($, 'PU', db)).map(x => x.use)).toEqual(['ua', 'ua', 'ub'])
+  await reset()
+})
+
+test('the note that a hook rewrote a file finds its call by a path written another way', async ($, on) => {
+  const db = replay(on, 'PP')
+  on('classic.PostToolUse', () => ({}))
+  on('env.get', () => ({ value: '/home/u' }))
+  await $.prompt.attachment(START)
+  await edits($, 'pa', 'pb'); await post($, 'Edit', 'pa'); await post($, 'Edit', 'pb')
+  await $.prompt.attachment(text('hook_additional_context', 'PostToolUse hook modified ~/proj/pa.py after your edit (likely a formatter).'))
+  expect((await postRows($, 'PP', db)).map(x => x.use)).toEqual(['pa'])
+})
+
+test('the same feedback on three calls is three rows, none of them `again`', async ($, on) => {
+  const db = replay(on, 'PA')
+  on('classic.PostToolUse', () => ({ block: 'guard.sh has issues' }))
+  await $.prompt.attachment(START)
+  await edits($, 'aa', 'ab', 'ac'); for (const u of ['aa', 'ab', 'ac']) await post($, 'Edit', u)
+  for (let i = 0; i < 3; i++) await $.prompt.attachment(text('hook_blocking_error', 'guard.sh has issues'))
+  expect((await postRows($, 'PA', db)).map(x => [x.use, x.again ?? false])).toEqual([['aa', false], ['ab', false], ['ac', false]])
+})
+
+test('a text the request carries, raised before its first chunk, still finds its call', async ($, on) => {
+  const db = replay(on, 'PR')
+  on('classic.PostToolUse', (_$: any, e: any) => (e.tool_use_id === 'ra' ? { additionalContext: ['tip for a'] } : {}))
+  on('turn.step', (async function* (_$: any, e: any) {
+    await ($ as any).prompt.attachment(text('hook_additional_context', 'tip for a')) // the engine builds the request's attachments first
+    yield { kind: 'text', index: 0, text: 'ok' }
+    return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: undefined }
+  }) as any)
+  await $.prompt.attachment(START)
+  await edits($, 'ra', 'rb'); await post($, 'Edit', 'ra'); await post($, 'Edit', 'rb')
+  await wait(5)
+  await drain(($ as any).turn.step(STEP))
+  expect((await postRows($, 'PR', db)).map(x => x.use)).toEqual(['ra'])
 })
