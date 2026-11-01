@@ -46,15 +46,30 @@ test('red marks only errors: the remove and clear ✗ are dim, a skipped rule an
   expect((await m.find({ type: 'Text', text: /^ skipped: replacement is not capitals/ }))?.props.color).toBe('red')
   files.set(RULES, '{ broken')
   await m.press({ key: 'tab-rules' }) // redrawn, it reads the file again
-  expect((await m.find({ type: 'Text', text: /^  redact-rules\.json .*masking with the last rules read until it is fixed by hand$/ }))?.props.color).toBe('red')
+  expect((await m.find({ type: 'Text', text: /^redact-rules\.json .*masking with the last rules read until it is fixed by hand$/ }))?.props.color).toBe('red')
 })
 
 test('the env files line names the folder the session started in, ~ for the home folder', async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) }, '/h/app')
-  expect(await (await rulesTab($)).find({ text: /^  secret-looking values from \.env files in ~\/app$/ })).toBeDefined()
+  expect(await (await rulesTab($)).find({ text: /^secret-looking values from \.env files in ~\/app$/ })).toBeDefined()
 })
 
 test('a folder outside the home folder shows whole, and one that only starts like it is not shortened', async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) }, '/hx/app')
-  expect(await (await rulesTab($)).find({ text: /^  secret-looking values from \.env files in \/hx\/app$/ })).toBeDefined()
+  expect(await (await rulesTab($)).find({ text: /^secret-looking values from \.env files in \/hx\/app$/ })).toBeDefined()
+})
+
+test('the rules file shows ~ for the home folder, indented by padding so a wrapped line keeps its indent', async ($, on) => {
+  world(on, {}, { [RULES]: file(EXAMPLES) })
+  const m = await rulesTab($)
+  const line = await m.find({ type: 'Text', text: /^in ~\/\.claude\/redact-rules\.json, for every project/ })
+  expect(line?.props.wrap).toBe('wrap')
+  expect(await m.find({ type: 'Text', text: /\/h\/\.claude/ })).toBeUndefined()
+})
+
+test('a section header leaves the last column free, its right end whole', async ($, on) => {
+  world(on, {}, { [RULES]: file(EXAMPLES) })
+  const m = await rulesTab($)
+  const header = await m.find({ type: 'Text', text: /^── Rules ─+ 0 of 2 on ──$/ })
+  expect([...header.text].length).toBe(79)
 })

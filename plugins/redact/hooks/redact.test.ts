@@ -271,7 +271,7 @@ test('a pattern that does not compile is skipped and named in the status line, t
   const { entered } = world(on)
   const statuses = statusLine(on)
   expect(await entered($, `id ${ACME} ok`)).toBe(`id ${ph('ACME')} ok`)
-  expect(statuses.at(-1)).toBe('redact: 1 masked · skipped pattern #1 (/redact show)')
+  expect(statuses.at(-1)).toBe('1 masked · skipped pattern #1 (/redact show)')
 })
 
 // the status lines the plugin set, in order
@@ -291,7 +291,7 @@ test('a new rules file holds the two examples, off: nothing is masked, and the s
   expect(EXAMPLES.map(r => r.enabled)).toEqual([false, false])
   expect(JSON.parse(files.get(RULES)!)).toEqual({ rules: EXAMPLES })
   expect(await entered($, `GITHUB_TOKEN=${GH} ${MAIL}`)).toBe(`GITHUB_TOKEN=${GH} ${MAIL}`)
-  expect(statuses).toEqual(['redact: 0 masked · no rules on'])
+  expect(statuses).toEqual(['0 masked · no rules on'])
   await $.command.run({ command: 'redact', args: `test ${MAIL}` } as any)
   expect(toasts.at(-1)).toBe('redact: no rule matched: none is on')
   const m = await mount($)
@@ -310,7 +310,7 @@ test('the status line counts what this session masked', async ($, on) => {
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await entered($, `GITHUB_TOKEN=${GH} and ${MAIL}`)
   await entered($, 'nothing here')
-  expect(statuses).toEqual(['redact: 0 masked', 'redact: 2 masked'])
+  expect(statuses).toEqual(['0 masked', '2 masked'])
 })
 
 test('a masking failure that drops context, system prompt sections or a reminder is toasted', async ($, on) => {
@@ -406,7 +406,7 @@ test('a rules file that does not parse keeps the last rules read, says so, and i
   expect(await entered($, `key ${GH}`)).toBe(`key ${ph('API_KEY')}`)
   files.set(RULES, '{ broken')
   expect(await entered($, `mail ${MAIL}`)).toBe(`mail ${ph('EMAIL')}`)
-  expect(statuses.at(-1)).toBe('redact: 2 masked · redact-rules.json is no JSON object with a rules list, last rules kept (/redact rules)')
+  expect(statuses.at(-1)).toBe('2 masked · redact-rules.json is no JSON object with a rules list, last rules kept (/redact rules)')
   expect(await run('add x_[0-9]+')).toContain('not saved')
   expect(files.get(RULES)).toBe('{ broken')
   expect(await (await mount($)).find({ text: /⚠ 1 rule invalid/ })).toBeDefined()
@@ -444,7 +444,7 @@ test('the pane lists every rule by its replacement, and adds and removes one', a
   await m.input({ key: 'add', text: 'acme_[a-z0-9]{8}', kind: 'submit' })
   expect(rulesOf(files)).toEqual([{ pattern: 'first_[0-9]+', replacement: 'FIRST', enabled: true }, { pattern: 'acme_[a-z0-9]{8}', replacement: 'SECRET', enabled: true }])
   expect(await m.find({ text: /added as #2/ })).toBeDefined()
-  expect(await m.find({ text: /in \/h\/\.claude\/redact-rules\.json/ })).toBeDefined()
+  expect(await m.find({ text: /in ~\/\.claude\/redact-rules\.json/ })).toBeDefined()
   await m.press({ key: 'remove-0' })
   expect(rulesOf(files)).toEqual([{ pattern: 'acme_[a-z0-9]{8}', replacement: 'SECRET', enabled: true }])
 })

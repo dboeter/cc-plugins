@@ -430,11 +430,12 @@ const hold = async ($: EngineInterface, k: Kept) => {
 // missing), a refusal the person should see.
 const told = ($: EngineInterface, text: string) => { try { $.ui.toast(text) } catch {} }
 // The status line under the prompt: how many values this session's vault holds, so masking shows
-// though the terminal draws the real values back. Set only when it changes.
+// though the terminal draws the real values back. Set only when it changes. No `redact:` in front:
+// the engine heads the line with the plugin's name itself.
 const badge = ($: EngineInterface, k: Kept, h: Held) => {
   const n = Object.keys(h.v.ph).length
   // with no rule on, a count alone would read as protected: nothing new is masked
-  const line = [`redact: ${n} masked`, ...k.compiled.length + k.extra ? [] : ['no rules on'],
+  const line = [`${n} masked`, ...k.compiled.length + k.extra ? [] : ['no rules on'],
     ...k.broken ? [`${FILE} ${k.broken}, last rules kept (/redact rules)`] : [],
     ...k.skipped.length ? [`skipped pattern ${k.skipped.join(', ')} (/redact show)`] : [],
     ...k.raw ? ['drawn as the model reads it'] : []].join(' · ')
@@ -838,7 +839,8 @@ export const register: Register = (on, options) => {
     const vault = masked(held)
     const { rules, note, tab, sample } = kept
     const { Box, Text, Button } = $.ui.resolve(e)
-    const w = Math.max(1, e.props.bodyColumns ?? 80)
+    // the body's last column left free, as the other panes do: a header drawn to it lost its end
+    const w = Math.max(1, (e.props.bodyColumns ?? 80) - 1)
     const len = (s: string) => [...s].length
     const section = (k: string, title: string, right?: string) => {
       const bare = 3 + len(title) + 1
@@ -994,13 +996,16 @@ export const register: Register = (on, options) => {
     const rulesTab = await (async () => {
       const home = await $.env.get('HOME') || await $.env.get('USERPROFILE')
       const cwd = await $.session.cwd().catch(() => undefined)
-      const here = cwd && home && cwd.startsWith(home) && /^(?:[\\/]|$)/.test(cwd.slice(home.length)) ? '~' + cwd.slice(home.length) : cwd
+      const tilde = (p: string | undefined) => p && home && p.startsWith(home) && /^(?:[\\/]|$)/.test(p.slice(home.length)) ? '~' + p.slice(home.length) : p
+      const here = tilde(cwd)
+      // indented by padding, not leading spaces, so a line that wraps keeps its indent
+      const para = (text: string, color?: string) => <Box paddingLeft={2}><Text dimColor={!color} color={color} wrap="wrap">{text}</Text></Box>
       return () => (
         <Box flexDirection="column" gap={1}>
           <Box flexDirection="column">
             {section('sec-rules', 'Rules', `${lit} of ${rules.length} on`)}
-            <Text dimColor>  in {file}, for every project; edit it by hand or here</Text>
-            {kept.broken && <Text color="red">  {FILE} {kept.broken}: masking with the last rules read until it is fixed by hand</Text>}
+            {para(`in ${tilde(file)}, for every project; edit it by hand or here`)}
+            {kept.broken && para(`${FILE} ${kept.broken}: masking with the last rules read until it is fixed by hand`, 'red')}
             {addField}
             {rules.length === 0 && <Text dimColor>  none yet</Text>}
             {rules.map((r: any, i) => {
@@ -1024,13 +1029,13 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column">
             {section('sec-env', 'Env files', kept.envOn === false ? 'off' : 'on')}
             <Box gap={1}>
-              <Box flexShrink={1}><Text dimColor>  secret-looking values from .env files{here ? ` in ${here}` : ''}</Text></Box>
+              <Box flexShrink={1}>{para(`secret-looking values from .env files${here ? ` in ${here}` : ''}`)}</Box>
               <Box flexShrink={0}>{toggle('env', kept.envOn !== false, kept.envOn === false ? 'turn on' : 'turn off', async () => redraw(await envTurn($, kept, kept.envOn === false)))}</Box>
             </Box>
           </Box>
           <Box flexDirection="column">
             {section('sec-settings', 'From settings', settings.length ? `${settings.length} on` : 'none')}
-            <Text dimColor>  the patterns option in settings.json, always on</Text>
+            {para('the patterns option in settings.json, always on')}
             {settings.length === 0 && <Text dimColor>  none</Text>}
             {settings.map((src, i) => <Box key={`set-${i}`}>{pattern(`  ${src}`)}{lineFault(src) ? null : label(read(src))}{skip(lineFault(src))}</Box>)}
           </Box>
