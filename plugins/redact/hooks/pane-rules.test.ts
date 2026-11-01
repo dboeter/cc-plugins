@@ -22,7 +22,7 @@ test('the rules tab reads Rules, Env files, From settings, then Test', async ($,
 test("a rule shows the placeholder it writes, its number as n", async ($, on) => {
   world(on, {}, { [RULES]: file([{ name: 'Vendor tokens', pattern: 'tok_[0-9]+', replacement: 'API_KEY', enabled: true }]) })
   const m = await rulesTab($)
-  expect(await m.find({ text: /^  1\. Vendor tokens$/ })).toBeDefined()
+  expect(await m.find({ text: /^1\. Vendor tokens$/ })).toBeDefined()
   expect(await m.find({ text: /^ → ⟦API_KEY_n⟧$/ })).toBeDefined()
   expect(await m.find({ text: / as API_KEY/ })).toBeUndefined()
 })
@@ -72,4 +72,34 @@ test('a section header leaves the last column free, its right end whole', async 
   const m = await rulesTab($)
   const header = await m.find({ type: 'Text', text: /^── Rules ─+ 0 of 2 on ──$/ })
   expect([...header.text].length).toBe(79)
+})
+
+test('j and k walk a cursor over the rules; t switches and x removes only the cursor row, x twice', async ($, on) => {
+  const { files } = world(on, {}, { [RULES]: file(EXAMPLES) })
+  const m = await rulesTab($)
+  const keyed = async (hotkey: string) => (await m.findAll({})).filter((x: any) => x.props?.hotkey === hotkey).map((x: any) => x.props.key ?? x.key)
+  expect(await keyed('t')).toEqual(['turn-0'])
+  expect(await keyed('x')).toEqual(['remove-0'])
+  await m.press({ key: 'rdown' })
+  expect(await keyed('t')).toEqual(['turn-1'])
+  await m.press({ key: 'rdown' }) // stops at the last
+  expect(await keyed('x')).toEqual(['remove-1'])
+  await m.press({ key: 'turn-1' })
+  expect(JSON.parse(files.get(RULES)!).rules[1].enabled).toBe(true)
+  await m.press({ key: 'remove-1' })
+  expect(await m.find({ text: /^✗ remove\?$/ })).toBeDefined()
+  await m.press({ key: 'rup' }) // moving disarms it
+  expect(await m.find({ text: /^✗ remove\?$/ })).toBeUndefined()
+  await m.press({ key: 'remove-1' })
+  await m.press({ key: 'remove-1' })
+  expect(JSON.parse(files.get(RULES)!).rules).toHaveLength(1)
+  expect(await keyed('x')).toEqual(['remove-0'])
+})
+
+test('the Env files header carries no state, the switch does; an empty From settings says none once', async ($, on) => {
+  world(on, {}, { [RULES]: file(EXAMPLES) })
+  const m = await rulesTab($)
+  expect(await m.find({ type: 'Text', text: /^── Env files ─+$/ })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: /^── From settings ─+ none ──$/ })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: /^ *none$/ })).toBeUndefined()
 })

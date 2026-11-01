@@ -282,7 +282,7 @@ export const migrate = (t: string) => {
 type Tab = 'session' | 'rules' | 'help'
 const TABS: Record<string, Tab> = { '': 'session', show: 'session', session: 'session', rules: 'rules', patterns: 'rules', test: 'rules', guide: 'help', help: 'help' }
 type Kept = { rules: unknown[]; compiled: Pattern[]; broken?: string; last?: string; file?: Promise<string>; seeded?: boolean; note: string; extra: number
-  vault?: { id: string; held: Promise<Held> }; env?: { id: string; seen: Seen }; envOn?: boolean; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; cursor?: string; opened?: boolean; tab: Tab; sample: string }
+  vault?: { id: string; held: Promise<Held> }; env?: { id: string; seen: Seen }; envOn?: boolean; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; cursor?: string; ruleAt?: number; arm?: number; opened?: boolean; tab: Tab; sample: string }
 // CLAUDE_CONFIG_DIR, else ~/.claude; USERPROFILE is Windows' HOME
 const place = ($: EngineInterface, k: Kept) => k.file ??= (async () => {
   const dir = await $.env.get('CLAUDE_CONFIG_DIR') || `${await $.env.get('HOME') || await $.env.get('USERPROFILE') || '~'}/.claude`
@@ -856,8 +856,9 @@ export const register: Register = (on, options) => {
         </Text>
       )
     }
-    const redraw = (s: string) => { kept.note = s; $.ui.invalidate('ui.render') }
-    const go = (t: Tab) => { kept.tab = t; kept.note = ''; $.ui.invalidate('ui.render') }
+    // any press but a rule's ✗ disarms it
+    const redraw = (s: string) => { kept.note = s; kept.arm = undefined; $.ui.invalidate('ui.render') }
+    const go = (t: Tab) => { kept.tab = t; kept.note = ''; kept.arm = undefined; $.ui.invalidate('ui.render') }
     const tabBtn = (t: Tab, title: string, hk: string) => (
       <Button key={`tab-${t}`} label={`${title}${tab === t ? '•' : ' '}`} hotkey={hk} plain dimColor={tab !== t} onPress={() => go(t)} />
     )
@@ -898,12 +899,12 @@ export const register: Register = (on, options) => {
     if (e.surface !== 'mobile') {
       const { Input } = $.ui.resolve(e)
       testField = <Input key="test" value={sample} label="  test " placeholder="sample text; Enter previews what these patterns mask" submitLabel="test" onSubmit={v => { kept.sample = v; $.ui.invalidate('ui.render') }} />
-      addField = <Input key="add" label="  add  " placeholder="LABEL [i min=N strong prose]: regex, or a bare regex, masked as SECRET" submitLabel="add" onSubmit={async v => redraw(await add($, kept, v.trim()))} />
+      addField = <Input key="add" label="  add  " placeholder="LABEL: regex, or a bare regex · options: h" submitLabel="add" onSubmit={async v => redraw(await add($, kept, v.trim()))} />
     }
     // a rule's or the env files' on/off button: green when on, dim when off or the rule is skipped
     // `active`, not `on`: the hook loader refuses a name that shadows on()
-    const toggle = (key: string, active: boolean, label: string, onPress: () => void, faulty?: string) => (
-      <Button key={key} label={label} plain onPress={onPress}><Text color={active && !faulty ? 'green' : undefined} dimColor={!active || !!faulty}>{active ? '● on' : '○ off'}</Text></Button>
+    const toggle = (key: string, active: boolean, label: string, onPress: () => void, faulty?: string, hotkey?: string) => (
+      <Button key={key} label={label} hotkey={hotkey} plain onPress={onPress}><Text color={active && !faulty ? 'green' : undefined} dimColor={!active || !!faulty}>{active ? '● on' : '○ off'}</Text></Button>
     )
 
     const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
@@ -918,13 +919,14 @@ export const register: Register = (on, options) => {
     const drawState = (title: string, active: boolean) => <Text dimColor={!active} weight={active ? 'bold' : undefined}>{active ? `[${title}]` : ` ${title} `}</Text>
     const topBar = () => (
       <Box flexDirection="column">
+        {/* the tabs on a row of their own: beside the status, a long one wrapped a tab away */}
         <Box flexWrap="wrap" columnGap={2}>
-          {status}
           {tabBtn('session', `Session (${vault.length})`, 's')}
           {tabBtn('rules', 'Rules', 'r')}
           {tabBtn('help', 'Guide', 'h')}
           {broken > 0 && <Text color="red">⚠ {count(broken, 'rule')} invalid</Text>}
         </Box>
+        {status}
         {e.surface === 'terminal' && (
           <Box gap={1}>
             <Text dimColor>transcript shows:</Text>
@@ -991,6 +993,10 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    // the Rules tab's row cursor, by index, kept in range as rules come and go
+    const ruleAt = Math.min(Math.max(0, kept.ruleAt ?? 0), Math.max(0, rules.length - 1))
+    const aimRule = (i: number) => { kept.ruleAt = Math.min(Math.max(0, i), rules.length - 1); kept.arm = undefined; $.ui.invalidate('ui.render') }
+
     // Awaited here, as the return below calls it sync: the folder the env files are read in
     // (seedHere's fallback), ~ for the home folder; a failed read drops it from the Env files line.
     const rulesTab = await (async () => {
@@ -1008,18 +1014,35 @@ export const register: Register = (on, options) => {
             {kept.broken && para(`${FILE} ${kept.broken}: masking with the last rules read until it is fixed by hand`, 'red')}
             {addField}
             {rules.length === 0 && <Text dimColor>  none yet</Text>}
+            {rules.length > 0 && (
+              <Box columnGap={2}>
+                <Text> </Text>
+                <Button key="rdown" label="↓" hotkey="j" plain dimColor onPress={() => aimRule(ruleAt + 1)} />
+                <Button key="rup" label="↑" hotkey="k" plain dimColor onPress={() => aimRule(ruleAt - 1)} />
+              </Box>
+            )}
             {rules.map((r: any, i) => {
               const src = typeof r?.pattern === 'string' ? r.pattern : JSON.stringify(r)
               const name = typeof r?.name === 'string' && r.name ? r.name : undefined
-              const f = fault(r), enabled = isOn(r)
+              const f = fault(r), enabled = isOn(r), atRow = i === ruleAt, armed = kept.arm === i
+              // the first press arms the ✗, the second removes: a slip off the switch beside it cost a rule
+              const onRemove = async () => {
+                if (!armed) { kept.arm = i; kept.note = `press ✗ again to remove rule ${i + 1}`; $.ui.invalidate('ui.render'); return }
+                kept.ruleAt = Math.max(0, i - (i === rules.length - 1 ? 1 : 0))
+                redraw(await remove($, kept, `${i + 1}`))
+              }
               return (
                 <Box key={`rule-${i}`} flexDirection="column">
                   {/* a named rule gets its name on its own line and the regex dimmed below it:
-                      on one line, a long regex buried the name */}
-                  <Box gap={1}>
-                    <Box flexShrink={1}>{pattern(`  ${i + 1}. ${name ?? src}`)}{label(r)}{skip(f)}</Box>
-                    <Box flexShrink={0}>{toggle(`turn-${i}`, enabled, enabled ? 'turn off' : 'turn on', async () => redraw(await turn($, kept, `${i + 1}`, !enabled)), f)}</Box>
-                    <Box flexShrink={0}><Button key={`remove-${i}`} label="remove" plain onPress={async () => redraw(await remove($, kept, `${i + 1}`))}><Text dimColor>✗</Text></Button></Box>
+                      on one line, a long regex buried the name. Only the cursor's row takes t and x */}
+                  <Box justifyContent="space-between" columnGap={1}>
+                    <Box flexShrink={1}><Text>{atRow ? '› ' : '  '}</Text>{pattern(`${i + 1}. ${name ?? src}`)}{label(r)}{skip(f)}</Box>
+                    <Box flexShrink={0} columnGap={1}>
+                      {toggle(`turn-${i}`, enabled, enabled ? 'turn off' : 'turn on', async () => { kept.ruleAt = i; redraw(await turn($, kept, `${i + 1}`, !enabled)) }, f, atRow ? 't' : undefined)}
+                      <Button key={`remove-${i}`} label="remove" hotkey={atRow ? 'x' : undefined} plain onPress={onRemove}>
+                        {armed ? <Text color="warning">✗ remove?</Text> : <Text dimColor>✗</Text>}
+                      </Button>
+                    </Box>
                   </Box>
                   {name && <Text dimColor wrap="truncate-middle">{`     ${offTerminal(src)}`}</Text>}
                 </Box>
@@ -1027,8 +1050,8 @@ export const register: Register = (on, options) => {
             })}
           </Box>
           <Box flexDirection="column">
-            {section('sec-env', 'Env files', kept.envOn === false ? 'off' : 'on')}
-            <Box gap={1}>
+            {section('sec-env', 'Env files') /* no state at its end: the switch below reads it */}
+            <Box justifyContent="space-between" columnGap={1}>
               <Box flexShrink={1}>{para(`secret-looking values from .env files${here ? ` in ${here}` : ''}`)}</Box>
               <Box flexShrink={0}>{toggle('env', kept.envOn !== false, kept.envOn === false ? 'turn on' : 'turn off', async () => redraw(await envTurn($, kept, kept.envOn === false)))}</Box>
             </Box>
@@ -1036,7 +1059,6 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column">
             {section('sec-settings', 'From settings', settings.length ? `${settings.length} on` : 'none')}
             {para('the patterns option in settings.json, always on')}
-            {settings.length === 0 && <Text dimColor>  none</Text>}
             {settings.map((src, i) => <Box key={`set-${i}`}>{pattern(`  ${src}`)}{lineFault(src) ? null : label(read(src))}{skip(lineFault(src))}</Box>)}
           </Box>
           <Box flexDirection="column">
