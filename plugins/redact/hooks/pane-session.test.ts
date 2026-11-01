@@ -105,7 +105,7 @@ test('a value with no recorded rule sits under rule unknown', async ($, on) => {
 
 test('empty, the tab says what the model will see', async ($, on) => {
   world(on)
-  expect(await (await mount($)).find({ text: /the model will see ⟦LABEL_n⟧ · your tools get the real value/ })).toBeDefined()
+  expect(await (await mount($)).find({ text: /^the model will see ⟦LABEL_n⟧ · your tools get the real value/ })).toBeDefined()
 })
 
 test('empty, with no file rule, no settings pattern and env files off: no rule is on', async ($, on) => {

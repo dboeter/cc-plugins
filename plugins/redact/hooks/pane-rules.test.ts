@@ -122,3 +122,40 @@ test('the Env files header carries no state, the switch does; an empty From sett
   expect(await m.find({ type: 'Text', text: /^── Test ─+$/ })).toBeDefined() // nothing at its end until a sample matches
   expect(await m.find({ type: 'Text', text: /^ *none$/ })).toBeUndefined()
 })
+
+test('the test field, its clear and the draw switch disarm a rule\'s ✗ and drop its note', async ($, on) => {
+  const { files } = world(on, {}, { [RULES]: file(EXAMPLES) })
+  const m = await rulesTab($)
+  const armed = async () => [await m.find({ text: /^✗ remove\?$/ }), await m.find({ text: /press ✗ again/ })].filter(Boolean).length
+  await m.press({ key: 'remove-0' })
+  expect(await armed()).toBe(2)
+  await m.input({ key: 'test', text: 'x', kind: 'submit' })
+  expect(await armed()).toBe(0)
+  await m.press({ key: 'remove-0' })
+  await m.press({ key: 'clear-test' })
+  expect(await armed()).toBe(0)
+  await m.press({ key: 'remove-0' })
+  await m.press({ key: 'raw' })
+  expect(await armed()).toBe(0)
+  await m.press({ key: 'remove-0' }) // armed afresh, not removed
+  expect(JSON.parse(files.get(RULES)!).rules).toHaveLength(2)
+})
+
+test('a rules file edited between the presses re-arms the ✗ instead of removing the rule now in its place', async ($, on) => {
+  const { files } = world(on, {}, { [RULES]: file(EXAMPLES) })
+  const m = await rulesTab($)
+  await m.press({ key: 'remove-0' })
+  files.set(RULES, file([EXAMPLES[1]!, EXAMPLES[0]!])) // no redraw before the second press
+  await m.press({ key: 'remove-0' })
+  expect(JSON.parse(files.get(RULES)!).rules).toHaveLength(2)
+  expect(await m.find({ text: /^✗ remove\?$/ })).toBeDefined()
+})
+
+test('off the terminal the key line\'s buttons and the cursor show, never the click-to-focus hint', async ($, on) => {
+  world(on, {}, { [RULES]: file(EXAMPLES) })
+  const m = await mount($, { surface: 'desktop', isFocused: false })
+  await m.press({ key: 'tab-rules' })
+  expect(await m.find({ key: 'rdown' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: '› ' })).toBeDefined()
+  expect(await m.find({ text: /click to focus/ })).toBeUndefined()
+})

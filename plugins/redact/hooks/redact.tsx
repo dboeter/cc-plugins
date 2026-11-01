@@ -282,7 +282,7 @@ export const migrate = (t: string) => {
 type Tab = 'session' | 'rules' | 'help'
 const TABS: Record<string, Tab> = { '': 'session', show: 'session', session: 'session', rules: 'rules', patterns: 'rules', test: 'rules', guide: 'help', help: 'help' }
 type Kept = { rules: unknown[]; compiled: Pattern[]; broken?: string; last?: string; file?: Promise<string>; seeded?: boolean; note: string; extra: number
-  vault?: { id: string; held: Promise<Held> }; env?: { id: string; seen: Seen }; envOn?: boolean; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; cursor?: string; ruleAt?: number; arm?: number; opened?: boolean; tab: Tab; sample: string }
+  vault?: { id: string; held: Promise<Held> }; env?: { id: string; seen: Seen }; envOn?: boolean; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; cursor?: string; ruleAt?: number; arm?: string; opened?: boolean; tab: Tab; sample: string }
 // CLAUDE_CONFIG_DIR, else ~/.claude; USERPROFILE is Windows' HOME
 const place = ($: EngineInterface, k: Kept) => k.file ??= (async () => {
   const dir = await $.env.get('CLAUDE_CONFIG_DIR') || `${await $.env.get('HOME') || await $.env.get('USERPROFILE') || '~'}/.claude`
@@ -857,17 +857,19 @@ export const register: Register = (on, options) => {
         </Text>
       )
     }
-    // any press but a rule's ✗ disarms it
-    const redraw = (s: string) => { kept.note = s; kept.arm = undefined; $.ui.invalidate('ui.render') }
-    const go = (t: Tab) => { kept.tab = t; kept.note = ''; kept.arm = undefined; $.ui.invalidate('ui.render') }
+    // Any press but a rule's ✗ disarms it, its note with it. Session's own presses need not: the
+    // tab switch that reaches them disarms.
+    const disarm = () => { if (kept.arm !== undefined) { kept.arm = undefined; kept.note = '' } }
+    const redraw = (s: string) => { disarm(); kept.note = s; $.ui.invalidate('ui.render') }
+    const go = (t: Tab) => { disarm(); kept.tab = t; kept.note = ''; $.ui.invalidate('ui.render') }
     const tabBtn = (t: Tab, title: string, hk: string) => (
       <Button key={`tab-${t}`} label={title} hotkey={hk} plain dimColor={tab !== t} onPress={() => go(t)}>
         {tab === t ? <Text weight="bold" underline>{title}</Text> : title}
       </Button>
     )
-    // Hotkeys answer only while the pane holds the keyboard: the row cursor and the key line show
-    // then, and a hint to click in their place otherwise.
-    const focused = e.props.isFocused === true
+    // On the terminal hotkeys answer only while the pane holds the keyboard: the row cursor and the
+    // key line show then, a hint to click otherwise. Elsewhere the key line's buttons are pressed.
+    const focused = e.surface !== 'terminal' || e.props.isFocused === true
     // a tab's keys as one line at its foot, so no row carries a key prefix that moves its switch
     const keyLine = (k: string, buttons: unknown[], hint: string, right?: unknown) => (
       <Box key={k} justifyContent="space-between" paddingLeft={2} columnGap={2}>
@@ -911,15 +913,17 @@ export const register: Register = (on, options) => {
     let addField = <Text dimColor>{'  add one with /redact add <regex>'}</Text> // mobile has no Input
     if (e.surface !== 'mobile') {
       const { Input } = $.ui.resolve(e)
-      testField = <Box paddingLeft={2}><Input key="test" value={sample} label="test" placeholder="sample text; Enter previews the masking, without saving" submitLabel="test" onSubmit={v => { kept.sample = v; $.ui.invalidate('ui.render') }} /></Box>
+      testField = <Box paddingLeft={2}><Input key="test" value={sample} label="test" placeholder="sample text; Enter previews the masking, without saving" submitLabel="test" onSubmit={v => { disarm(); kept.sample = v; $.ui.invalidate('ui.render') }} /></Box>
       addField = <Box paddingLeft={2}><Input key="add" label="add" placeholder="LABEL: regex, or a bare regex · options: h" submitLabel="add" onSubmit={async v => redraw(await add($, kept, v.trim()))} /></Box>
     }
     // a rule's or the env files' on/off button: green when on, dim when off or the rule is skipped
     // `active`, not `on`: the hook loader refuses a name that shadows on()
-    const toggle = (key: string, active: boolean, label: string, onPress: () => void, faulty?: string, hotkey?: string) => (
-      <Button key={key} label={label} hotkey={hotkey} plain onPress={onPress}><Text color={active && !faulty ? 'green' : undefined} dimColor={!active || !!faulty}>{active ? '● on' : '○ off'}</Text></Button>
+    const toggle = (key: string, active: boolean, label: string, onPress: () => void, faulty?: string) => (
+      <Button key={key} label={label} plain onPress={onPress}><Text color={active && !faulty ? 'green' : undefined} dimColor={!active || !!faulty}>{active ? '● on' : '○ off'}</Text></Button>
     )
 
+    // indented by padding, not leading spaces, so a line that wraps keeps its indent
+    const para = (text: string, color?: string) => <Box paddingLeft={2}><Text dimColor={!color} color={color} wrap="wrap">{text}</Text></Box>
     const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
     // what masks from now on: the rules on (file and settings) and the env files
     const masking = [lit + fromSettings.length ? count(lit + fromSettings.length, 'rule') : '', kept.envOn !== false ? 'env files' : ''].filter(Boolean)
@@ -943,7 +947,7 @@ export const register: Register = (on, options) => {
         {e.surface === 'terminal' && (
           <Box gap={1}>
             <Text dimColor>transcript shows:</Text>
-            <Button key="raw" label={kept.raw ? 'show real values' : 'show placeholders'} hotkey="d" plain onPress={async () => { kept.raw = !kept.raw; badge($, kept, await hold($, kept)); $.ui.invalidate('ui.render') }}>
+            <Button key="raw" label={kept.raw ? 'show real values' : 'show placeholders'} hotkey="d" plain onPress={async () => { disarm(); kept.raw = !kept.raw; badge($, kept, await hold($, kept)); $.ui.invalidate('ui.render') }}>
               <Text>{drawState('real values', !kept.raw)}{drawState('placeholders', kept.raw)}</Text>
             </Button>
           </Box>
@@ -976,8 +980,8 @@ export const register: Register = (on, options) => {
         {vault.length === 0
           ? (
             <Box flexDirection="column">
-              <Text dimColor>  {lit + fromSettings.length === 0 && kept.envOn === false ? 'nothing masked: no rule is on (r)' : 'nothing masked yet'}</Text>
-              <Text dimColor wrap="wrap">{`  the model will see ${notation('LABEL')} · your tools get the real value`}</Text>
+              {para(lit + fromSettings.length === 0 && kept.envOn === false ? 'nothing masked: no rule is on (r)' : 'nothing masked yet')}
+              {para(`the model will see ${notation('LABEL')} · your tools get the real value`)}
             </Box>
           )
           : null}
@@ -1009,19 +1013,23 @@ export const register: Register = (on, options) => {
     // the Rules tab's row cursor, by index, kept in range as rules come and go
     const ruleAt = Math.min(Math.max(0, kept.ruleAt ?? 0), Math.max(0, rules.length - 1))
     const turnRule = async (i: number) => { kept.ruleAt = i; redraw(await turn($, kept, `${i + 1}`, !isOn(rules[i]))) }
-    // the first press arms the ✗, the second removes: a slip off the switch beside it cost a rule
+    // The first press arms the ✗, the second removes: a slip off the switch beside it cost a rule.
+    // Armed by the rule and its place, read afresh at the press, so a file edited by hand between
+    // the presses re-arms instead of removing the rule now in that place.
+    const armOf = (i: number) => `${i}:${JSON.stringify(kept.rules[i])}`
     const removeRule = async (i: number) => {
-      if (kept.arm !== i) { kept.arm = i; kept.ruleAt = i; kept.note = `press ✗ again to remove rule ${i + 1}`; $.ui.invalidate('ui.render'); return }
-      kept.ruleAt = Math.max(0, i - (i === rules.length - 1 ? 1 : 0))
+      await sync($, kept)
+      if (kept.arm !== armOf(i)) { kept.arm = armOf(i); kept.ruleAt = i; kept.note = `press ✗ again to remove rule ${i + 1}`; $.ui.invalidate('ui.render'); return }
+      kept.ruleAt = Math.max(0, i - (i === kept.rules.length - 1 ? 1 : 0))
       redraw(await remove($, kept, `${i + 1}`))
     }
     const rulesKeys = () => rules.length > 0 && keyLine('rules-keys', [
       <Button key="rdown" label="↓" hotkey="j" plain dimColor onPress={() => aimRule(ruleAt + 1)} />,
       <Button key="rup" label="↑" hotkey="k" plain dimColor onPress={() => aimRule(ruleAt - 1)} />,
       <Button key="rule-turn" label="on/off" hotkey="t" plain dimColor onPress={() => turnRule(ruleAt)} />,
-      <Button key="rule-remove" label={kept.arm === ruleAt ? 'remove?' : 'remove'} hotkey="x" plain dimColor onPress={() => removeRule(ruleAt)} />,
+      <Button key="rule-remove" label={kept.arm === armOf(ruleAt) ? 'remove?' : 'remove'} hotkey="x" plain dimColor onPress={() => removeRule(ruleAt)} />,
     ], 'j/k move, t on/off, x remove')
-    const aimRule = (i: number) => { kept.ruleAt = Math.min(Math.max(0, i), rules.length - 1); if (kept.arm !== undefined) kept.note = ''; kept.arm = undefined; $.ui.invalidate('ui.render') }
+    const aimRule = (i: number) => { kept.ruleAt = Math.min(Math.max(0, i), rules.length - 1); disarm(); $.ui.invalidate('ui.render') }
 
     // Awaited here, as the return below calls it sync: the folder the env files are read in
     // (seedHere's fallback), ~ for the home folder; a failed read drops it from the Env files line.
@@ -1030,8 +1038,6 @@ export const register: Register = (on, options) => {
       const cwd = await $.session.cwd().catch(() => undefined)
       const tilde = (p: string | undefined) => p && home && p.startsWith(home) && /^(?:[\\/]|$)/.test(p.slice(home.length)) ? '~' + p.slice(home.length) : p
       const here = tilde(cwd)
-      // indented by padding, not leading spaces, so a line that wraps keeps its indent
-      const para = (text: string, color?: string) => <Box paddingLeft={2}><Text dimColor={!color} color={color} wrap="wrap">{text}</Text></Box>
       return () => (
         <Box flexDirection="column" gap={1}>
           <Box flexDirection="column">
@@ -1043,7 +1049,7 @@ export const register: Register = (on, options) => {
             {rules.map((r: any, i) => {
               const src = typeof r?.pattern === 'string' ? r.pattern : JSON.stringify(r)
               const name = typeof r?.name === 'string' && r.name ? r.name : undefined
-              const f = fault(r), enabled = isOn(r), atRow = focused && i === ruleAt, armed = kept.arm === i
+              const f = fault(r), enabled = isOn(r), atRow = focused && i === ruleAt, armed = kept.arm === armOf(i)
               return (
                 <Box key={`rule-${i}`} flexDirection="column">
                   {/* a named rule gets its name on its own line and the regex dimmed below it:
@@ -1077,7 +1083,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column">
             <Box gap={1}>
               <Box flexShrink={1}>{section('sec-test', 'Test', sample ? `${hits.length} matched` : undefined)}</Box>
-              {sample && <Box flexShrink={0}><Button key="clear-test" label="clear" plain onPress={() => { kept.sample = ''; $.ui.invalidate('ui.render') }}><Text dimColor>✗</Text></Button></Box>}
+              {sample && <Box flexShrink={0}><Button key="clear-test" label="clear" plain onPress={() => { disarm(); kept.sample = ''; $.ui.invalidate('ui.render') }}><Text dimColor>✗</Text></Button></Box>}
             </Box>
             {testField}
             {sample && (
