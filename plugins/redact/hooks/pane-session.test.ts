@@ -38,19 +38,20 @@ test('placeholders are padded to the widest, so every value starts in one column
   expect(other.indexOf('ghp_')).toBe(first.indexOf('@') - 1)
 })
 
-test('the cursor starts on the first row, the only one with actions; j and k move it, x forgets its value', async ($, on) => {
+test('the cursor starts on the first row, the only one with actions; j and k move it, x on the key line forgets its value', async ($, on) => {
   const { store } = world(on, THREE)
   const m = await mount($)
   expect([(await m.find({ key: 'cdown' }))?.props.hotkey, (await m.find({ key: 'cup' }))?.props.hotkey]).toEqual(['j', 'k'])
   expect(await actions(m)).toEqual([`forget-${ph('EMAIL')}`])
-  expect((await m.find({ key: `forget-${ph('EMAIL')}` }))?.props.hotkey).toBe('x')
+  expect((await m.find({ key: `forget-${ph('EMAIL')}` }))?.props.hotkey).toBeUndefined() // no key prefix on a row
+  expect((await m.find({ key: 'cur-forget' }))?.props.hotkey).toBe('x')
   await m.press({ key: 'cdown' })
   expect(await actions(m)).toEqual([`forget-${ph('EMAIL', 2)}`])
   await m.press({ key: 'cdown' })
   await m.press({ key: 'cdown' }) // past the last row it stays there
   expect(await actions(m)).toEqual([`forget-${ph('API_KEY')}`])
   await m.press({ key: 'cup' })
-  await m.press({ key: `forget-${ph('EMAIL', 2)}` })
+  await m.press({ key: 'cur-forget' })
   expect(Object.keys((store.get('vault:s1') as any).ph)).toEqual([ph('EMAIL'), ph('API_KEY')])
   // the cursor goes on to the next row
   expect(await actions(m)).toEqual([`forget-${ph('API_KEY')}`])
@@ -82,8 +83,8 @@ test('a multi-line value stays on its line, cut or revealed with v', async ($, o
   world(on, { 'vault:s1': { at: 39 * DAY, n: { PRIVATE_KEY: 1 }, ph: { [ph('PRIVATE_KEY')]: `-----BEGIN RSA ${KEY}\r\nMIIEowIBAAKCAQEA\nabc+/=` }, by: { [ph('PRIVATE_KEY')]: 'env file: .env' } } })
   const m = await mount($)
   expect(await line(m, ph('PRIVATE_KEY'))).not.toMatch(/[\r\n]|MIIEow/)
-  expect((await m.find({ key: `reveal-${ph('PRIVATE_KEY')}` }))?.props.hotkey).toBe('v')
-  await m.press({ key: `reveal-${ph('PRIVATE_KEY')}` })
+  expect((await m.find({ key: 'cur-reveal' }))?.props.hotkey).toBe('v')
+  await m.press({ key: 'cur-reveal' })
   expect(await line(m, ph('PRIVATE_KEY'))).toContain(`-----BEGIN RSA ${KEY}⏎MIIEowIBAAKCAQEA⏎abc+/=`)
 })
 

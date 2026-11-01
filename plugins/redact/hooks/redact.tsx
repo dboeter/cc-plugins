@@ -839,7 +839,8 @@ export const register: Register = (on, options) => {
     const vault = masked(held)
     const { rules, note, tab, sample } = kept
     const { Box, Text, Button } = $.ui.resolve(e)
-    // the body's last column left free, as the other panes do: a header drawn to it lost its end
+    // the body's last column left free, as the other panes do: drawn to it, a header lost its end
+    // and a right-aligned ✗ vanished
     const w = Math.max(1, (e.props.bodyColumns ?? 80) - 1)
     const len = (s: string) => [...s].length
     const section = (k: string, title: string, right?: string) => {
@@ -860,7 +861,19 @@ export const register: Register = (on, options) => {
     const redraw = (s: string) => { kept.note = s; kept.arm = undefined; $.ui.invalidate('ui.render') }
     const go = (t: Tab) => { kept.tab = t; kept.note = ''; kept.arm = undefined; $.ui.invalidate('ui.render') }
     const tabBtn = (t: Tab, title: string, hk: string) => (
-      <Button key={`tab-${t}`} label={`${title}${tab === t ? '•' : ' '}`} hotkey={hk} plain dimColor={tab !== t} onPress={() => go(t)} />
+      <Button key={`tab-${t}`} label={title} hotkey={hk} plain dimColor={tab !== t} onPress={() => go(t)}>
+        {tab === t ? <Text weight="bold" underline>{title}</Text> : title}
+      </Button>
+    )
+    // Hotkeys answer only while the pane holds the keyboard: the row cursor and the key line show
+    // then, and a hint to click in their place otherwise.
+    const focused = e.props.isFocused === true
+    // a tab's keys as one line at its foot, so no row carries a key prefix that moves its switch
+    const keyLine = (k: string, buttons: unknown[], hint: string, right?: unknown) => (
+      <Box key={k} justifyContent="space-between" paddingLeft={2} columnGap={2}>
+        {focused ? <Box columnGap={2}>{buttons as any}</Box> : <Text dimColor>click to focus for keys: {hint}</Text>}
+        {right ? <Box flexShrink={0}>{right as any}</Box> : null}
+      </Box>
     )
     // The value, on the terminal only: every other surface (mobile, desktop, VS Code) keeps the
     // placeholders, so the pane never sends a value there either. The model never reads a pane, and a tool that reads the
@@ -898,8 +911,8 @@ export const register: Register = (on, options) => {
     let addField = <Text dimColor>{'  add one with /redact add <regex>'}</Text> // mobile has no Input
     if (e.surface !== 'mobile') {
       const { Input } = $.ui.resolve(e)
-      testField = <Input key="test" value={sample} label="  test " placeholder="sample text; Enter previews what these patterns mask" submitLabel="test" onSubmit={v => { kept.sample = v; $.ui.invalidate('ui.render') }} />
-      addField = <Input key="add" label="  add  " placeholder="LABEL: regex, or a bare regex · options: h" submitLabel="add" onSubmit={async v => redraw(await add($, kept, v.trim()))} />
+      testField = <Box paddingLeft={2}><Input key="test" value={sample} label="test" placeholder="sample text; Enter previews the masking, without saving" submitLabel="test" onSubmit={v => { kept.sample = v; $.ui.invalidate('ui.render') }} /></Box>
+      addField = <Box paddingLeft={2}><Input key="add" label="add" placeholder="LABEL: regex, or a bare regex · options: h" submitLabel="add" onSubmit={async v => redraw(await add($, kept, v.trim()))} /></Box>
     }
     // a rule's or the env files' on/off button: green when on, dim when off or the rule is skipped
     // `active`, not `on`: the hook loader refuses a name that shadows on()
@@ -949,6 +962,15 @@ export const register: Register = (on, options) => {
     const aim = (p: string | undefined) => { kept.cursor = p; $.ui.invalidate('ui.render') }
     const step = (d: 1 | -1) => aim(order[Math.min(order.length - 1, Math.max(0, at + d))]?.p)
     const pw = Math.max(0, ...vault.map(x => len(x.p)))
+    const forgetCur = async (p: string) => { kept.cursor = (order[at + 1] ?? order[at - 1])?.p; redraw(await forget($, kept, p)) }
+    const curValue = order[at]?.v
+    const sessionKeys = () => vault.length > 0 && keyLine('session-keys', [
+      <Button key="cdown" label="↓" hotkey="j" plain dimColor onPress={() => step(1)} />,
+      <Button key="cup" label="↑" hotkey="k" plain dimColor onPress={() => step(-1)} />,
+      curValue !== undefined && long(curValue) && <Button key="cur-reveal" label={kept.revealed.has(cur!) ? 'hide' : 'reveal'} hotkey="v" plain dimColor onPress={() => reveal(cur!)} />,
+      <Button key="cur-forget" label="forget" hotkey="x" plain dimColor onPress={() => cur && forgetCur(cur)} />,
+    ].filter(Boolean), 'j/k move, x forget',
+    vault.length > 1 && <Button key="forget-all" label="forget all" plain dimColor onPress={async () => redraw(await forgetAll($, kept))} />)
     const sessionTab = () => (
       <Box flexDirection="column">
         {vault.length === 0
@@ -958,16 +980,7 @@ export const register: Register = (on, options) => {
               <Text dimColor wrap="wrap">{`  the model will see ${notation('LABEL')} · your tools get the real value`}</Text>
             </Box>
           )
-          : (
-            <Box justifyContent="space-between">
-              <Box columnGap={2}>
-                <Text> </Text>
-                <Button key="cdown" label="↓" hotkey="j" plain dimColor onPress={() => step(1)} />
-                <Button key="cup" label="↑" hotkey="k" plain dimColor onPress={() => step(-1)} />
-              </Box>
-              {vault.length > 1 && <Box flexShrink={0}><Button key="forget-all" label="forget all" plain dimColor onPress={async () => redraw(await forgetAll($, kept))} /></Box>}
-            </Box>
-          )}
+          : null}
         {[...groups].map(([by, xs]) => (
           <Box key={`by-${by}`} flexDirection="column">
             {section(`src-${by}`, offTerminal(by).replace(/\r\n|\r|\n/g, '⏎'))}
@@ -976,14 +989,14 @@ export const register: Register = (on, options) => {
             {xs.map(({ p, v }) => (
               <Box key={p} justifyContent="space-between" columnGap={2}>
                 <Box flexShrink={1}>
-                  <Text>{p === cur ? '› ' : '  '}</Text>
+                  <Text>{focused && p === cur ? '› ' : '  '}</Text>
                   <Box flexShrink={0}><Button key={`pick-${p}`} label={p} plain onPress={() => aim(p)} /></Box>
                   <Box flexShrink={1}><Text wrap="truncate-end">{' '.repeat(pw - len(p) + 2)}{shown(p, v).replace(/\r\n|\r|\n/g, '⏎')}</Text></Box>
                 </Box>
                 {p === cur && (
                   <Box flexShrink={0} columnGap={2}>
-                    {long(v) && <Button key={`reveal-${p}`} label={kept.revealed.has(p) ? 'hide' : 'reveal'} hotkey="v" plain dimColor onPress={() => reveal(p)} />}
-                    <Button key={`forget-${p}`} label="forget" hotkey="x" plain dimColor onPress={async () => { kept.cursor = (order[at + 1] ?? order[at - 1])?.p; redraw(await forget($, kept, p)) }} />
+                    {long(v) && <Button key={`reveal-${p}`} label={kept.revealed.has(p) ? 'hide' : 'reveal'} plain dimColor onPress={() => reveal(p)} />}
+                    <Button key={`forget-${p}`} label="forget" plain dimColor onPress={() => forgetCur(p)} />
                   </Box>
                 )}
               </Box>
@@ -995,6 +1008,19 @@ export const register: Register = (on, options) => {
 
     // the Rules tab's row cursor, by index, kept in range as rules come and go
     const ruleAt = Math.min(Math.max(0, kept.ruleAt ?? 0), Math.max(0, rules.length - 1))
+    const turnRule = async (i: number) => { kept.ruleAt = i; redraw(await turn($, kept, `${i + 1}`, !isOn(rules[i]))) }
+    // the first press arms the ✗, the second removes: a slip off the switch beside it cost a rule
+    const removeRule = async (i: number) => {
+      if (kept.arm !== i) { kept.arm = i; kept.ruleAt = i; kept.note = `press ✗ again to remove rule ${i + 1}`; $.ui.invalidate('ui.render'); return }
+      kept.ruleAt = Math.max(0, i - (i === rules.length - 1 ? 1 : 0))
+      redraw(await remove($, kept, `${i + 1}`))
+    }
+    const rulesKeys = () => rules.length > 0 && keyLine('rules-keys', [
+      <Button key="rdown" label="↓" hotkey="j" plain dimColor onPress={() => aimRule(ruleAt + 1)} />,
+      <Button key="rup" label="↑" hotkey="k" plain dimColor onPress={() => aimRule(ruleAt - 1)} />,
+      <Button key="rule-turn" label="on/off" hotkey="t" plain dimColor onPress={() => turnRule(ruleAt)} />,
+      <Button key="rule-remove" label={kept.arm === ruleAt ? 'remove?' : 'remove'} hotkey="x" plain dimColor onPress={() => removeRule(ruleAt)} />,
+    ], 'j/k move, t on/off, x remove')
     const aimRule = (i: number) => { kept.ruleAt = Math.min(Math.max(0, i), rules.length - 1); if (kept.arm !== undefined) kept.note = ''; kept.arm = undefined; $.ui.invalidate('ui.render') }
 
     // Awaited here, as the return below calls it sync: the folder the env files are read in
@@ -1014,32 +1040,19 @@ export const register: Register = (on, options) => {
             {kept.broken && para(`${FILE} ${kept.broken}: masking with the last rules read until it is fixed by hand`, 'red')}
             {addField}
             {rules.length === 0 && <Text dimColor>  none yet</Text>}
-            {rules.length > 0 && (
-              <Box columnGap={2}>
-                <Text> </Text>
-                <Button key="rdown" label="↓" hotkey="j" plain dimColor onPress={() => aimRule(ruleAt + 1)} />
-                <Button key="rup" label="↑" hotkey="k" plain dimColor onPress={() => aimRule(ruleAt - 1)} />
-              </Box>
-            )}
             {rules.map((r: any, i) => {
               const src = typeof r?.pattern === 'string' ? r.pattern : JSON.stringify(r)
               const name = typeof r?.name === 'string' && r.name ? r.name : undefined
-              const f = fault(r), enabled = isOn(r), atRow = i === ruleAt, armed = kept.arm === i
-              // the first press arms the ✗, the second removes: a slip off the switch beside it cost a rule
-              const onRemove = async () => {
-                if (!armed) { kept.arm = i; kept.note = `press ✗ again to remove rule ${i + 1}`; $.ui.invalidate('ui.render'); return }
-                kept.ruleAt = Math.max(0, i - (i === rules.length - 1 ? 1 : 0))
-                redraw(await remove($, kept, `${i + 1}`))
-              }
+              const f = fault(r), enabled = isOn(r), atRow = focused && i === ruleAt, armed = kept.arm === i
               return (
                 <Box key={`rule-${i}`} flexDirection="column">
                   {/* a named rule gets its name on its own line and the regex dimmed below it:
-                      on one line, a long regex buried the name. Only the cursor's row takes t and x */}
+                      on one line, a long regex buried the name */}
                   <Box justifyContent="space-between" columnGap={1}>
                     <Box flexShrink={1}><Text>{atRow ? '› ' : '  '}</Text>{pattern(`${i + 1}. ${name ?? src}`)}{label(r)}{skip(f)}</Box>
                     <Box flexShrink={0} columnGap={1}>
-                      {toggle(`turn-${i}`, enabled, enabled ? 'turn off' : 'turn on', async () => { kept.ruleAt = i; redraw(await turn($, kept, `${i + 1}`, !enabled)) }, f, atRow ? 't' : undefined)}
-                      <Button key={`remove-${i}`} label="remove" hotkey={atRow ? 'x' : undefined} plain onPress={onRemove}>
+                      {toggle(`turn-${i}`, enabled, enabled ? 'turn off' : 'turn on', () => turnRule(i), f)}
+                      <Button key={`remove-${i}`} label="remove" plain onPress={() => removeRule(i)}>
                         {armed ? <Text color="warning">✗ remove?</Text> : <Text dimColor>✗</Text>}
                       </Button>
                     </Box>
@@ -1057,13 +1070,13 @@ export const register: Register = (on, options) => {
             </Box>
           </Box>
           <Box flexDirection="column">
-            {section('sec-settings', 'From settings', settings.length ? `${settings.length} on` : 'none')}
-            {para('the patterns option in settings.json, always on')}
+            {section('sec-settings', 'From settings', settings.length ? `${settings.length} on` : undefined)}
+            {para(settings.length ? 'the patterns option in settings.json, always on' : 'none; the patterns option in settings.json adds always-on rules')}
             {settings.map((src, i) => <Box key={`set-${i}`}>{pattern(`  ${src}`)}{lineFault(src) ? null : label(read(src))}{skip(lineFault(src))}</Box>)}
           </Box>
           <Box flexDirection="column">
             <Box gap={1}>
-              <Box flexShrink={1}>{section('sec-test', 'Test', sample ? `${hits.length} matched` : 'without saving')}</Box>
+              <Box flexShrink={1}>{section('sec-test', 'Test', sample ? `${hits.length} matched` : undefined)}</Box>
               {sample && <Box flexShrink={0}><Button key="clear-test" label="clear" plain onPress={() => { kept.sample = ''; $.ui.invalidate('ui.render') }}><Text dimColor>✗</Text></Button></Box>}
             </Box>
             {testField}
@@ -1118,6 +1131,11 @@ export const register: Register = (on, options) => {
       )
     }
 
-    return <Box flexDirection="column" gap={1}>{topBar()}{tab === 'session' && sessionTab()}{tab === 'rules' && rulesTab()}{tab === 'help' && guideTab()}</Box>
+    return (
+      <Box flexDirection="column" gap={1} width={w}>
+        {topBar()}{tab === 'session' && sessionTab()}{tab === 'rules' && rulesTab()}{tab === 'help' && guideTab()}
+        {tab === 'session' && sessionKeys()}{tab === 'rules' && rulesKeys()}
+      </Box>
+    )
   })
 }

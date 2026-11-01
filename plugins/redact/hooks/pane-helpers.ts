@@ -27,6 +27,6 @@ export const world = (on: any, entries: Record<string, unknown> = {}, given: Rec
   return { store, files }
 }
 
-export const PROPS = { title: 'redact', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 30 } } as any
-export const mount = ($: any, { surface = 'terminal', bodyColumns = 80 } = {}) =>
-  $.ui.mount({ plugin: 'redact', surface, component: 'Pane', requestId: 'redact', props: { ...PROPS, bodyColumns } })
+export const PROPS = { title: 'redact', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 30 } } as any
+export const mount = ($: any, { surface = 'terminal', bodyColumns = 80, isFocused = true } = {}) =>
+  $.ui.mount({ plugin: 'redact', surface, component: 'Pane', requestId: 'redact', props: { ...PROPS, bodyColumns, isFocused } })

@@ -58,7 +58,7 @@ test('the tabs: Session keeps its count, Rules carries none', async ($, on) => {
   world(on, HOLDS_GH, { [RULES]: file(ON) })
   const m = await mount($)
   expect((await m.find({ key: 'tab-session' }))?.props.label).toMatch(/^Session \(1\)/)
-  expect((await m.find({ key: 'tab-rules' }))?.props.label).toMatch(/^Rules[ •]$/)
+  expect((await m.find({ key: 'tab-rules' }))?.props.label).toBe('Rules')
 })
 
 test('a rule that does not read is marked in red as invalid, no longer as skipped', async ($, on) => {

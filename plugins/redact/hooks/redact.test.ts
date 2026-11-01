@@ -335,7 +335,7 @@ test('two missing placeholders are refused in the plural', async ($, on) => {
   expect(r.deny).toContain(`${ph('API_KEY', 2)}, ${ph('API_KEY', 3)} are no placeholders this session's`)
 })
 
-const PROPS = { title: 'redact', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 30 } } as any
+const PROPS = { title: 'redact', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 30 } } as any
 const mount = ($: any, surface = 'terminal') => $.ui.mount({ plugin: 'redact', surface, component: 'Pane', requestId: 'redact', props: PROPS })
 // /redact with these arguments: its reply is a toast, and the command prints nothing the model could read
 const runner = ($: any, toasts: string[]) => async (args: string) => {
@@ -607,7 +607,7 @@ test('the pane opens on Session, a long value cut to its ends until revealed, an
   const { store } = world(on, { 'vault:s1': { at: 39 * DAY, n: { API_KEY: 1, PRIVATE_KEY: 1 }, ph: { [ph('API_KEY')]: GH, [ph('PRIVATE_KEY')]: pem } } })
   const m = await mount($)
   expect(await m.find({ key: 'cdown' })).toBeDefined()
-  expect(await m.find({ text: /^Rules$/ })).toBeUndefined()
+  expect(await m.find({ type: 'Text', text: /^Rules$/ })).toBeUndefined()
   expect(await m.find({ text: /-----B…c\+\/= \(3 lines, \d+ chars\)/ })).toBeDefined()
   expect(await m.find({ text: /MIIEow/ })).toBeUndefined()
   await m.press({ key: 'cdown' })
