@@ -90,6 +90,7 @@ test('j and k walk a cursor over the rules; t switches and x removes only the cu
   expect(await m.find({ text: /^✗ remove\?$/ })).toBeDefined()
   await m.press({ key: 'rup' }) // moving disarms it
   expect(await m.find({ text: /^✗ remove\?$/ })).toBeUndefined()
+  expect(await m.find({ text: /press ✗ again/ })).toBeUndefined()
   await m.press({ key: 'remove-1' })
   await m.press({ key: 'remove-1' })
   expect(JSON.parse(files.get(RULES)!).rules).toHaveLength(1)

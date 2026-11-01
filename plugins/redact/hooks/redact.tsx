@@ -995,7 +995,7 @@ export const register: Register = (on, options) => {
 
     // the Rules tab's row cursor, by index, kept in range as rules come and go
     const ruleAt = Math.min(Math.max(0, kept.ruleAt ?? 0), Math.max(0, rules.length - 1))
-    const aimRule = (i: number) => { kept.ruleAt = Math.min(Math.max(0, i), rules.length - 1); kept.arm = undefined; $.ui.invalidate('ui.render') }
+    const aimRule = (i: number) => { kept.ruleAt = Math.min(Math.max(0, i), rules.length - 1); if (kept.arm !== undefined) kept.note = ''; kept.arm = undefined; $.ui.invalidate('ui.render') }
 
     // Awaited here, as the return below calls it sync: the folder the env files are read in
     // (seedHere's fallback), ~ for the home folder; a failed read drops it from the Env files line.
