@@ -225,12 +225,15 @@ const timesNow = async ($: EngineInterface) => {
   } catch { return undefined } // no file yet, or one past the read's 4 MiB (runsOf marks that)
 }
 // Hook times run long-tailed (a cold start, a lock wait), so a run's spread is read from the middle and the tail, not a mean:
-// the median, p90 (nearest rank) and max, and how far p90 sits above the median as a word
+// the median, p90 (nearest rank) and max, and how far p90 sits above the median as a word. A gap under JITTER is steady
+// whatever the ratio: a process start alone moves a 25 ms hook's p90 to 40 ms
+const JITTER = 50
 export const spreadOf = (ms: number[]) => {
   const s = [...ms].sort((a, b) => a - b), n = s.length
   const med = n % 2 ? s[(n - 1) / 2]! : (s[n / 2 - 1]! + s[n / 2]!) / 2
   const p90 = s[Math.ceil(0.9 * n) - 1]!, ratio = p90 / Math.max(med, 1)
-  return { med, p90, max: s[n - 1]!, total: s.reduce((a, b) => a + b, 0), feel: ratio <= 1.5 ? 'steady' : ratio <= 3 ? 'variable' : 'spiky' }
+  const feel = p90 - med < JITTER || ratio <= 1.5 ? 'steady' : ratio <= 3 ? 'variable' : 'spiky'
+  return { med, p90, max: s[n - 1]!, total: s.reduce((a, b) => a + b, 0), feel }
 }
 const BARS = '▁▂▃▄▅▆▇█'
 // the last runs in order, each bar scaled to the longest of them: spikes and drift at a glance
@@ -2390,11 +2393,13 @@ export const register: Register = (on, options) => {
       // plugin's dimmed (hook-timer cannot time them). An event with runs opens (▸) to each hook's spread, widest tail first: the
       // hook-timer file's runs, the whole session's; a hook it does not time, as the log's rows hold it
       const hookW = widthOf(events, 2)
-      const ranOf = (ev: string) => {
-        const r = setup.runs.get(ev), s = r && r.each.length >= FEW ? spreadOf(r.each) : undefined
+      const ranOf = (ev: string, spread: boolean) => {
+        const r = setup.runs.get(ev), s = spread && r && r.each.length >= FEW ? spreadOf(r.each) : undefined
         return r ? [runs(r.n), exact(r.ms), s && `med ${exact(s.med)} · p90 ${exact(s.p90)}`, r.errors && `${r.errors} failed`, r.cancelled && `${r.cancelled} cancelled`].filter(Boolean).join(' · ') : '—'
       }
-      const statW = setup.runs.size ? Math.max(...events.map(ev => ranOf(ev).length)) + 2 : 0
+      const widest = (spread: boolean) => setup.runs.size ? Math.max(...events.map(ev => ranOf(ev, spread).length)) + 2 : 0
+      // the median and p90 only where the hooks' names keep 24 columns; the opened rows have the full spread anyway
+      const spread = hookW + widest(true) <= cols - 24, statW = widest(spread)
       const eachHook = (ev: string) => {
         const m = new Map<string, { n: number; ms: number[] }>()
         for (const x of entries) if (x.kind === 'hook' && x.origin === ev) for (const y of splitHooks(x)) {
@@ -2414,7 +2419,7 @@ export const register: Register = (on, options) => {
           <Box key={`khk${ev}`} flexDirection="row">
             <Box flexShrink={0} width={hookW}>{each.length ? <Button key={`hk${ev}`} label={fit(`${open ? '▾' : '▸'} ${ev}`, hookW - 2)} plain dimColor onPress={flip} />
               : <Text dimColor wrap="truncate-end">{fit(`  ${ev}`, hookW - 2)}</Text>}</Box>
-            {statW > 0 && <Box flexShrink={0} width={statW}><Text dimColor={!setup.runs.has(ev)}>{ranOf(ev)}</Text></Box>}
+            {statW > 0 && <Box flexShrink={0} width={statW}><Text dimColor={!setup.runs.has(ev)}>{ranOf(ev, spread)}</Text></Box>}
             <Text wrap="wrap">{own.join(', ') || (theirs.length ? '' : 'no hook in your settings')}{theirs.length > 0 && <Text dimColor>{`${own.length ? ', ' : ''}${theirs.join(', ')}`}</Text>}</Text>
           </Box>,
           ...(open ? each.map(([n, r]) => <Box key={`khk${ev}:${n}`} flexDirection="row"><Box flexShrink={0} width={hookW}><Text dimColor wrap="truncate-end">{fit(`    ${n}`, hookW - 2)}</Text></Box>

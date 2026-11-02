@@ -1841,6 +1841,7 @@ test('the setup page lists hook runs in a column, dims a plugin\'s hooks, opens 
 test('a hook\'s spread: median, nearest-rank p90 and max, a word for how far p90 sits above the median, and the last runs as bars', () => {
   expect(spreadOf([10, 20, 30, 40])).toMatchObject({ med: 25, p90: 40, max: 40, total: 100 })
   expect(spreadOf([100, 100, 100, 100, 140]).feel).toBe('steady')
+  expect(spreadOf([25, 25, 25, 25, 70]).feel).toBe('steady') // under 50 ms apart: a process start's jitter, whatever the ratio
   expect(spreadOf([100, 100, 100, 100, 250]).feel).toBe('variable')
   expect(spreadOf([100, 100, 100, 100, 900]).feel).toBe('spiky')
   expect(sparkOf([0, 50, 100])).toBe('▁▅█')
@@ -1879,6 +1880,18 @@ test('the setup page reads each hook\'s spread from the whole hook-timer file, a
     '6 runs · med 40ms · p90 50ms · max 50ms · steady · total 250ms  ▇▇▇▇▇█',
   ])
   await m.press({ key: 'hkPreToolUse' })
+  await m.press({ key: 'back' })
+  await reset()
+})
+
+test('in a narrow pane an event\'s row keeps its counts but drops the median and p90, which would crowd out its hooks\' names', async ($, on) => {
+  session(on, 'HW')
+  on('telemetry.log', () => ({ value: undefined }))
+  const reset = await withSettings($, on, () => ({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: '$HOME/.claude/hooks/guard.sh' }] }] } }))
+  for (const ms of [100, 100, 200, 200, 900]) await collect($, 'hook_execution_complete', { hook_event: 'PreToolUse', hook_name: 'PreToolUse:Bash', num_hooks: '1', num_success: '1', num_non_blocking_error: '0', num_cancelled: '0', total_duration_ms: String(ms) })
+  const m = await pane($, 60, 70)
+  await m.press({ key: 'fsetup' })
+  expect(await m.find({ text: '5 runs · 1.5s' })).toBeDefined()
   await m.press({ key: 'back' })
   await reset()
 })
