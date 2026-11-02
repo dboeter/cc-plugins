@@ -201,6 +201,50 @@ const runsOf = async ($: EngineInterface, keep: (r: any) => boolean, from: numbe
     return []
   }
 }
+// the setup page's whole-session per-hook times: every run in the hook-timer file, by event and hook, oldest first. Unlike the
+// log's rows, a full log's eviction and /agentlog clear never drop them
+export const timesBy = (text: string) => {
+  const by = new Map<string, Map<string, number[]>>()
+  for (const line of text.split('\n')) {
+    let r: any
+    try { r = JSON.parse(line) } catch { continue }
+    if (typeof r?.event !== 'string' || r.name == null || typeof r.t0 !== 'number' || typeof r.t1 !== 'number') continue
+    const m = by.get(r.event) ?? by.set(r.event, new Map()).get(r.event)!
+    m.set(String(r.name), [...m.get(String(r.name)) ?? [], r.t1 - r.t0])
+  }
+  return by
+}
+let timesSeen: { sid: string; len: number; by: Map<string, Map<string, number[]>> } | undefined // parsed once per file length
+const timesNow = async ($: EngineInterface) => {
+  try {
+    const sid = await $.session.id()
+    if (sid === bigTimes) return undefined
+    const text = await $.fs.read(`${await $.env.get('HOME')}/.claude/hook-times/${sid}.jsonl`)
+    if (timesSeen?.sid !== sid || timesSeen.len !== text.length) timesSeen = { sid, len: text.length, by: timesBy(text) }
+    return timesSeen.by
+  } catch { return undefined } // no file yet, or one past the read's 4 MiB (runsOf marks that)
+}
+// Hook times run long-tailed (a cold start, a lock wait), so a run's spread is read from the middle and the tail, not a mean:
+// the median, p90 (nearest rank) and max, and how far p90 sits above the median as a word
+export const spreadOf = (ms: number[]) => {
+  const s = [...ms].sort((a, b) => a - b), n = s.length
+  const med = n % 2 ? s[(n - 1) / 2]! : (s[n / 2 - 1]! + s[n / 2]!) / 2
+  const p90 = s[Math.ceil(0.9 * n) - 1]!, ratio = p90 / Math.max(med, 1)
+  return { med, p90, max: s[n - 1]!, total: s.reduce((a, b) => a + b, 0), feel: ratio <= 1.5 ? 'steady' : ratio <= 3 ? 'variable' : 'spiky' }
+}
+const BARS = '▁▂▃▄▅▆▇█'
+// the last runs in order, each bar scaled to the longest of them: spikes and drift at a glance
+export const sparkOf = (ms: number[], last = 20) => {
+  const xs = ms.slice(-last), top = Math.max(1, ...xs)
+  return xs.map(v => BARS[Math.min(7, Math.round(v / top * 7))]).join('')
+}
+const FEW = 5 // under this many runs, percentiles say nothing: the times themselves
+export const hookStats = (ms: number[]) => {
+  const n = `${ms.length} run${ms.length === 1 ? '' : 's'}`
+  if (ms.length < FEW) return [n, ms.map(exact).join(', ')].join(' · ')
+  const s = spreadOf(ms)
+  return `${n} · med ${exact(s.med)} · p90 ${exact(s.p90)} · max ${exact(s.max)} · ${s.feel} · total ${exact(s.total)}  ${sparkOf(ms)}`
+}
 const timed = (h: { cmd?: string }) => !!h.cmd?.includes('hook-timer')
 // the setup page's per-hook times line: how many of your distinct settings hook commands run through hook-timer (a plugin's can't)
 export const hookTimes = (cfg: HookCfg) => {
@@ -353,7 +397,7 @@ type Setup = { model?: string; effort?: string | number; mode?: string; limits: 
   bg?: { tasks: { type: string; status: string; description: string; command?: string }[]; crons: { schedule: string; recurring: boolean; prompt: string }[] }
   asked?: boolean
   plugins: Map<string, { version?: string; scope?: string; hooks?: boolean; mcp?: boolean }>; mcp: Map<string, { status: string }>
-  runs: Map<string, { n: number; ms: number; errors: number; cancelled: number }>; runsOf?: string } // runsOf: the session id the runs count for
+  runs: Map<string, { n: number; ms: number; each: number[]; errors: number; cancelled: number }>; runsOf?: string } // runsOf: the session id the runs count for; each: the runs' own times, where the record had one
 const setup: Setup = { limits: [], plugins: new Map(), mcp: new Map(), runs: new Map() }
 // what the API alone answers: asked once at session.start (a reload's included), and by the first draw where none ran
 async function refreshSetup($: EngineInterface): Promise<void> {
@@ -1215,8 +1259,8 @@ export const register: Register = (on, options) => {
       // the count is this session's: /clear and resume start it over, here and at load(). A record can land before the new session's
       // first load (its SessionStart hooks run first), so it asks the id itself. The plugins and MCP servers stay: the process loaded them once
       try { const sid = await $.session.id(); if (sid !== setup.runsOf) { setup.runs.clear(); setup.runsOf = sid } } catch {}
-      const r = setup.runs.get(run.event) ?? { n: 0, ms: 0, errors: 0, cancelled: 0 }
-      setup.runs.set(run.event, { n: r.n + 1, ms: r.ms + (Number(a.total_duration_ms) || 0), errors: r.errors + run.errors, cancelled: r.cancelled + run.cancelled })
+      const r = setup.runs.get(run.event) ?? { n: 0, ms: 0, each: [], errors: 0, cancelled: 0 }, ms = Number(a.total_duration_ms)
+      setup.runs.set(run.event, { n: r.n + 1, ms: r.ms + (ms || 0), each: Number.isFinite(ms) && a.total_duration_ms != null ? [...r.each, ms] : r.each, errors: r.errors + run.errors, cancelled: r.cancelled + run.cancelled })
     }
     if (e.event === 'plugin_loaded') hookFresh = false // its hooks.json may name hooks the last read did not have
     if (e.event === 'plugin_loaded' && a['plugin.name']) setup.plugins.set(String(a['plugin.name']), { version: a['plugin.version'], scope: a['plugin.scope'], hooks: a.has_hooks === true || a.has_hooks === 'true', mcp: a.has_mcp === true || a.has_mcp === 'true' })
@@ -2312,7 +2356,7 @@ export const register: Register = (on, options) => {
     )
     // The setup page: the session's setup and how it held up. Hook runs and plugins come from the collector; without its
     // records, the hooks and plugins your settings name. A problem's row opens its inspector
-    const setupPage = (at?: [string, string, string | undefined]) => {
+    const setupPage = (at?: [string, string, string | undefined], times?: Map<string, Map<string, number[]>>) => {
       const xs = (f: (x: Entry) => boolean) => entries.filter(f)
       // requests: how many, their time, tokens and price where the collector gave one; the line's rows and its evicted ones (totals)
       const use = (k: string, ys: Entry[]) => {
@@ -2329,7 +2373,7 @@ export const register: Register = (on, options) => {
         return [...m]
       }
       const bad = xs(x => (x.kind === 'hook' && stat(x) === 'failed') || (x.kind === 'event' && BAD.has(stat(x))))
-      const events = byLifecycle([...new Set([...Object.keys(hookCfg ?? {}), ...setup.runs.keys()])])
+      const events = byLifecycle([...new Set([...Object.keys(hookCfg ?? {}), ...setup.runs.keys(), ...times?.keys() ?? []])])
       const steps = xs(x => x.kind === 'step')
       const added = [...new Set(xs(x => x.kind === 'event' && x.name === 'directory added').map(x => x.detail))]
       const outs = placesOf([...xs(x => !!x.out).reduce((m, x) => m.set(x.out!, (m.get(x.out!) ?? 0) + 1), new Map<string, number>())])
@@ -2342,18 +2386,24 @@ export const register: Register = (on, options) => {
       const title = (k: string, t: string) => [<Text key={`gap${k}`}> </Text>, <Text key={`t${k}`} weight="semibold">{t}</Text>]
       const kwS = kwOf(widthOf(['model', 'mode']))
       const kwW = kwOf(widthOf(['root', 'cwd', 'added', 'calls outside']))
-      // Hooks: per event its runs in a column of their own, then its hooks, a plugin's dimmed (hook-timer cannot time them). An event
-      // with hook rows in the log opens (▸) to each hook's runs and time as those rows hold them, slowest first
+      // Hooks: per event its runs in a column of their own (the chain's median and p90 once there are enough), then its hooks, a
+      // plugin's dimmed (hook-timer cannot time them). An event with runs opens (▸) to each hook's spread, widest tail first: the
+      // hook-timer file's runs, the whole session's; a hook it does not time, as the log's rows hold it
       const hookW = widthOf(events, 2)
-      const ranOf = (ev: string) => { const r = setup.runs.get(ev); return r ? [runs(r.n), exact(r.ms), r.errors && `${r.errors} failed`, r.cancelled && `${r.cancelled} cancelled`].filter(Boolean).join(' · ') : '—' }
+      const ranOf = (ev: string) => {
+        const r = setup.runs.get(ev), s = r && r.each.length >= FEW ? spreadOf(r.each) : undefined
+        return r ? [runs(r.n), exact(r.ms), s && `med ${exact(s.med)} · p90 ${exact(s.p90)}`, r.errors && `${r.errors} failed`, r.cancelled && `${r.cancelled} cancelled`].filter(Boolean).join(' · ') : '—'
+      }
       const statW = setup.runs.size ? Math.max(...events.map(ev => ranOf(ev).length)) + 2 : 0
       const eachHook = (ev: string) => {
-        const m = new Map<string, { n: number; ms: number; timed: boolean }>()
+        const m = new Map<string, { n: number; ms: number[] }>()
         for (const x of entries) if (x.kind === 'hook' && x.origin === ev) for (const y of splitHooks(x)) {
-          const r = m.get(y.name) ?? { n: 0, ms: 0, timed: false }
-          m.set(y.name, { n: r.n + 1, ms: r.ms + (y.ms ?? 0), timed: r.timed || y.ms != null })
+          const r = m.get(y.name) ?? { n: 0, ms: [] }
+          m.set(y.name, { n: r.n + 1, ms: y.ms != null ? [...r.ms, y.ms] : r.ms })
         }
-        return [...m].sort((p, q) => q[1].ms - p[1].ms)
+        for (const [n, ms] of times?.get(ev) ?? []) m.set(n, { n: ms.length, ms })
+        const tail = (ms: number[]) => ms.length ? spreadOf(ms).p90 : -1
+        return [...m].sort((p, q) => tail(q[1].ms) - tail(p[1].ms))
       }
       const hookRows = (ev: string) => {
         const hs = hookCfg?.[ev] ?? [], own = [...new Set(hs.filter(h => !h.plugin).map(h => h.name))]
@@ -2368,7 +2418,7 @@ export const register: Register = (on, options) => {
             <Text wrap="wrap">{own.join(', ') || (theirs.length ? '' : 'no hook in your settings')}{theirs.length > 0 && <Text dimColor>{`${own.length ? ', ' : ''}${theirs.join(', ')}`}</Text>}</Text>
           </Box>,
           ...(open ? each.map(([n, r]) => <Box key={`khk${ev}:${n}`} flexDirection="row"><Box flexShrink={0} width={hookW}><Text dimColor wrap="truncate-end">{fit(`    ${n}`, hookW - 2)}</Text></Box>
-            <Text dimColor>{`${runs(r.n)} · ${r.timed ? exact(r.ms) : 'not timed'}`}</Text></Box>) : []),
+            <Text dimColor>{r.ms.length ? hookStats(r.ms) : `${runs(r.n)} · not timed`}</Text></Box>) : []),
         ]
       }
       const plugN = new Set(Object.values(hookCfg ?? {}).flat().filter(h => h.plugin).map(h => h.cmd ?? h.name)).size
@@ -2456,8 +2506,8 @@ export const register: Register = (on, options) => {
     if (inspect) return <Box flexDirection="column">{head}{await inspector(inspect)}</Box>
     if (page === 'keys') return <Box flexDirection="column">{head}{keysPage()}</Box>
     if (page) { // where the session is: asked on each draw of the page, as /cd and a worktree move change it
-      const at = await Promise.all([$.session.root(), $.session.cwd(), homeOf($)]).catch(() => undefined)
-      return <Box flexDirection="column">{head}{setupPage(at)}</Box>
+      const [at, times] = await Promise.all([Promise.all([$.session.root(), $.session.cwd(), homeOf($)]).catch(() => undefined), timesNow($)])
+      return <Box flexDirection="column">{head}{setupPage(at, times)}</Box>
     }
     // The cursor's move: by `move` rows that open something (pressable), in the log's order, stopping at either end. None yet, or
     // its row gone (evicted, another view) or out of the window the last draw showed (a ^↑↓, a wheel, a page scroll), it starts

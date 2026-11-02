@@ -1,6 +1,6 @@
 // Pane tests share the module's state (level, folds, finished agents shown): a test that changes one sets it back before it ends.
 import { test, expect, mock, type TestBody } from 'claude-code/testing'
-import { ASKED, byLifecycle, costOf, scrub, ctxOf, harnessOf, hookName, hookTimes, markAgain, modelName, outsideOf, pack, pickRuns, placesOf, rootOf, routine, runNames, keepRun, scriptName, speaker, targetOf, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
+import { ASKED, byLifecycle, hookStats, sparkOf, spreadOf, timesBy, costOf, scrub, ctxOf, harnessOf, hookName, hookTimes, markAgain, modelName, outsideOf, pack, pickRuns, placesOf, rootOf, routine, runNames, keepRun, scriptName, speaker, targetOf, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
 
 // the shape hooksOf builds: settings hooks by script name, plugin hooks by plugin. Texts are real rows from the store
 const cfg = {
@@ -1828,12 +1828,57 @@ test('the setup page lists hook runs in a column, dims a plugin\'s hooks, opens 
   expect(await m.find({ type: 'Button', text: /PreToolUse/ })).toBe(undefined) // no hook row in the log: nothing to open
   expect(await m.find({ text: 'Plugins: 3 enabled in your settings, by marketplace' })).toBeDefined()
   expect(await m.find({ text: 'tidy, neat' })).toBeDefined()
-  expect(await m.find({ text: /2 runs · 200ms/ })).toBe(undefined)
+  expect(await m.find({ text: /2 runs · 120ms, 80ms/ })).toBe(undefined)
   await m.press({ key: 'hkStop' })
   expect(await m.find({ type: 'Button', text: /^▾ Stop/ })).toBeDefined()
-  expect(await m.find({ text: '2 runs · 200ms' })).toBeDefined() // plan's own runs
+  expect(await m.find({ text: '2 runs · 120ms, 80ms' })).toBeDefined() // plan's own runs: too few for a spread, so each time
   expect(await m.find({ text: '2 runs · not timed' })).toBeDefined() // the plugin's
   await m.press({ key: 'hkStop' })
+  await m.press({ key: 'back' })
+  await reset()
+})
+
+test('a hook\'s spread: median, nearest-rank p90 and max, a word for how far p90 sits above the median, and the last runs as bars', () => {
+  expect(spreadOf([10, 20, 30, 40])).toMatchObject({ med: 25, p90: 40, max: 40, total: 100 })
+  expect(spreadOf([100, 100, 100, 100, 140]).feel).toBe('steady')
+  expect(spreadOf([100, 100, 100, 100, 250]).feel).toBe('variable')
+  expect(spreadOf([100, 100, 100, 100, 900]).feel).toBe('spiky')
+  expect(sparkOf([0, 50, 100])).toBe('▁▅█')
+  expect(sparkOf(Array.from({ length: 30 }, (_, i) => i)).length).toBe(20) // the last 20 runs only
+  expect(hookStats([120])).toBe('1 run · 120ms')
+  expect(hookStats([120, 80, 1100])).toBe('3 runs · 120ms, 80ms, 1.1s')
+  expect(hookStats([100, 100, 100, 100, 900])).toBe('5 runs · med 100ms · p90 900ms · max 900ms · spiky · total 1.3s  ▂▂▂▂█')
+})
+
+test('the hook-timer file reads as each event\'s hooks and their run times, oldest first; a torn or foreign line is skipped', () => {
+  const by = timesBy([
+    JSON.stringify({ name: 'guard', event: 'PreToolUse', t0: 1000, t1: 1040 }), '{"name":"gua',
+    JSON.stringify({ name: 'guard', event: 'PreToolUse', t0: 2000, t1: 2010 }), '{}',
+    JSON.stringify({ name: 'plan', event: 'Stop', t0: 3000, t1: 3300 }),
+  ].join('\n'))
+  expect([...by.get('PreToolUse')!]).toEqual([['guard', [40, 10]]])
+  expect([...by.get('Stop')!]).toEqual([['plan', [300]]])
+})
+
+test('the setup page reads each hook\'s spread from the whole hook-timer file, and an event\'s median and p90 from the collector\'s runs', async ($, on) => {
+  session(on, 'HS') // no hook row in the log: the file alone opens the event
+  on('telemetry.log', () => ({ value: undefined }))
+  const line = (name: string, ms: number, i: number) => JSON.stringify({ name, event: 'PreToolUse', t0: i * 1000, t1: i * 1000 + ms })
+  const file = [...[40, 40, 40, 40, 40, 50].map((ms, i) => line('guard', ms, i)), ...[100, 100, 100, 100, 900].map((ms, i) => line('lint', ms, 10 + i))].join('\n')
+  const reset = await withSettings($, on, () => ({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: '$HOME/.claude/hooks/hook-timer $HOME/.claude/hooks/guard.sh' }, { type: 'command', command: '$HOME/.claude/hooks/hook-timer $HOME/.claude/hooks/lint.sh' }] }] } }), {
+    '/home/u/.claude/hook-times/HS.jsonl': () => file,
+  })
+  for (const ms of [100, 100, 200, 200, 900]) await collect($, 'hook_execution_complete', { hook_event: 'PreToolUse', hook_name: 'PreToolUse:Bash', num_hooks: '1', num_success: '1', num_non_blocking_error: '0', num_cancelled: '0', total_duration_ms: String(ms) })
+  const m = await pane($, 60, 160)
+  await m.press({ key: 'fsetup' })
+  expect(await m.find({ text: '5 runs · 1.5s · med 200ms · p90 900ms' })).toBeDefined()
+  await m.press({ key: 'hkPreToolUse' })
+  const rows = (await m.findAll({ type: 'Text', text: /runs · med/ })).map((x: any) => String(x.props.children ?? x.text))
+  expect(rows).toEqual([ // the widest tail first
+    '5 runs · med 100ms · p90 900ms · max 900ms · spiky · total 1.3s  ▂▂▂▂█',
+    '6 runs · med 40ms · p90 50ms · max 50ms · steady · total 250ms  ▇▇▇▇▇█',
+  ])
+  await m.press({ key: 'hkPreToolUse' })
   await m.press({ key: 'back' })
   await reset()
 })
