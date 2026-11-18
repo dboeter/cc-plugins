@@ -1793,6 +1793,10 @@ export const register: Register = (on, options) => {
     if (e.requestId !== PANE) return next(e) // other plugins' panes
     await load($)
     const { Box, Text, Button } = $.ui.resolve(e)
+    // The desktop app draws a proportional face in cells wider than its letters (bodyColumns 43 where ~65 letters fit), so a
+    // row laid out by counting characters is cut a third early, a padded label pads nothing and a rule of `─` wraps. There the
+    // surface cuts and aligns (truncate-end, tabular digits, weight); every row is still one element, as the window counts them
+    const gui = e.surface === 'desktop'
     const out = ([s, c]: [string, string?]) => s ? <Text color={c} dimColor={!c}>  {s}</Text> : null
     // back to the row the inspector opened from, or the fold that holds it, centred by the next draw; gone (evicted) -> the end
     const back = () => {
@@ -1981,6 +1985,7 @@ export const register: Register = (on, options) => {
     const cols = e.props.bodyColumns ?? 40
     const END = 9 // fits `● 59m59s`: secs is at most 6 wide
     const fit = (s: string, n: number) => s.length <= n ? s : s.slice(0, Math.max(0, n - 1)) + '…'
+    const cut = gui ? (s: string) => s : fit // text the surface cuts itself on the desktop (gui)
     // a path cut from the left at a folder boundary, so its last folders stay whole: `…/acme/projects/dv`
     const lfit = (s: string, n: number) => { if (s.length <= n) return s; const t = s.slice(s.length - n + 1), j = t.indexOf('/'); return '…' + (j >= 0 ? t.slice(j) : t) }
     // mark: drawn in the disclosure's cell when there is none (the header's `›` on the agent the log is filtered to).
@@ -2004,10 +2009,18 @@ export const register: Register = (on, options) => {
       if (link?.endsWith('─') && who.startsWith(' ')) who = `─${who.slice(1)}` // a bracket's end (`╭─`) runs on into its row's indent: `╭── guard`
       return (
         <Box key={k} flexDirection="row" overflow="hidden">
-          <Box flexShrink={0} width={2 + rail.length}><Text dimColor>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : link ? <Text dimColor>{link}</Text> : <Text>{mark}</Text>}</Box>
-          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{who ? <Text dimColor>{who}</Text> : null}{press ? <Button key={`b${k}`} label={fit(act, room) + tail} plain dimColor={dim} onPress={press} /> : <Text wrap="truncate-end" dimColor={dim}>{fit(act, room) + tail}</Text>}{there ? <Text color={usual ? undefined : 'magenta'} dimColor={usual}>{there}</Text> : null}</Box>
+          {/* mono: the guides and brackets keep one width, so they meet from row to row */}
+          <Box flexShrink={0} width={2 + rail.length}><Text dimColor mono={gui || undefined}>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : link ? <Text dimColor mono={gui || undefined}>{link}</Text> : <Text>{mark}</Text>}</Box>
+          {gui
+            // the whole action, cut by the surface where the row ends; the place outside the root keeps its room beside it
+            ? <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden" flexDirection="row">
+                {who ? <Box flexShrink={0}><Text dimColor>{who}</Text></Box> : null}
+                <Box flexShrink={1} minWidth={0} overflow="hidden">{press ? <Button key={`b${k}`} label={act + tail} plain dimColor={dim} onPress={press}><Text wrap="truncate-end">{act + tail}</Text></Button> : <Text wrap="truncate-end" dimColor={dim}>{act + tail}</Text>}</Box>
+                {there ? <Box flexShrink={0}><Text color={usual ? undefined : 'magenta'} dimColor={usual}>{there}</Text></Box> : null}
+              </Box>
+            : <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{who ? <Text dimColor>{who}</Text> : null}{press ? <Button key={`b${k}`} label={fit(act, room) + tail} plain dimColor={dim} onPress={press} /> : <Text wrap="truncate-end" dimColor={dim}>{fit(act, room) + tail}</Text>}{there ? <Text color={usual ? undefined : 'magenta'} dimColor={usual}>{there}</Text> : null}</Box>}
           {/* flush right, as the turn header's time: times of any width end on the same column */}
-          <Box flexShrink={0} width={END} justifyContent="flex-end"><Text color={st[1]} dimColor={!st[1]}>{fit(st[0], END - 1)}</Text></Box>
+          <Box flexShrink={0} width={END} justifyContent="flex-end"><Text color={st[1]} dimColor={!st[1]} tabular={gui || undefined}>{fit(st[0], END - 1)}</Text></Box>
         </Box>
       )
     }
@@ -2030,7 +2043,7 @@ export const register: Register = (on, options) => {
     // Parts under 0.1 s are left out; other is the engine's and plugins' own work between steps, before submit the turn rows' preSubmit
     // (the engine's time before your prompt's submit). most: the header's two largest
     const SHOW = ['model', 'tools', 'agents', 'hooks', 'compact', 'permission', 'you', 'before submit', 'other']
-    const splitText = (n: number, m: Turn, most = Infinity) => {
+    const splitParts = (n: number, m: Turn, most = Infinity) => {
       const parts = SPLIT.map(() => 0)
       let span = 0, preSubmit = 0
       const add = (xs: number[], ms: number) => { xs.forEach((v, i) => { parts[i]! += v }); span += ms }
@@ -2040,7 +2053,26 @@ export const register: Register = (on, options) => {
       else if (!m.ends.length && m.first != null && m.last! > m.first) add(splitOf(m.xs, m.first, m.last!), m.last! - m.first)
       const by: Record<string, number> = { 'before submit': preSubmit, other: span - preSubmit - parts.reduce((a, b) => a + b, 0) }
       SPLIT.forEach((k, i) => { by[k] = parts[i]! })
-      return SHOW.filter(k => by[k]! >= 100).sort((p, q) => by[q]! - by[p]!).slice(0, most).map(k => `${k} ${secs(by[k])}`).join(' · ')
+      return SHOW.filter(k => by[k]! >= 100).sort((p, q) => by[q]! - by[p]!).slice(0, most).map((k): [string, number] => [k, by[k]!])
+    }
+    const splitText = (n: number, m: Turn, most = Infinity) => splitParts(n, m, most).map(([k, ms]) => `${k} ${secs(ms)}`).join(' · ')
+    // The desktop's row under a turn's header: where its time went as a bar, each part as wide as its share (of BAR glyphs,
+    // none under one), then the three largest in words behind a mark of their colour, so it reads without colour too. One
+    // element, so one row to the window. Theme keys, not fixed colours: a skin recolours them with the rest
+    const BAR = 14
+    const PART: Record<string, string> = { model: 'claude', tools: 'suggestion', agents: 'merged', hooks: 'warning', permission: 'permission', you: 'permission', compact: 'inactive', 'before submit': 'inactive', other: 'inactive' }
+    const splitRow = (n: number, m: Turn) => {
+      const ps = splitParts(n, m)
+      if (!ps.length) return null
+      const sum = ps.reduce((a, [, ms]) => a + ms, 0)
+      const ws = ps.map(([, ms]) => Math.max(1, Math.round(ms / sum * BAR)))
+      return (
+        <Box key={`split${n}`} flexDirection="row" overflow="hidden" columnGap={1}>
+          <Box flexShrink={0} width={2} />
+          <Box flexShrink={0}>{ps.map(([k], i) => <Text key={`sb${k}`} color={PART[k]}>{'━'.repeat(ws[i]!)}</Text>)}</Box>
+          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end">{ps.slice(0, 3).map(([k, ms]) => [<Text key={`sm${k}`} color={PART[k]}>▪ </Text>, <Text key={`sw${k}`} dimColor tabular>{`${k} ${secs(ms)}   `}</Text>])}</Text></Box>
+        </Box>
+      )
     }
     // one name per kind of loop: a plugin that forks every step names four loops in a turn, `you-should-know ×4`; numbered agents
     // count as their type, `general-purpose ×2`
@@ -2068,6 +2100,15 @@ export const register: Register = (on, options) => {
         $.ui.invalidate('ui.render')
       }
       if (hid) flips.set(k, flip)
+      // the desktop: the prompt's words at full strength, the turn's landmark; the split has the row below (splitRow)
+      if (gui) return (
+        <Box key={k} flexDirection="row" overflow="hidden" columnGap={1}>
+          <Box flexShrink={0}>{m.ends.length ? <Button key={`b${k}`} label={n ? `#${n}` : 'start'} plain onPress={() => show(m.ends.at(-1)!)} /> : <Text weight="semibold">{n ? `#${n}` : 'start'}</Text>}</Box>
+          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end" weight="medium">{said ?? ''}</Text></Box>
+          {hid ? <Box flexShrink={0}><Button key={`hid${n}`} label={openTurns.has(n) ? `hide ${hid} ▾` : `${hid} hidden ▸`} plain dimColor onPress={flip} /></Box> : null}
+          <Box flexShrink={0}><Text tabular weight="semibold" color={m.aborted ? 'yellow' : undefined}>{time}</Text></Box>
+        </Box>
+      )
       return (
         <Box key={k} flexDirection="row" overflow="hidden">
           <Box flexShrink={0}>{m.ends.length ? <Button key={`b${k}`} label={n ? `#${n}` : 'start'} plain onPress={() => show(m.ends.at(-1)!)} /> : <Text weight="semibold">{n ? `#${n}` : 'start'}</Text>}</Box>
@@ -2227,6 +2268,7 @@ export const register: Register = (on, options) => {
         if (cur !== undefined) rows.push(<Text key={`gap${rows.length}`}> </Text>) // a row of its own, not a margin: the window counts elements as rows
         const hk = `turn${n}` // by its turn, not its place: folds opening above it must not rename it, or an anchor on it is lost
         rows.push(header(n, hk)); cur = n; tops.add(hk)
+        if (gui && n) { const sr = splitRow(n, turnIn(n)); if (sr) rows.push(sr) }
         // its `#N` opens the turn: a stop for the row cursor as a row is. A running turn's opens nothing, so it stops only for its
         // `N hidden ▸`, which takes the ring
         if (turnIn(n).ends.length) pressable.add(hk)
@@ -2253,7 +2295,8 @@ export const register: Register = (on, options) => {
       '╭ │ ├ ╰ a call bracketed with its hooks, waits and server calls, which sit two cells in: those above it ran before it, those below after', '│ ├ ╰ an open Agent fold\'s rows, and the agent tree\'s branches', '› the agent the log is filtered to',
       'bright: a row that did something; dim: routine, or below the level', '▸ ▾ open, close an Agent fold or a turn\'s hidden rows',
       'before submit, in a turn\'s split: the engine\'s time from the turn\'s start to your prompt\'s submit, before its hooks ran',
-      'other, in a turn\'s split: the engine\'s and plugins\' own work between steps']
+      'other, in a turn\'s split: the engine\'s and plugins\' own work between steps',
+      ...(gui ? ['━ under a turn: where its time went, each part as wide as its share; ▪ names the part of that colour'] : [])]
     const KEYS: [string, string][] = [['a m h u', 'views: all, what the model did, the harness, outside the root'], ['l', 'level: info or notice (/agentlog level sets debug and error)'],
       ['o', 'open or close the ▸ on the cursor\'s line (its Agent fold, its turn\'s hidden rows, the finished agents); on a line without one, every Agent fold'], ['s', 'the setup page'], ['i', 'this page'], ['j k', 'the row cursor down, up, over rows, turn headers and the agent tree (k on the window\'s first row enters it); in the inspector, the next or previous row'], ['↓ ↑', 'the row cursor too'],      ['enter', 'open the row under the cursor'], ['e', 'the newest row'], ['^↑ ^↓', 'ctrl+↑ ↓: the row cursor to the first line of the previous or next turn'], ['b', 'back'], ['n p', 'in the inspector: the next or previous row'],
       ['f', 'in an Agent row\'s inspector: only its agent\'s rows; elsewhere, clear that filter'], ['click', 'give the pane the keys: until then none of these reach it'], ['tab', 'move the focus over the buttons; enter presses one']]
@@ -2284,10 +2327,12 @@ export const register: Register = (on, options) => {
     }
     // Bright in the controls means active, nothing else: the view shown, the page open, the loop filtered to. The active view also
     // carries a `•` after its name, so it reads without colour; the others a space in its place, so a view switch keeps every label's width
-    const vbtn = (v: View, k: string) => <Button key={`v${v}`} label={`${v}${view === v ? '•' : ' '}`} hotkey={k} plain dimColor={view !== v} onPress={() => setView(v)} />
+    // The desktop draws each a native button with its key on a cap: no padding there, and the open view reads by its weight
+    const vbtn = (v: View, k: string) => gui ? <Button key={`v${v}`} label={v} hotkey={k} plain dimColor={view !== v} onPress={() => setView(v)}><Text weight={view === v ? 'semibold' : undefined}>{v}</Text></Button>
+      : <Button key={`v${v}`} label={`${v}${view === v ? '•' : ' '}`} hotkey={k} plain dimColor={view !== v} onPress={() => setView(v)} />
     // one width whatever the level (`level info  `), as `fold  ` is: a label that changed width could repack the controls
     const LVW = Math.max(...LEVELS.map(l => l.length)) + 6
-    const lbtn = <Button key="lvl" label={`level ${LEVELS[level]}`.padEnd(LVW)} hotkey="l" plain dimColor onPress={nextLevel} />
+    const lbtn = <Button key="lvl" label={gui ? `level ${LEVELS[level]}` : `level ${LEVELS[level]}`.padEnd(LVW)} hotkey="l" plain dimColor onPress={nextLevel} />
     const kbtn = <Button key="legend" label="keys" hotkey="i" plain dimColor={page !== 'keys'} onPress={() => openPage('keys')} />
     // `^↑↓ turn`: ctrl+↑ and ctrl+↓ press these from the prompt or the pane (`^`: ctrl, apart from the cursor's plain ↓ ↑). They are the engine's Global chords for the diff panel's file
     // list (app:diffFileListUp/Down, also meta+↑↓), which a Button's `action` takes while that panel is closed; open, the panel keeps them
@@ -2305,7 +2350,7 @@ export const register: Register = (on, options) => {
     // Always drawn, one width (`fold` padded): a label that changed width could change how the controls pack, and with it the
     // header's height, moving the anchored row
     const folds = foldsOf(top), shut = folds.some(id => !expanded.has(id))
-    const obtn = <Button key="folds" label={shut || !folds.length ? 'unfold' : 'fold  '} hotkey="o" plain dimColor onPress={() => {
+    const obtn = <Button key="folds" label={shut || !folds.length ? 'unfold' : gui ? 'fold' : 'fold  '} hotkey="o" plain dimColor onPress={() => {
       const i = sel ? rowAt(sel) : -1, flip = sel && !inspect && !page && (treeStops.includes(sel) || (i >= winStart && i <= winEnd)) ? flips.get(sel) : undefined
       if (flip) return flip()
       for (const id of folds) if (shut) expanded.add(id); else expanded.delete(id)
@@ -2485,7 +2530,10 @@ export const register: Register = (on, options) => {
       ...(broke ? [[broke.length, <Text key="broke" color="red">{broke}</Text>] as [number, any]] : []),
       ...(away ? [[away.length, <Text key="away" color="magenta">{away}</Text>] as [number, any]] : []),
       [setupText.length + 3, <Button key="fsetup" label={setupText} hotkey="s" plain dimColor={page !== 'setup'} onPress={() => openPage('setup')} />]]
-    const controls = pack(bare.map(([w]) => w), cols - 1).map((row, r) => <Box key={`ctl${r}`} flexDirection="row" columnGap={2} overflow="hidden">{row.map(i => bare[i]![1])}</Box>)
+    // the desktop's cells are wider than the letters these widths count, its key caps included (a row counted 39 wide drew in
+    // 340 of 440 px): 15% more per row still fits, and puts the four views on one row at 43 columns. The widths stay the padded
+    // ones, so a label that changes (level, fold) never repacks the rows
+    const controls = pack(bare.map(([w]) => w), gui ? Math.floor((cols - 1) * 1.15) : cols - 1).map((row, r) => <Box key={`ctl${r}`} flexDirection="row" columnGap={2} overflow="hidden">{row.map(i => bare[i]![1])}</Box>)
     // the agent tree, only while an agent runs or the log is filtered: a finished agent is filtered to from its Agent row's
     // inspector (f), so a tree of finished agents would only take the log's rows
     const treeOn = agents.some(a => a.status === 'running') || only !== undefined
@@ -2499,11 +2547,13 @@ export const register: Register = (on, options) => {
       ...(treeOn ? [<Box key="main" flexDirection="row" overflow="hidden" columnGap={2}>
         <Button key="fmain" label="main" plain dimColor={only !== 'main'} onPress={() => pick('main')} />
         {/* f outside the inspector; inside it fonly's f draws later and wins */}
-        {only ? <Button key="fclear" label={fit(`filter: ${nameOf(only)} ✕`, cols - 8)} hotkey="f" plain onPress={() => pick(only!)} /> : null}
+        {only ? <Button key="fclear" label={cut(`filter: ${nameOf(only)} ✕`, cols - 8)} hotkey="f" plain onPress={() => pick(only!)} /> : null}
       </Box>, ...tree.slice(0, most).map(agentRow)] : []),
       ...(treeOn && (done || more) ? [<Box key="done" flexDirection="row"><Text>  </Text><Button key="fdone" label={toggle} plain dimColor onPress={flipDone} /></Box>] : []),
       // unfocused, the rule says how to give the pane the keys (its hotkeys and j k press nothing until then); in the rule, so the
       // header keeps its height either way. A click, not ctrl+x tab: that chord focuses a band above the prompt first when one has buttons
+      // the desktop: a blank row parts the controls from the log (a rule of glyphs wraps there), and carries the hint
+      gui ? <Text key="rule" dimColor size="caption" wrap="truncate-end">{e.props.isFocused === false ? 'Click the pane to use its keys' : ' '}</Text> :
       <Text key="rule" dimColor>{e.props.isFocused === false && cols > 24 ? `── click to focus ${'─'.repeat(cols - 19)}` : '─'.repeat(Math.max(1, cols - 1))}</Text>,
     ]
     // taken before the inspector draws: `o` pressed there must not move the window that back is about to centre

@@ -97,14 +97,14 @@ const seed = () => {
 }
 
 const agentlog = ($: any, args: string) => $.command.run({ command: 'agentlog', args, origin: { kind: 'composer' }, presentation: 'text' })
-const mountAt = async ($: any, on: any, id: string, cols: number, bodyRows: number) => {
+const mountAt = async ($: any, on: any, id: string, cols: number, bodyRows: number, surface: 'terminal' | 'desktop' = 'terminal') => {
   on('session.id', () => ({ value: id }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('agent.list', () => ({ value: [{ id: 'A', type: 'Explore', description: 'map how hooks are named', status: 'completed' }] }))
   on('config.list', () => ({ value: [] }))
   on('ui.panes', () => ({ value: [{ id: 'agent-log' }] })) // the pane is up: /agentlog sets the level, it does not toggle it shut
   mock.store(on, { [`r:${id}`]: { entries: seed(), seen: {}, turn: 2, names: { A: 'Explore' } } })
-  return $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { title: 'Agent log', isFocused: false, placement: 'dock', bodyColumns: cols, scroll: { offset: 0, bodyRows } } as any })
+  return $.ui.mount({ plugin: 'agent-log', surface, component: 'Pane', requestId: 'agent-log', props: { title: 'Agent log', isFocused: false, placement: 'dock', bodyColumns: cols, scroll: { offset: 0, bodyRows } } as any })
 }
 
 test('the review\'s session at 100×60: every level, view and page draws', async ($, on) => {
@@ -198,4 +198,53 @@ test('the review\'s session at 60×20: the header leaves the log its room', asyn
   expect(ruleAt(lines)).toBe(3)
   for (const l of lines.slice(0, 3)) expect(plainOf(l).length).toBeLessThanOrEqual(59)
   expect(lines.length).toBe(20) // the window fills the rest
+})
+
+// The desktop app draws a proportional face in cells wider than its letters, so nothing there is laid out by counting
+// characters: the surface cuts a long action, no label is padded, no rule is drawn from glyphs
+const flat = (el: any): any[] => !el || typeof el === 'string' ? [] : [el, ...(el.children ?? []).flatMap(flat)]
+test('on the desktop the surface lays the rows out: nothing is cut, padded or ruled by counting characters', async ($, on) => {
+  const m = await mountAt($, on, 'RVD', 43, 48, 'desktop')
+  const root = await m.find({ type: 'Box' })
+  const all = flat(root)
+  const texts = all.filter(x => x.type === 'Text').map(x => txt(x))
+  expect(texts.some(t => /─{3}/.test(t))).toBe(false) // a run of ─ wraps onto a second line there
+  // the whole action, cut by the surface: at 43 columns the terminal's count cuts it after 31 letters
+  const act = all.find(x => x.type === 'Text' && /^Waiting for you to answer the permission prompt$/.test(txt(x)))
+  expect(act?.props?.wrap).toBe('truncate-end')
+  expect(texts.some(t => /…$/.test(t))).toBe(false)
+  // the controls: every key the terminal has, no label padded, the open view marked by weight, not a `•`
+  const btn = async (key: string) => (await m.find({ type: 'Button', key }))!
+  for (const [key, hotkey] of [['vall', 'a'], ['vmodel', 'm'], ['vharness', 'h'], ['voutside', 'u'], ['lvl', 'l'], ['folds', 'o'], ['legend', 'i'], ['cdown', 'j'], ['cup', 'k'], ['fsetup', 's']] as const) {
+    const b = await btn(key)
+    expect(b.props?.hotkey).toBe(hotkey)
+    expect(txt({ ...b, type: 'Box' })).not.toMatch(/•|\s$/)
+    expect(String(b.props?.label ?? '')).not.toMatch(/•|\s$/)
+  }
+  expect(flat(await btn('vall')).some(x => x.type === 'Text' && x.props?.weight === 'semibold')).toBe(true)
+  expect(flat(await btn('vmodel')).some(x => x.type === 'Text' && x.props?.weight === 'semibold')).toBe(false)
+  // times in digits of one width, so they line up
+  expect(all.some(x => x.type === 'Text' && x.props?.tabular && /^39\.6s$/.test(txt(x)))).toBe(true)
+  // a turn's split: a bar of its parts, each as wide as its share, and the same split in words beside it
+  const bar = all.find(x => x.type === 'Box' && x.props?.key === 'split1')
+  expect(bar).toBeDefined()
+  const parts = flat(bar).filter(x => x.type === 'Text' && /^━+$/.test((x.children ?? []).join('')))
+  expect(parts.length).toBeGreaterThan(1)
+  expect(new Set(parts.map(x => x.props.color)).size).toBe(parts.length) // a colour per part
+  const widths = parts.map(x => (x.children ?? []).join('').length)
+  expect(widths[0]).toBeGreaterThan(widths.at(-1)!) // largest first, as wide as its share
+  expect(txt(bar)).toMatch(/▪ ›tools 17\.2s/) // the bar's parts again in words
+  // the row keys the cursor and the inspector go by are the terminal's
+  await m.press({ key: 'bturn1' })
+  expect(await m.find({ type: 'Button', key: 'back' })).toBeDefined()
+  await m.press({ key: 'back' })
+  await m.press({ key: 'hid0' })
+  expect(flat(await m.find({ type: 'Box' })).some(x => x.type === 'Text' && /^install-check on SessionStart startup/.test(txt(x)))).toBe(true)
+  await m.press({ key: 'hid0' })
+})
+
+test('on the desktop every row is still one element: the window fills the body and no more', async ($, on) => {
+  const m = await mountAt($, on, 'RVE', 43, 20, 'desktop')
+  const root = await m.find({ type: 'Box' })
+  expect((root!.children ?? []).length).toBe(20)
 })
