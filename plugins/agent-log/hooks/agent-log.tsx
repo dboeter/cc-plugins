@@ -2079,12 +2079,19 @@ export const register: Register = (on, options) => {
     const runs = (id?: string) => id ? entries.filter(y => y.kind === 'turn' && y.agent === id) : [] // a spawned agent's turn ends: one per run
     const kept = entries.filter(x => (only === undefined || (x.agent ?? 'main') === only) && VIEWS[view](x)).sort((p, q) => turnOf(p) - turnOf(q))
     // the level by the merged row, so a slow chain keeps all its hooks; an opened turn's rows below it too, drawn dim (partsOf)
-    const shown = kept.filter(x => lvl(x) >= level || openTurns.has(turnOf(x))).flatMap(splitHooks)
+    const atLevel = kept.filter(x => lvl(x) >= level || openTurns.has(turnOf(x))).flatMap(splitHooks)
+    // The desktop: a hook on a drawn call that changed nothing and was not slow gets no row. Its call's row counts it (tucked)
+    // and the call's inspector lists it, so a log opened to its hidden rows is its calls, not five hooks around each
+    const calls = new Set(gui ? atLevel.filter(x => x.kind === 'tool' && x.use).map(x => x.use!) : [])
+    const tuck = (x: Entry) => x.kind === 'hook' && !!x.use && calls.has(x.use) && lvl(x) === 0
+    const tucked = new Map<string, number>()
+    for (const x of atLevel) if (tuck(x)) tucked.set(x.use!, (tucked.get(x.use!) ?? 0) + 1)
+    const shown = atLevel.filter(x => !tuck(x))
     const rowsOf = shown.filter(x => x.kind !== 'turn')
     // rows the level alone hides, per turn, opened or not: the header counts them, and its `N hidden ▸` draws them in place
     // (openTurns). A turn with none at or above the level draws no header at all
     const hidden = new Map<number, Entry[]>()
-    for (const x of kept) if (x.kind !== 'turn' && lvl(x) < level) { const n = turnOf(x); if (!hidden.has(n)) hidden.set(n, []); hidden.get(n)!.push(...splitHooks(x)) } // turn ends are never drawn
+    for (const x of kept) if (x.kind !== 'turn' && lvl(x) < level) { const n = turnOf(x); if (!hidden.has(n)) hidden.set(n, []); hidden.get(n)!.push(...splitHooks(x).filter(y => !tuck(y))) } // turn ends are never drawn
     // a spawned agent's rows fold under its Agent row while that row is drawn; without it (a view or level that hides it, a filter
     // on the agent) they stay flat
     const drawn = new Set(shown)
@@ -2115,20 +2122,23 @@ export const register: Register = (on, options) => {
     // dim and without the ↗, so another project and ~/.claude differ without colour
     // link: the row's place on its call's bracket (bracketed), drawn dim in the mark's cell so a bracketed row keeps the column of
     // one without. dim: a routine row, drawn quiet (partsOf's brightness rule)
-    type Line = { k: string; act: string; press?: () => void; st?: [string, string?]; who?: string; tail?: string; disc?: [boolean, () => void]; indent?: number; rail?: string; mark?: string; link?: string; dim?: boolean; away?: string[] }
+    type Line = { k: string; act: string; press?: () => void; st?: [string, string?]; who?: string; tail?: string; disc?: [boolean, () => void]; indent?: number; rail?: string; mark?: string; link?: string; dim?: boolean; away?: string[]; more?: string }
     const pressable = new Set<string>() // this draw's lines that open something: where the row cursor can stop
     // a stop whose ring is not its line's `b` Button: the tree's main and done toggle, a running turn's `N hidden ▸`. flips: what
     // o presses on the cursor's line, its ▸ (an Agent fold, a turn's hidden rows, the finished agents)
     const aims = new Map<string, string>(), flips = new Map<string, () => void>()
     const aim = (k: string) => aims.get(k) ?? `b${k}`
-    const line = ({ k, act, press, st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ', link, dim, away }: Line) => {
+    // The tint of a call's rows on the desktop: a grey a tenth opaque, so it shows on a dark and a light theme alike. No theme
+    // key names a surface, and a text colour as a background would drown the row
+    const BAND = '#8080801f'
+    const line = ({ k, act, press, st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ', link, dim, away, more }: Line) => {
       if (press) pressable.add(k)
       const usual = !!away?.every(routine)
       const there = away?.length ? ` ${usual ? '' : '↗ '}${lfit(away[0]!, 24)}${away.length > 1 ? ` +${away.length - 1}` : ''}` : ''
       const room = cols - 2 - rail.length - who.length - tail.length - there.length - END - 1
       if (link?.endsWith('─') && who.startsWith(' ')) who = `─${who.slice(1)}` // a bracket's end (`╭─`) runs on into its row's indent: `╭── guard`
       return (
-        <Box key={k} flexDirection="row" overflow="hidden">
+        <Box key={k} flexDirection="row" overflow="hidden" backgroundColor={gui && link ? BAND : undefined}>
           {/* mono: the guides and brackets keep one width, so they meet from row to row */}
           <Box flexShrink={0} width={2 + rail.length}><Text dimColor mono={gui || undefined}>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : link ? <Text dimColor>{link}</Text> : <Text>{mark}</Text>}</Box>
           {gui
@@ -2137,6 +2147,7 @@ export const register: Register = (on, options) => {
                 {who ? <Box flexShrink={0}><Text dimColor>{who}</Text></Box> : null}
                 <Box flexShrink={1} minWidth={0} overflow="hidden">{press ? <Button key={`b${k}`} label={act + tail} plain dimColor={dim} onPress={press}><Text wrap="truncate-end">{act + tail}</Text></Button> : <Text wrap="truncate-end" dimColor={dim}>{act + tail}</Text>}</Box>
                 {there ? <Box flexShrink={0}><Text color={usual ? undefined : 'magenta'} dimColor={usual}>{there}</Text></Box> : null}
+                {more ? <Box flexShrink={0} marginLeft={1}><Text dimColor size="caption">{more}</Text></Box> : null}
               </Box>
             : <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{who ? <Text dimColor>{who}</Text> : null}{press ? <Button key={`b${k}`} label={fit(act, room) + tail} plain dimColor={dim} onPress={press} /> : <Text wrap="truncate-end" dimColor={dim}>{fit(act, room) + tail}</Text>}{there ? <Text color={usual ? undefined : 'magenta'} dimColor={usual}>{there}</Text> : null}</Box>}
           {/* flush right, as the turn header's time: times of any width end on the same column */}
@@ -2252,8 +2263,8 @@ export const register: Register = (on, options) => {
     type Group = { kind: 'one' | 'agent'; xs: [Entry]; link?: string; wait?: string; server?: string[] }
     // n rows on a call's bracket, the call at `at`: `╭` opens it, `╰` closes it, `├` marks the call between, `│` the rest. An end
     // that is not the call reaches toward its indented row (`╭─`), so the bracket holds the hooks and the call stands apart
-    // The desktop: box lines do not join from row to row there, so a hook's row says which call it is on with an arrow at it
-    const bracket = (n: number, at: number) => Array.from({ length: n }, (_, i) => n < 2 ? undefined : gui ? (i < at ? '↓' : i > at ? '↑' : ' ') : i === 0 ? (at === 0 ? '╭' : '╭─') : i === n - 1 ? (at === i ? '╰' : '╰─') : i === at ? '├' : '│')
+    // The desktop: box lines do not join from row to row there, so the rows on a call share a tint instead (line: BAND)
+    const bracket = (n: number, at: number) => Array.from({ length: n }, (_, i) => n < 2 ? undefined : gui ? ' ' : i === 0 ? (at === 0 ? '╭' : '╭─') : i === n - 1 ? (at === i ? '╰' : '╰─') : i === at ? '├' : '│')
     const groupsOf = (xs: Entry[]) => {
       const there = new Set(xs)
       const linked = (x: Entry) => x.kind !== 'tool' && !!x.use && there.has(callRow.get(x.use)!)
@@ -2351,7 +2362,7 @@ export const register: Register = (on, options) => {
           head: (rail, who, press) => {
             const rs = [
               ...(waits(x) ? [(r: string) => waitLine(x, r, g.wait)] : []),
-              (r: string) => line({ k, act: hooked ? action(x, true) : actOf(x), tail: byOf(x), press, st: c, who: hooked ? `  ${who}` : who, rail: r, link: g.link, dim, away: awayOf([x]) }),
+              (r: string) => line({ k, act: hooked ? action(x, true) : actOf(x), tail: byOf(x), press, st: c, who: hooked ? `  ${who}` : who, rail: r, link: g.link, dim, away: awayOf([x]), more: (n => n ? `${n} hook${n > 1 ? 's' : ''}` : undefined)(x.kind === 'tool' && x.use ? tucked.get(x.use) : 0) }),
               ...server,
             ], mid = rail.endsWith('╰ ') ? `${rail.slice(0, -2)}├ ` : rail
             return rs.map((f, i) => f(i < rs.length - 1 ? mid : rail))
@@ -2520,7 +2531,7 @@ export const register: Register = (on, options) => {
     const LEGEND: [string, [string, string, string?][]][] = [
       ['How it went', [['✗', 'broke', 'red'], ['⊘', 'refused', 'cyan'], ['⚠', 'ended early', 'yellow'], ['■', 'a hook stopped it', 'yellow'], ['◷', 'slow hook', 'yellow'], ['↩', 'hook feedback', 'blue'],
         ['●', 'running now', 'green'], ['✓', 'agent finished'], ['+', 'hook added context'], ['·', 'hook changed nothing'], ['∅', 'found nothing'], ['?', 'unknown agent state']]],
-      ['Reading a row', [['↗', 'in another project', 'magenta'], ['≈', 'estimated'], ['↓ ↑', 'a hook, at its call'], ['│', 'inside an open fold'], ['▸ ▾', 'open, close'], ['›', 'the filtered agent'], ['━', 'a turn\'s time, by part', 'claude']]],
+      ['Reading a row', [['↗', 'in another project', 'magenta'], ['≈', 'estimated'], ['░', 'a call and its hooks'], ['│', 'inside an open fold'], ['▸ ▾', 'open, close'], ['›', 'the filtered agent'], ['━', 'a turn\'s time, by part', 'claude']]],
       ['Keys without a button', [['enter', 'open the row'], ['e', 'newest row'], ['b', 'back'], ['n p', 'next, previous row'], ['f', 'only this agent'], ['o', 'fold at the cursor'], ['↑ ↓', 'move the cursor'], ['tab', 'move the focus']]],
     ]
     const keysGui = () => {

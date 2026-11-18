@@ -791,6 +791,22 @@ test('a call\'s hook rows sit around it, linked: PreToolUse above, the rest belo
   await toLevel($, m, 'info')
 })
 
+test('on the desktop a call\'s hook that changed nothing has no row: the call\'s row counts them, and one that answered keeps its own', async ($, on) => {
+  const pre = (name: string) => hookRow({ name, use: 'ud' })
+  session(on, 'DK', [
+    { t: T0, turn: 1, kind: 'tool', name: 'Edit', detail: 'x.ts', outcome: '', use: 'ud', ms: 10 },
+    pre('guard'), pre('test-gate'),
+    hookRow({ name: 'lint-feedback', origin: 'PostToolUse', use: 'ud', outcome: 'block', status: 'feedback' }),
+  ], { turn: 1 })
+  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'desktop', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 43, scroll: { offset: 0, bodyRows: 40 } } as any })
+  await toLevel($, m, 'debug') // where a quiet hook's row would draw
+  const labels = (await m.findAll({ type: 'Button' })).map(b => String(b.text))
+  expect(labels.some(l => /^(guard|test-gate)/.test(l))).toBe(false)
+  expect(labels.some(l => /^lint-feedback/.test(l))).toBe(true)
+  expect(await m.find({ type: 'Text', text: '2 hooks' })).toBeDefined()
+  await toLevel($, m, 'info')
+})
+
 test('a call\'s row keeps its own time; each of its hooks times its own row', async ($, on) => {
   const m = await mountWith($, on, 'SUM', [
     { t: T0, turn: 1, kind: 'tool', name: 'Edit', detail: 'x.ts', outcome: '', use: 'us', ms: 5500 }, // spans its PreToolUse hook

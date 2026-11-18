@@ -237,9 +237,14 @@ test('on the desktop the surface lays the rows out: nothing is cut, padded or ru
   // the app's font draws box lines unjoined and the small marks at half size: an arrow says which call a hook belongs to
   const seen = all.filter(x => x.type === 'Text' || x.type === 'Button').map(x => String(x.props?.label ?? '') + (x.children ?? []).filter((c: any) => typeof c === 'string').join('')).join('\n')
   expect(seen).not.toMatch(/[╭╰├▸▾⚠▪]/)
-  expect(seen).toMatch(/^↓$/m) // a hook before its call
-  expect(seen).toMatch(/^↑$/m) // one after it
-  expect(seen).toMatch(/4 hidden ►/)
+  // a call and the rows on it (its hooks, its wait) share one tint; a call alone has none
+  const rowOf = (re: RegExp) => all.find(x => x.type === 'Box' && x.props?.overflow === 'hidden' && x.props?.flexDirection === 'row' && re.test(txt(x)))
+  const tint = rowOf(/Run the tests/)?.props?.backgroundColor
+  expect(tint).toBeDefined()
+  expect(rowOf(/Waiting for you/)?.props?.backgroundColor).toBe(tint)
+  expect(rowOf(/lint-feedback/)?.props?.backgroundColor).toBe(tint)
+  expect(rowOf(/Read index\.ts/)?.props?.backgroundColor).toBeUndefined()
+  expect(seen).toMatch(/3 hidden ►/) // the terminal's 4, less a call's quiet hook, which has no row here
   // the row keys the cursor and the inspector go by are the terminal's
   await m.press({ key: 'bturn1' })
   expect(await m.find({ type: 'Button', key: 'back' })).toBeDefined()
