@@ -2061,18 +2061,19 @@ export const register: Register = (on, options) => {
     // element, so one row to the window. Theme keys, not fixed colours: a skin recolours them with the rest
     const BAR = 14
     const PART: Record<string, string> = { model: 'claude', tools: 'suggestion', agents: 'merged', hooks: 'warning', permission: 'permission', you: 'permission', compact: 'inactive', 'before submit': 'inactive', other: 'inactive' }
-    const splitRow = (n: number, m: Turn) => {
+    const splitBits = (n: number, m: Turn, bar: number, most: number) => {
       const ps = splitParts(n, m)
       if (!ps.length) return null
       const sum = ps.reduce((a, [, ms]) => a + ms, 0)
-      const ws = ps.map(([, ms]) => Math.max(1, Math.round(ms / sum * BAR)))
-      return (
-        <Box key={`split${n}`} flexDirection="row" overflow="hidden" columnGap={1}>
-          <Box flexShrink={0} width={2} />
-          <Box flexShrink={0}>{ps.map(([k], i) => <Text key={`sb${k}`} color={PART[k]}>{'━'.repeat(ws[i]!)}</Text>)}</Box>
-          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end">{ps.slice(0, 3).map(([k, ms]) => [<Text key={`sm${k}`} color={PART[k]}>▪ </Text>, <Text key={`sw${k}`} dimColor tabular>{`${k} ${secs(ms)}   `}</Text>])}</Text></Box>
-        </Box>
-      )
+      const ws = ps.map(([, ms]) => Math.max(1, Math.round(ms / sum * bar)))
+      return [
+        <Box key="sbar" flexShrink={0}>{ps.map(([k], i) => <Text key={`sb${k}`} color={PART[k]}>{'━'.repeat(ws[i]!)}</Text>)}</Box>,
+        <Box key="swords" flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end">{ps.slice(0, most).map(([k, ms]) => [<Text key={`sm${k}`} color={PART[k]}>▪ </Text>, <Text key={`sw${k}`} dimColor tabular>{`${k} ${secs(ms)}   `}</Text>])}</Text></Box>,
+      ]
+    }
+    const splitRow = (n: number, m: Turn) => {
+      const bits = splitBits(n, m, BAR, 3)
+      return bits && <Box key={`split${n}`} flexDirection="row" overflow="hidden" columnGap={1}><Box flexShrink={0} width={2} />{bits}</Box>
     }
     // one name per kind of loop: a plugin that forks every step names four loops in a turn, `you-should-know ×4`; numbered agents
     // count as their type, `general-purpose ×2`
@@ -2089,7 +2090,7 @@ export const register: Register = (on, options) => {
     // inspector, which holds the whole split and the loops that acted. The time sits flush right, over the rows' time cell,
     // pushed there by a growing spacer; that cell never shrinks, and on a narrow pane the split truncates first. `start` (n 0)
     // is no turn: no words, no split, no time, only its hidden rows
-    const header = (n: number, k: string) => {
+    const header = (n: number, k: string, pinned = false) => {
       const m = turnIn(n), hid = hidden.get(n)?.length // not `h`: that name is the JSX factory, and shadowing it breaks every tag below
       const time = n ? `${m.aborted ? '⚠ ' : ''}${took(n, m)}` : ''
       const said = words.get(n), split = n ? splitText(n, m, 2) : ''
@@ -2104,7 +2105,8 @@ export const register: Register = (on, options) => {
       if (gui) return (
         <Box key={k} flexDirection="row" overflow="hidden" columnGap={1}>
           <Box flexShrink={0}>{m.ends.length ? <Button key={`b${k}`} label={n ? `#${n}` : 'start'} plain onPress={() => show(m.ends.at(-1)!)} /> : <Text weight="semibold">{n ? `#${n}` : 'start'}</Text>}</Box>
-          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end" weight="medium">{said ?? ''}</Text></Box>
+          {/* pinned over a window that starts inside its turn, its split row is out of view: the split takes the words' place */}
+          {(pinned && n ? splitBits(n, m, 8, 2) : null) ?? <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end" weight="medium">{said ?? ''}</Text></Box>}
           {hid ? <Box flexShrink={0}><Button key={`hid${n}`} label={openTurns.has(n) ? `hide ${hid} ▾` : `${hid} hidden ▸`} plain dimColor onPress={flip} /></Box> : null}
           <Box flexShrink={0}><Text tabular weight="semibold" color={m.aborted ? 'yellow' : undefined}>{time}</Text></Box>
         </Box>
@@ -2526,7 +2528,7 @@ export const register: Register = (on, options) => {
     const VIEW_KEYS: Partial<Record<View, string>> = { all: 'a', model: 'm', harness: 'h', outside: 'u' }
     const items: [number, any][] = SHOWN.map((v): [number, any] => [v.length + 4, vbtn(v, VIEW_KEYS[v]!)])
     const broke = problems.length ? `✗ ${problems[0]}${problems.length > 1 ? ` +${problems.length - 1}` : ''}` : '', away = elsewhere ? `↗ ${elsewhere} other project` : ''
-    const bare: [number, any][] = [...items, [LVW + 3, lbtn], [9, obtn], [7, kbtn], [8, tbtn], [4, cbtn(1)], [4, cbtn(-1)],
+    const bare: [number, any][] = [...items, [LVW + 3, lbtn], [9, obtn], [7, kbtn], [gui ? 11 : 8, tbtn], /* the desktop pads its two cap-less buttons: 105 px where 8 cells count 75 */ [4, cbtn(1)], [4, cbtn(-1)],
       ...(broke ? [[broke.length, <Text key="broke" color="red">{broke}</Text>] as [number, any]] : []),
       ...(away ? [[away.length, <Text key="away" color="magenta">{away}</Text>] as [number, any]] : []),
       [setupText.length + 3, <Button key="fsetup" label={setupText} hotkey="s" plain dimColor={page !== 'setup'} onPress={() => openPage('setup')} />]]
@@ -2625,7 +2627,7 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         {head}
-        {stick !== undefined ? rows[stick] : null}
+        {stick === undefined ? null : gui && !String(rows[win]?.props?.key).startsWith('split') ? header(Number(String(rows[stick].props.key).slice(4)), String(rows[stick].props.key), true) : rows[stick]}
         {rows.slice(win, win + winRows)}
         {!follow && <Box key="jumprow" flexDirection="row" justifyContent="flex-end"><Button key="jump" label={fresh ? `↓ ${fresh} new event${fresh > 1 ? 's' : ''} (e)` : '↓ newest (e)'} hotkey="e" onPress={jump} /></Box>}
       </Box>

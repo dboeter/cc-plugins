@@ -247,4 +247,11 @@ test('on the desktop every row is still one element: the window fills the body a
   const m = await mountAt($, on, 'RVE', 43, 20, 'desktop')
   const root = await m.find({ type: 'Box' })
   expect((root!.children ?? []).length).toBe(20)
+  // the window starts inside turn 1: its header is pinned, and carries the split its own row (out of view) would show;
+  // turn 2's header is in the window with its split row below it
+  const head = (k: string) => (root!.children ?? []).find((x: any) => x?.props?.key === k)
+  expect(txt(head('turn1'))).toMatch(/━+.*▪ ›tools 17\.2s/)
+  expect(head('split1')).toBe(undefined)
+  expect(txt(head('turn2'))).not.toMatch(/━/)
+  expect(head('split2')).toBeDefined()
 })
