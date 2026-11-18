@@ -243,6 +243,34 @@ test('on the desktop the surface lays the rows out: nothing is cut, padded or ru
   await m.press({ key: 'hid0' })
 })
 
+test('on the desktop the inspector, the keys page and the setup page are laid out by the surface too', async ($, on) => {
+  const m = await mountAt($, on, 'RVP', 43, 48, 'desktop')
+  const tree = async () => flat(await m.find({ type: 'Box' }))
+  // the inspector: the action as a title that wraps, the command as code, nothing cut by a count
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Run the tests/ }))!.key! })
+  const insp = await tree()
+  const title = insp.find(x => x.type === 'Text' && x.props?.weight === 'semibold' && /^Run the tests/.test(txt(x)))
+  expect(title?.props?.wrap).toBe('wrap')
+  expect(insp.find(x => x.type === 'Code')?.props?.source).toBe('claude plugin test plugins/agent-log')
+  expect(insp.some(x => x.type === 'Text' && /^exit$/.test(txt(x)))).toBe(true) // the fields are all there
+  await m.press({ key: 'back' })
+  // the keys page: a mark in its own column, in its colour; its line still names the colour
+  await m.press({ key: 'legend' })
+  const keys = await tree()
+  const mark = keys.find(x => x.type === 'Text' && x.props?.color === 'red' && (x.children ?? []).join('') === '✗')
+  expect(mark).toBeDefined()
+  expect(keys.some(x => x.type === 'Text' && (x.children ?? []).join('') === 'red: broke')).toBe(true)
+  expect(keys.some(x => x.type === 'Text' && /^━$/.test((x.children ?? []).join('')))).toBe(true) // the desktop's own mark
+  await m.press({ key: 'legend' })
+  // the setup page: a problem's whole line, cut by the surface
+  await m.press({ key: 'fsetup' })
+  const setup = await tree()
+  const prob = setup.find(x => x.type === 'Button' && /^✗ API error: overloaded_error 529/.test(String(x.props?.label)))
+  expect(flat(prob).some(x => x.type === 'Text' && x.props?.wrap === 'truncate-end')).toBe(true)
+  expect(setup.some(x => x.type === 'Text' && /…$/.test(txt(x)))).toBe(false)
+  await m.press({ key: 'back' })
+})
+
 test('on the desktop every row is still one element: the window fills the body and no more', async ($, on) => {
   const m = await mountAt($, on, 'RVE', 43, 20, 'desktop')
   const root = await m.find({ type: 'Box' })
