@@ -2130,7 +2130,7 @@ export const register: Register = (on, options) => {
     const aim = (k: string) => aims.get(k) ?? `b${k}`
     // The tint of a call's rows on the desktop: a grey a tenth opaque, so it shows on a dark and a light theme alike. No theme
     // key names a surface, and a text colour as a background would drown the row
-    const BAND = '#8080801f'
+    const BANDS: Record<string, string> = { a: '#80808014', b: '#80808033' }
     const line = ({ k, act, press, st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ', link, dim, away, more }: Line) => {
       if (press) pressable.add(k)
       const usual = !!away?.every(routine)
@@ -2138,9 +2138,9 @@ export const register: Register = (on, options) => {
       const room = cols - 2 - rail.length - who.length - tail.length - there.length - END - 1
       if (link?.endsWith('─') && who.startsWith(' ')) who = `─${who.slice(1)}` // a bracket's end (`╭─`) runs on into its row's indent: `╭── guard`
       return (
-        <Box key={k} flexDirection="row" overflow="hidden" backgroundColor={gui && link ? BAND : undefined}>
+        <Box key={k} flexDirection="row" overflow="hidden" backgroundColor={gui && link ? BANDS[link] : undefined}>
           {/* mono: the guides and brackets keep one width, so they meet from row to row */}
-          <Box flexShrink={0} width={2 + rail.length}><Text dimColor mono={gui || undefined}>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : link ? <Text dimColor>{link}</Text> : <Text>{mark}</Text>}</Box>
+          <Box flexShrink={0} width={2 + rail.length}><Text dimColor mono={gui || undefined}>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : link && !gui ? <Text dimColor>{link}</Text> : <Text>{mark}</Text>}</Box>
           {gui
             // the whole action, cut by the surface where the row ends; the place outside the root keeps its room beside it
             ? <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden" flexDirection="row">
@@ -2263,8 +2263,10 @@ export const register: Register = (on, options) => {
     type Group = { kind: 'one' | 'agent'; xs: [Entry]; link?: string; wait?: string; server?: string[] }
     // n rows on a call's bracket, the call at `at`: `╭` opens it, `╰` closes it, `├` marks the call between, `│` the rest. An end
     // that is not the call reaches toward its indented row (`╭─`), so the bracket holds the hooks and the call stands apart
-    // The desktop: box lines do not join from row to row there, so the rows on a call share a tint instead (line: BAND)
-    const bracket = (n: number, at: number) => Array.from({ length: n }, (_, i) => n < 2 ? undefined : gui ? ' ' : i === 0 ? (at === 0 ? '╭' : '╭─') : i === n - 1 ? (at === i ? '╰' : '╰─') : i === at ? '├' : '│')
+    // The desktop: box lines do not join from row to row there, so the rows on a call share a tint instead (line: BANDS), `a`
+    // and `b` by turns: two such calls in a row would read as one block in one tint
+    let bands = 0
+    const bracket = (n: number, at: number, band = n > 1 ? 'ab'[bands++ % 2] : undefined) => Array.from({ length: n }, (_, i) => n < 2 ? undefined : gui ? band : i === 0 ? (at === 0 ? '╭' : '╭─') : i === n - 1 ? (at === i ? '╰' : '╰─') : i === at ? '├' : '│')
     const groupsOf = (xs: Entry[]) => {
       const there = new Set(xs)
       const linked = (x: Entry) => x.kind !== 'tool' && !!x.use && there.has(callRow.get(x.use)!)
@@ -2317,7 +2319,8 @@ export const register: Register = (on, options) => {
     // a call's wait, drawn from its own fields above it; pressed, the call's inspector
     // only a wait on a decision: one on the model finishing the message that holds the call is the model's time (splitOf counts
     // it so), and would draw a row for every call. The inspector still says it
-    const waits = (y: Entry) => y.wait != null && (!!answerOf(y) || y.waitFor !== STREAMING)
+    // The desktop: a wait under a second has no row. Nearly every call has one there, and its time is in the call's inspector
+    const waits = (y: Entry) => y.wait != null && (!!answerOf(y) || y.waitFor !== STREAMING) && (!gui || y.wait >= SLOW)
     const waitLine = (y: Entry, rail: string, link?: string) => line({ k: `e${idOf(y)}w`, act: `Waiting for ${answerOf(y) ?? y.waitFor ?? 'the decision'}`, press: () => show(y), st: [secs(y.wait)], who: '  ', rail, link })
     // A group's parts, from the one switch on its kind:
     // - head: its own row, given the press (its fold's toggle when it has one, else the inspector on target) and that disclosure

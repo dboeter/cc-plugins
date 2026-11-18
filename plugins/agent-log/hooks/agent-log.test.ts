@@ -807,6 +807,16 @@ test('on the desktop a call\'s hook that changed nothing has no row: the call\'s
   await toLevel($, m, 'info')
 })
 
+test('on the desktop a permission wait under a second has no row; a longer one keeps its own', async ($, on) => {
+  session(on, 'DW', [
+    { t: T0, turn: 1, kind: 'tool', name: 'Bash', detail: 'ls', outcome: '', use: 'w1', ms: 10, wait: 400, waitFor: 'the permission decision (config)' },
+    { t: T0 + 5000, turn: 1, kind: 'tool', name: 'Bash', detail: 'make', outcome: '', use: 'w2', ms: 10, wait: 3300, waitFor: 'the permission decision (config)' },
+  ], { turn: 1 })
+  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'desktop', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 43, scroll: { offset: 0, bodyRows: 40 } } as any })
+  expect((await m.findAll({ type: 'Text', text: /^Waiting for the permission decision/ })).length).toBe(1)
+  expect(await m.find({ type: 'Text', text: /3\.3s/ })).toBeDefined()
+})
+
 test('a call\'s row keeps its own time; each of its hooks times its own row', async ($, on) => {
   const m = await mountWith($, on, 'SUM', [
     { t: T0, turn: 1, kind: 'tool', name: 'Edit', detail: 'x.ts', outcome: '', use: 'us', ms: 5500 }, // spans its PreToolUse hook

@@ -242,8 +242,13 @@ test('on the desktop the surface lays the rows out: nothing is cut, padded or ru
   const tint = rowOf(/Run the tests/)?.props?.backgroundColor
   expect(tint).toBeDefined()
   expect(rowOf(/Waiting for you/)?.props?.backgroundColor).toBe(tint)
-  expect(rowOf(/lint-feedback/)?.props?.backgroundColor).toBe(tint)
+  expect(rowOf(/lint-feedback/)?.props?.backgroundColor).toBe(rowOf(/Edit agent-log\.tsx/)?.props?.backgroundColor)
   expect(rowOf(/Read index\.ts/)?.props?.backgroundColor).toBeUndefined()
+  // the next call with rows on it takes the other tint, so two such calls in a row do not read as one block
+  const next = rowOf(/Clean the build output/)?.props?.backgroundColor
+  expect(next).toBeDefined()
+  expect(next).not.toBe(tint)
+  expect(rowOf(/guard/)?.props?.backgroundColor).toBe(next)
   expect(seen).toMatch(/3 hidden ►/) // the terminal's 4, less a call's quiet hook, which has no row here
   // the row keys the cursor and the inspector go by are the terminal's
   await m.press({ key: 'bturn1' })
