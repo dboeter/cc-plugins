@@ -250,7 +250,7 @@ test('on the desktop every row is still one element: the window fills the body a
   // the window starts inside turn 1: its header is pinned, and carries the split its own row (out of view) would show;
   // turn 2's header is in the window with its split row below it
   const head = (k: string) => (root!.children ?? []).find((x: any) => x?.props?.key === k)
-  expect(txt(head('turn1'))).toMatch(/━+.*▪ ›tools 17\.2s/)
+  expect(txt(head('turn1'))).toMatch(/^\*#1\*(‹\w+:━+›)+\d+ hidden ▸39\.6s$/) // the bar alone, so the time keeps its room
   expect(head('split1')).toBe(undefined)
   expect(txt(head('turn2'))).not.toMatch(/━/)
   expect(head('split2')).toBeDefined()

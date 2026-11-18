@@ -2059,7 +2059,7 @@ export const register: Register = (on, options) => {
     // The desktop's row under a turn's header: where its time went as a bar, each part as wide as its share (of BAR glyphs,
     // none under one), then the three largest in words behind a mark of their colour, so it reads without colour too. One
     // element, so one row to the window. Theme keys, not fixed colours: a skin recolours them with the rest
-    const BAR = 14
+    const BAR = 8 // a `━` draws 19 px wide there: 8 leave the words their room at 40 columns
     const PART: Record<string, string> = { model: 'claude', tools: 'suggestion', agents: 'merged', hooks: 'warning', permission: 'permission', you: 'permission', compact: 'inactive', 'before submit': 'inactive', other: 'inactive' }
     const splitBits = (n: number, m: Turn, bar: number, most: number) => {
       const ps = splitParts(n, m)
@@ -2105,8 +2105,9 @@ export const register: Register = (on, options) => {
       if (gui) return (
         <Box key={k} flexDirection="row" overflow="hidden" columnGap={1}>
           <Box flexShrink={0}>{m.ends.length ? <Button key={`b${k}`} label={n ? `#${n}` : 'start'} plain onPress={() => show(m.ends.at(-1)!)} /> : <Text weight="semibold">{n ? `#${n}` : 'start'}</Text>}</Box>
-          {/* pinned over a window that starts inside its turn, its split row is out of view: the split takes the words' place */}
-          {(pinned && n ? splitBits(n, m, 8, 2) : null) ?? <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end" weight="medium">{said ?? ''}</Text></Box>}
+          {/* pinned over a window that starts inside its turn, its split row is out of view: the bar takes the words' place.
+              The bar alone: with the parts in words beside it the row ran over and the time was clipped */}
+          {(b => b ? [b[0], <Box key="sgap" flexGrow={1} />] : null)(pinned && n ? splitBits(n, m, 6, 0) : null) ?? <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end" weight="medium">{said ?? ''}</Text></Box>}
           {hid ? <Box flexShrink={0}><Button key={`hid${n}`} label={openTurns.has(n) ? `hide ${hid} ▾` : `${hid} hidden ▸`} plain dimColor onPress={flip} /></Box> : null}
           <Box flexShrink={0}><Text tabular weight="semibold" color={m.aborted ? 'yellow' : undefined}>{time}</Text></Box>
         </Box>
@@ -2387,7 +2388,8 @@ export const register: Register = (on, options) => {
     const bgN = setup.bg?.tasks.length ?? 0, cronN = setup.bg?.crons.length ?? 0
     // the row itself says only what needs the eye: the model, and a rate limit once it nears (80%); the rest is on the page
     // led by `setup`, so the button says what it opens: `s: setup · Opus 5.5 · limit 85%`
-    const setupText = ['setup', [setup.model && `${modelName(setup.model)}${setup.effort != null ? ` ${setup.effort}` : ''}`, peak && peak.percentUsed >= 80 && `limit ${Math.round(peak.percentUsed)}%`].filter(Boolean).join(' · ')].filter(Boolean).join(' · ')
+    // the desktop's row has no room for the model beside the keys: the page has it, the row keeps the limit
+    const setupText = ['setup', [!gui && setup.model && `${modelName(setup.model)}${setup.effort != null ? ` ${setup.effort}` : ''}`, peak && peak.percentUsed >= 80 && `limit ${Math.round(peak.percentUsed)}%`].filter(Boolean).join(' · ')].filter(Boolean).join(' · ')
     // a page in place of the log; its own key pressed on it again, back to the log
     const openPage = (p: NonNullable<typeof page>) => {
       if (page === p && !inspect) return back()
@@ -2528,14 +2530,15 @@ export const register: Register = (on, options) => {
     const VIEW_KEYS: Partial<Record<View, string>> = { all: 'a', model: 'm', harness: 'h', outside: 'u' }
     const items: [number, any][] = SHOWN.map((v): [number, any] => [v.length + 4, vbtn(v, VIEW_KEYS[v]!)])
     const broke = problems.length ? `✗ ${problems[0]}${problems.length > 1 ? ` +${problems.length - 1}` : ''}` : '', away = elsewhere ? `↗ ${elsewhere} other project` : ''
-    const bare: [number, any][] = [...items, [LVW + 3, lbtn], [9, obtn], [7, kbtn], [gui ? 11 : 8, tbtn], /* the desktop pads its two cap-less buttons: 105 px where 8 cells count 75 */ [4, cbtn(1)], [4, cbtn(-1)],
+    const bare: [number, any][] = [...items, [LVW + 3, lbtn], [9, obtn], [7, kbtn], [gui ? 12 : 8, tbtn], [gui ? 6 : 4, cbtn(1)], [gui ? 6 : 4, cbtn(-1)], // the desktop: `^ ↑ ↓ turn` draws 102 px, `J ↓` 44
       ...(broke ? [[broke.length, <Text key="broke" color="red">{broke}</Text>] as [number, any]] : []),
       ...(away ? [[away.length, <Text key="away" color="magenta">{away}</Text>] as [number, any]] : []),
       [setupText.length + 3, <Button key="fsetup" label={setupText} hotkey="s" plain dimColor={page !== 'setup'} onPress={() => openPage('setup')} />]]
-    // the desktop's cells are wider than the letters these widths count, its key caps included (a row counted 39 wide drew in
-    // 340 of 440 px): 15% more per row still fits, and puts the four views on one row at 43 columns. The widths stay the padded
-    // ones, so a label that changes (level, fold) never repacks the rows
-    const controls = pack(bare.map(([w]) => w), gui ? Math.floor((cols - 1) * 1.15) : cols - 1).map((row, r) => <Box key={`ctl${r}`} flexDirection="row" columnGap={2} overflow="hidden">{row.map(i => bare[i]![1])}</Box>)
+    // The desktop, measured off screenshots at 41 and 43 columns: a cell is 10.6 px, a counted cell of a button 8.5, and the
+    // gap between two buttons 33 px, twice the 2 cells pack counts. So each item counts 2 more and the row holds a quarter
+    // more: the four views on one row from 41 columns. The widths stay the padded ones, so a label that changes (level, fold)
+    // never repacks the rows
+    const controls = pack(bare.map(([w]) => gui ? w + 2 : w), gui ? Math.floor(cols * 1.25) + 2 : cols - 1).map((row, r) => <Box key={`ctl${r}`} flexDirection="row" columnGap={2} overflow="hidden">{row.map(i => bare[i]![1])}</Box>)
     // the agent tree, only while an agent runs or the log is filtered: a finished agent is filtered to from its Agent row's
     // inspector (f), so a tree of finished agents would only take the log's rows
     const treeOn = agents.some(a => a.status === 'running') || only !== undefined
