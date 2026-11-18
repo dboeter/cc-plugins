@@ -275,7 +275,7 @@ test('on the desktop the inspector, the keys page and the setup page are laid ou
   expect(txt(head('Problems'))).toBe('Problems‹red:1 API error, 1 MCP server down›')
   expect(txt(head('Outside the root'))).toBe('Outside the root2 places')
   expect(head('Hooks')).toBeDefined()
-  expect(head('Background')).toBeDefined()
+  expect(txt(head('Background tasks'))).toBe('Background tasksshown once a turn ends') // no turn has ended since this instance loaded
   expect(setup.some(x => x.type === 'Text' && /: /.test(txt(x)) && x.props?.weight === 'semibold' && !/^✗/.test(txt(x)))).toBe(false) // no `Title: sentence` heads
   await m.press({ key: 'back' })
 })

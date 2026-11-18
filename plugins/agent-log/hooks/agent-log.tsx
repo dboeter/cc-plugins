@@ -510,7 +510,8 @@ export const harnessOf = (event: string, a: Record<string, any>): Omit<Entry, 't
   }
   if (event === 'api_error') return { kind: 'event', name: 'API error', detail: [a.status_code, a.error].filter(v => v != null && v !== '').join(' '), outcome: a.attempt ? `attempt ${a.attempt}` : '', status: 'failed', ms: Number(a.duration_ms) || undefined, peek: peek(String(a.error ?? '')) }
   const q = String(a.query_source ?? '').replace(/:.*/, '')
-  if (event === 'api_request' && q && q !== 'repl_main_thread' && q !== 'agent' && q !== 'sdk') return { kind: 'side', name: q, src: 'engine', detail: String(a.model ?? ''), outcome: '', status: 'ok', ms: Number(a.duration_ms) || undefined,
+  // plugin_model_complete: a plugin's $.model.complete, which its model.complete hook logs under the plugin's name (priceSides)
+  if (event === 'api_request' && q && q !== 'repl_main_thread' && q !== 'agent' && q !== 'sdk' && q !== 'plugin_model_complete') return { kind: 'side', name: q, src: 'engine', detail: String(a.model ?? ''), outcome: '', status: 'ok', ms: Number(a.duration_ms) || undefined,
     tok: [a.input_tokens, a.cache_read_tokens, a.cache_creation_tokens, a.output_tokens].map(n => Number(n) || 0), cost: Number(a.cost_usd) || undefined, req: typeof a.request_id === 'string' ? a.request_id : undefined }
   return undefined
 }
@@ -1106,6 +1107,19 @@ const startOf = (y: Entry) => y.t - (y.pre ?? 0)
 // opt.ahead: on a tool row, its PreToolUse context attachments to come. opt.above: on such an attachment, the tool it goes with.
 // opt.after: on a PostToolUse attachment, the tool it followed (its newest call of that name in the loop, by start)
 // opt.start: on a tool row, when its call began: its t is pre after it. opt.once: left out when the session holds a row of the same kind, name, detail and outcome
+// A plugin's $.model.complete reaches the log twice: the model.complete hook has the plugin's name and its reply, the collector's
+// api_request (query_source plugin_model_complete) its price. One row, the hook's, priced by the record whichever lands first:
+// a record with no row yet waits here a minute. Matched by their token counts, as a step's bill is
+let sideBills: { t: number; sig: string; cost?: number; req?: string }[] = []
+function priceSides($: EngineInterface, bill?: typeof sideBills[number]): Promise<void> {
+  return mutate(async () => {
+    if (bill) sideBills = [...sideBills.filter(b => bill.t - b.t < 60000).slice(-19), bill]
+    for (const b of sideBills) {
+      const y = entries.findLast(y => y.kind === 'side' && y.src === 'plugin' && y.cost == null && y.req == null && (y.tok ?? []).join() === b.sig)
+      if (y) { y.cost = b.cost; y.req = b.req; sideBills = sideBills.filter(z => z !== b); touch($) }
+    }
+  }).catch(() => {})
+}
 function push($: EngineInterface, e: Omit<Entry, 't'>, opt: { ahead?: number; above?: string; after?: string; start?: number; once?: boolean } = {}): void {
   const t = opt.start ?? Date.now() // when it happened, not when the chain gets to it: rows are placed by it
   mutate(async () => {
@@ -1276,7 +1290,8 @@ export const register: Register = (on, options) => {
       const sig = [a.input_tokens, a.cache_read_tokens, a.cache_creation_tokens, a.output_tokens].map(Number).join()
       const bill = { t: Date.now(), sig, cost: Number(a.cost_usd) || undefined, req: typeof a.request_id === 'string' ? a.request_id : undefined }
       const s = unbilled.find(u => u.sig === sig)
-      if (!s) bills = [...bills.filter(b => bill.t - b.t < 60000).slice(-19), bill]
+      if (String(a.query_source ?? '').startsWith('plugin_model_complete')) priceSides($, bill)
+      else if (!s) bills = [...bills.filter(b => bill.t - b.t < 60000).slice(-19), bill]
       else { // the step's row is in, or queued ahead of this on the chain
         unbilled = unbilled.filter(u => u !== s)
         // a text-less step a full log evicted on its own push was folded without its price: the price joins its totals line
@@ -1696,7 +1711,7 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => { logFailure($, 'agent.spawn', next.error); return next(e) })
 
   // A plugin's own model call ($.model.complete): one row, under main, named by the plugin; its reply's start, never its prompt.
-  // The collector records none of these (none of 100 in the event log carried an api_request), so nothing logs it twice
+  // The collector records each too, as an api_request of its own: that one draws no row and prices this one (priceSides)
   on('model.complete', async ($, e, next) => {
     const t0 = Date.now()
     const r: any = await next(e)
@@ -1706,6 +1721,7 @@ export const register: Register = (on, options) => {
       const v = r?.value ?? r, u = v?.usage
       if (v && by !== 'agent-log') push($, { kind: 'side', name: by, src: 'plugin', detail: e.model, outcome: '', status: v.isAnswered ? 'ok' : v.reason === 'aborted' ? 'aborted' : 'failed', ms: Date.now() - t0,
         tok: u ? [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens, u.output_tokens] : undefined, peek: peek(v.isAnswered ? v.text : [v.reason, v.status, v.error?.message].filter(Boolean).join(' ')) }, { start: t0 })
+      if (v && by !== 'agent-log') priceSides($) // the collector's record may be in already
     } catch {}
     return r
   }).catch(($, e, next) => { logFailure($, 'model.complete', next.error); return next(e) })
@@ -2588,7 +2604,8 @@ export const register: Register = (on, options) => {
             {(steps.some(x => x.agent) || totals.use.agents) && useRows('subagents', 'agents', steps.filter(x => x.agent))}
             {sides.map(([n, ys]) => useRows(SIDE[n] ?? n, `side:${n}`, ys))}
             {forks.map(([n, ys]) => useRows(n, `plugin:${n}`, ys))}
-            {sec('bg', 'Background', !setup.bg ? 'known after a turn' : inFlight ? `${inFlight} in flight` : 'nothing in flight')}
+            {/* the engine says what runs in the background only as a turn ends: none has ended since this instance loaded */}
+            {sec('bg', 'Background tasks', !setup.bg ? 'shown once a turn ends' : inFlight ? `${inFlight} running` : 'none running')}
             {setup.bg?.tasks.map((t, i) => lr(`bg${i}`, t.command ?? t.description, t.status, { dim: true }))}
             {setup.bg?.crons.map((c, i) => lr(`cr${i}`, first(c.prompt), `${c.schedule}${c.recurring ? '' : ' (once)'}`, { dim: true }))}
           </Box>
@@ -2629,7 +2646,7 @@ export const register: Register = (on, options) => {
     // only presses a drawn Button. Counted, not wrapped by flex: the window needs the header's exact height. plain + hotkey draws
     // `a: all•`, label + 3 cells (a view's label is its name and the `•` cell); Button takes no bold, so the views not active are drawn dim instead
     const VIEW_KEYS: Partial<Record<View, string>> = { all: 'a', model: 'm', harness: 'h', outside: 'u' }
-    const items: [number, any][] = SHOWN.map((v): [number, any] => [v.length + 4, vbtn(v, VIEW_KEYS[v]!)])
+    const items: [number, any][] = SHOWN.map((v): [number, any] => [v.length + (gui ? 3 : 4), vbtn(v, VIEW_KEYS[v]!)]) // the desktop's label has no `•` cell
     const broke = problems.length ? `✗ ${problems[0]}${problems.length > 1 ? ` +${problems.length - 1}` : ''}` : '', away = elsewhere ? `↗ ${elsewhere} other project` : ''
     const bare: [number, any][] = [...items, [LVW + 3, lbtn], [9, obtn], [7, kbtn], [gui ? 12 : 8, tbtn], [gui ? 6 : 4, cbtn(1)], [gui ? 6 : 4, cbtn(-1)], // the desktop: `^ ↑ ↓ turn` draws 102 px, `J ↓` 44
       ...(broke ? [[broke.length, <Text key="broke" color="red">{broke}</Text>] as [number, any]] : []),
@@ -2637,9 +2654,9 @@ export const register: Register = (on, options) => {
       [setupText.length + 3, <Button key="fsetup" label={setupText} hotkey="s" plain dimColor={page !== 'setup'} onPress={() => openPage('setup')} />]]
     // The desktop, measured off screenshots at 41 and 43 columns: a cell is 10.6 px, a counted cell of a button 8.5, and the
     // gap between two buttons 33 px, twice the 2 cells pack counts. So each item counts 2 more and the row holds a quarter
-    // more: the four views on one row from 41 columns. The widths stay the padded ones, so a label that changes (level, fold)
-    // never repacks the rows
-    const controls = pack(bare.map(([w]) => gui ? w + 2 : w), gui ? Math.floor(cols * 1.25) + 2 : cols - 1).map((row, r) => <Box key={`ctl${r}`} flexDirection="row" columnGap={2} overflow="hidden">{row.map(i => bare[i]![1])}</Box>)
+    // more, less 2 for the scrollbar a page that scrolls draws inside the body (bodyColumns counts it in): the four views on
+    // one row from 41 columns. The widths stay the padded ones, so a label that changes (level, fold) never repacks the rows
+    const controls = pack(bare.map(([w]) => gui ? w + 2 : w), gui ? Math.floor(cols * 1.25) - 2 : cols - 1).map((row, r) => <Box key={`ctl${r}`} flexDirection="row" columnGap={2} overflow="hidden">{row.map(i => bare[i]![1])}</Box>)
     // the agent tree, only while an agent runs or the log is filtered: a finished agent is filtered to from its Agent row's
     // inspector (f), so a tree of finished agents would only take the log's rows
     const treeOn = agents.some(a => a.status === 'running') || only !== undefined
