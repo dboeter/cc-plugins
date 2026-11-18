@@ -254,20 +254,29 @@ test('on the desktop the inspector, the keys page and the setup page are laid ou
   expect(insp.find(x => x.type === 'Code')?.props?.source).toBe('claude plugin test plugins/agent-log')
   expect(insp.some(x => x.type === 'Text' && /^exit$/.test(txt(x)))).toBe(true) // the fields are all there
   await m.press({ key: 'back' })
-  // the keys page: a mark in its own column, in its colour; its line still names the colour
+  // the keys page: a legend, not sentences. Each mark in its colour with a few words, in grids under a heading
   await m.press({ key: 'legend' })
   const keys = await tree()
-  const mark = keys.find(x => x.type === 'Text' && x.props?.color === 'red' && (x.children ?? []).join('') === '✗')
-  expect(mark).toBeDefined()
-  expect(keys.some(x => x.type === 'Text' && (x.children ?? []).join('') === 'red: broke')).toBe(true)
-  expect(keys.some(x => x.type === 'Text' && /^━$/.test((x.children ?? []).join('')))).toBe(true) // the desktop's own mark
+  const says = (xs: any[], s: string) => xs.some(x => x.type === 'Text' && (x.children ?? []).join('') === s)
+  expect(keys.find(x => x.type === 'Text' && x.props?.color === 'red' && (x.children ?? []).join('') === '✗')).toBeDefined()
+  expect(says(keys, 'broke')).toBe(true)
+  expect(says(keys, '━')).toBe(true) // the desktop's own mark
+  for (const t of ['How it went', 'Reading a row', 'Keys without a button']) expect(keys.some(x => x.type === 'Text' && x.props?.weight === 'semibold' && txt(x) === t)).toBe(true)
+  expect(keys.filter(x => x.type === 'Text').every(x => txt(x).length < 110)).toBe(true) // nothing to read through
+  expect(keys.some(x => x.type === 'Box' && x.props?.flexWrap === 'wrap')).toBe(true)
   await m.press({ key: 'legend' })
-  // the setup page: a problem's whole line, cut by the surface
+  // the setup page: sections whose heads carry their state at the right edge; a problem's whole line, cut by the surface
   await m.press({ key: 'fsetup' })
   const setup = await tree()
   const prob = setup.find(x => x.type === 'Button' && /^✗ API error: overloaded_error 529/.test(String(x.props?.label)))
   expect(flat(prob).some(x => x.type === 'Text' && x.props?.wrap === 'truncate-end')).toBe(true)
   expect(setup.some(x => x.type === 'Text' && /…$/.test(txt(x)))).toBe(false)
+  const head = (t: string) => setup.find(x => x.type === 'Box' && x.props?.flexDirection === 'row' && (x.children ?? []).length === 2 && txt(x.children[0]) === t)
+  expect(txt(head('Problems'))).toBe('Problems‹red:1 API error, 1 MCP server down›')
+  expect(txt(head('Outside the root'))).toBe('Outside the root2 places')
+  expect(head('Hooks')).toBeDefined()
+  expect(head('Background')).toBeDefined()
+  expect(setup.some(x => x.type === 'Text' && /: /.test(txt(x)) && x.props?.weight === 'semibold' && !/^✗/.test(txt(x)))).toBe(false) // no `Title: sentence` heads
   await m.press({ key: 'back' })
 })
 
