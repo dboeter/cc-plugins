@@ -252,7 +252,24 @@ test('on the desktop the inspector, the keys page and the setup page are laid ou
   const title = insp.find(x => x.type === 'Text' && x.props?.weight === 'semibold' && /^Run the tests/.test(txt(x)))
   expect(title?.props?.wrap).toBe('wrap')
   expect(insp.find(x => x.type === 'Code')?.props?.source).toBe('claude plugin test plugins/agent-log')
-  expect(insp.some(x => x.type === 'Text' && /^exit$/.test(txt(x)))).toBe(true) // the fields are all there
+  // sections read by their right edge, not a column of keys: the failure first, then where the time went
+  const said = (s: string) => insp.filter(x => x.type === 'Text' && (x.children ?? []).join('') === s)
+  expect(said('Failed').length).toBe(1)
+  expect(said('Time').length).toBe(1)
+  expect(said('permission decision').length).toBe(1)
+  expect(said('4.2s')[0]?.props?.tabular).toBe(true)
+  await m.press({ key: 'back' })
+  // a turn's inspector has the whole split: a bar and a row per part
+  await m.press({ key: (await m.find({ type: 'Button', text: /^#1/ }))!.key! })
+  const turn = await tree()
+  expect(turn.find(x => x.props?.key === 'tbar')?.children?.length).toBe(5)
+  expect(turn.filter(x => x.type === 'Text' && ['tools', 'other', 'you', 'hooks'].includes((x.children ?? []).join(''))).length).toBe(4) // `model` is a view's button too
+  await m.press({ key: 'back' })
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Run the tests/ }))!.key! })
+  for (const k of ['agent', 'took', 'when', 'waited']) expect(said(k).length).toBe(0) // no column of names
+  expect(insp.filter(x => x.type === 'Text' && txt(x) === txt(title)).length).toBe(1) // the title is said once
+  const keyed = insp.filter(x => x.props?.key != null).map(x => x.props.key)
+  expect(new Set(keyed).size).toBe(keyed.length)
   await m.press({ key: 'back' })
   // the keys page: a legend, not sentences. Each mark in its colour with a few words, in grids under a heading
   await m.press({ key: 'legend' })

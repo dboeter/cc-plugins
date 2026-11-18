@@ -1823,6 +1823,21 @@ export const register: Register = (on, options) => {
       // the cursor on the row back lands on, the ring with it: j and k go on from the row the inspector showed last
       if (key) { sel = key; $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: `b${key}` }).catch(() => {}) }) }
     }
+    // The desktop's page is read by its right edge: a section's head carries its count or state there, a row its figure. So
+    // lists stay closed until asked for (a hook event's hooks, a marketplace's plugins) and nothing is a sentence.
+    // sec: a section's head. lr: a row, its name cut by the surface; press makes the name a button; bad: a word in yellow after it;
+    // mark: a square in a part's colour before it; lit: the figure is the row's point, so not dimmed. The inspector reads the same way
+    const sec = (k: string, t: string, right = '', c?: string) => [<Text key={`gap${k}`}> </Text>,
+      <Box key={`t${k}`} flexDirection="row" columnGap={1}><Box flexGrow={1} flexShrink={1} minWidth={0}><Text weight="semibold" wrap="truncate-end">{t}</Text></Box>{right ? <Box flexShrink={0}><Text tabular color={c} dimColor={!c}>{right}</Text></Box> : null}</Box>]
+    const lr = (k: string, left: string, right = '', o: { indent?: number; dim?: boolean; press?: () => void; bad?: string; mark?: string; lit?: boolean } = {}) => (
+      <Box key={`r${k}`} flexDirection="row" columnGap={1}>
+        {o.indent ? <Box flexShrink={0} width={o.indent} /> : null}
+        {o.mark ? <Box flexShrink={0}><Text color={o.mark}>▪</Text></Box> : null}
+        <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{o.press ? <Button key={k} label={left} plain dimColor={o.dim} onPress={o.press}><Text wrap="truncate-end">{left}</Text></Button> : <Text wrap="truncate-end" dimColor={o.dim}>{left}</Text>}</Box>
+        {right ? <Box flexShrink={0}><Text tabular dimColor={o.lit ? undefined : true}>{right}</Text></Box> : null}
+        {o.bad ? <Box flexShrink={0}><Text color="yellow">{o.bad}</Text></Box> : null}
+      </Box>
+    )
     const inspector = async (x: Entry) => {
       const a = x.agent ? ((await $.agent.list().catch(() => [])) as AgentInfo[]).find(y => y.id === x.agent) : undefined
       const who = x.agent ? (a ? `${nameOf(a.id)} · ${a.description}` : `${names[x.agent] ?? 'subagent'} ${x.agent}`) : 'main loop'
@@ -1852,15 +1867,91 @@ export const register: Register = (on, options) => {
       // The key column there is 7 cells: its cells are wider than its letters, and the longest key (`command`) fits in 6
       const kv = (k: string, v: string, as?: 'code' | 'mono') => <Box key={k} flexDirection="row"><Box flexShrink={0} width={gui ? 7 : 8}><Text dimColor>{k}</Text></Box>
         {gui && as === 'code' ? <Box flexGrow={1} flexShrink={1} minWidth={0}><Code source={v} language="bash" wrap="wrap" /></Box> : <Text wrap="wrap" mono={(gui && !!as) || undefined}>{v}</Text>}</Box>
+      const navRow = (
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>{/* wraps rather than clips: the engine scrolls the inspector, so its height need not be counted */}
+          <Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} />
+          {at > 0 && <Button key="prev" label="↑ prev" hotkey="p" plain onPress={() => show(steps[at - 1]!)} />}
+          {at >= 0 && at < steps.length - 1 && <Button key="next" label="↓ next" hotkey="n" plain onPress={() => show(steps[at + 1]!)} />}
+          {/* f is fclear's too: this draws after the controls, so it wins here (d.ts: two clash, later wins) */}
+          {x.child && <Button key="fonly" label={only === x.child ? 'every agent' : 'only this agent'} hotkey="f" plain onPress={only1} />}
+        </Box>
+      )
+      const peekLabel = !x.peek ? '' : (x.kind === 'event' ? 'details' : x.kind === 'step' || x.kind === 'side' ? (stat(x) === 'failed' && !x.stop ? 'error' : x.peek.length >= PEEK ? `reply, first ${PEEK} chars` : 'reply') : x.kind === 'fork' ? (stat(x) === 'ok' ? 'reply' : 'reason') : x.kind === 'tool' ? (stat(x) === 'denied' ? 'reason' : x.peek.length >= PEEK ? `output, first ${PEEK} chars` : 'output') : stat(x) === 'feedback' ? 'feedback' : x.outcome.startsWith('block') ? 'reason' : 'text') + (x.bytes != null && x.bytes > PEEK ? ` (first ${PEEK} of ${x.bytes} chars)` : '')
+      if (gui) {
+        // The desktop reads by sections, not a column of keys: what failed first, then where the row's time went (a bar and
+        // a figure per part), who allowed it and its hooks. A long value (command, path, output) sits full width under its name
+        const tool = x.kind === 'tool', title = action(x), W = Math.max(6, Math.floor(e.props.bodyColumns / 2) - 3)
+        const meta = [tool ? x.name : toolOf(x), x.agent ? who : '', x.turn != null ? (x.turn ? `turn ${x.turn}` : 'session start') : '', new Date(x.t).toLocaleTimeString(), `${ago(Date.now() - x.t)} ago`].filter(Boolean)
+        const blk = (k: string, label: string, v: string, as?: 'code' | 'mono') => !v ? null : [<Text key={`g${k}`}> </Text>, <Text key={`l${k}`} dimColor>{label}</Text>,
+          <Box key={`v${k}`} flexDirection="column">{as === 'code' ? <Code source={v} language="bash" wrap="wrap" /> : <Text wrap="wrap" mono={as === 'mono' || undefined}>{v}</Text>}</Box>]
+        const fact = (k: string, v: string) => lr(`f${k}`, k, v, { dim: true, lit: true })
+        const asked = tool && x.step ? entries.find(y => y.kind === 'step' && y.step === x.step) : undefined
+        const turn = x.kind === 'turn' && !x.agent ? turnIn(turnOf(x)) : undefined
+        const around = x.pre != null || x.post != null ? (x.pre ?? 0) + (x.post ?? 0) : undefined
+        // the parts a row's time is made of. A call: its wait, its hooks, its run (the model's request before it is not the call's time)
+        const parts: [string, number, string?][] = turn ? splitParts(turnOf(x), turn).map(([k, ms]): [string, number, string?] => [k, ms, PART[k]])
+          : tool ? ([[answerOf(x) ? 'waiting for you' : 'permission decision', x.wait, 'permission'], ['hooks', around, 'warning'], [x.child ? 'the call' : 'ran', x.ms, 'suggestion']] as [string, number | undefined, string][]).filter((q): q is [string, number, string] => q[1] != null)
+          : ([['to the first token', x.ttft], ['thinking', x.think]] as [string, number | undefined][]).filter((q): q is [string, number] => q[1] != null)
+        const sum = parts.reduce((t, q) => t + q[1], 0)
+        const total = tool ? (parts.length ? sum : undefined) : x.ms
+        const drawn = parts.length > 1 && parts.every(q => q[2]) && sum > 0
+        const hs = tool && x.use ? entries.filter(y => y.use === x.use && y.kind !== 'tool') : []
+        const cmds = x.kind === 'hook' ? [...new Set((hookCfg?.[x.origin ?? ''] ?? []).filter(h => h.name === x.name && fits(h.matcher, x.detail || undefined)).map(h => h.cmd ?? ''))].filter(Boolean) : []
+        const ranOn = x.kind === 'hook' && x.use ? entries.find(y => y.kind === 'tool' && y.use === x.use) : undefined
+        const plain = (tool && (stat(x) === 'ok' || x.exit != null || !!x.insight)) || (x.kind === 'turn' && stat(x) !== 'aborted') // the sentence would only restate the head, or the Failed section under it
+        const [ti = 0, tr = 0, tw = 0, to = 0] = x.tok ?? []
+        return (
+          <Box key="inspect" flexDirection="column" width={e.props.bodyColumns}>
+            {navRow}
+            <Text> </Text>
+            <Text weight="semibold" size="heading" wrap="wrap">{title}</Text>
+            <Box flexDirection="row" flexWrap="wrap" columnGap={2}>{meta.map((t, n) => <Text key={`m${n}`} dimColor>{t}</Text>)}</Box>
+            {!plain && <Text dimColor wrap="wrap">{what}</Text>}
+            {(x.exit != null || !!x.insight) && [sec('fail', BAD.has(stat(x)) ? 'Failed' : 'Result', x.exit != null ? `exit ${x.exit}` : '', x.exit ? 'red' : undefined),
+              x.insight ? <Text key="broke" wrap="wrap">{x.insight}</Text> : null]}
+            {total != null && [sec('time', 'Time', exact(total)),
+              drawn ? <Box key="tbar" flexDirection="row">{parts.map(([k, ms, c]) => <Text key={`tb${k}`} color={c}>{'━'.repeat(Math.max(1, Math.round(ms / sum * W)))}</Text>)}</Box> : null,
+              ...(parts.length > 1 || !tool ? parts.map(([k, ms, c]) => lr(`p${k}`, k, exact(ms), { mark: c, lit: true })) : []),
+              x.child ? lr('pran', 'the agent ran', ran(x)[0], { dim: true }) : null,
+              asked ? lr('pask', `${modelName(asked.name)} request before it`, exact(asked.ms), { dim: true }) : null,
+              turn && turn.agents.size > 1 ? <Text key="loops" dimColor wrap="wrap">{loops(turn.agents)}</Text> : null]}
+            {!!x.check && [sec('perm', 'Permission', x.check === 'ask' ? (x.via === 'user_reject' || x.via === 'user_abort' ? 'rejected' : 'asked') : x.check === 'allow' ? 'allowed' : 'denied', stat(x) === 'denied' ? 'red' : undefined),
+              <Text key="permby" dimColor wrap="wrap">{x.check === 'ask' ? [x.rule && `rule ${x.rule}`, VIA[x.via ?? ''] ?? (x.via ? `${x.via} decided` : 'the mode or you decided')].filter(Boolean).join('; ') : `by ${x.rule ? `rule ${x.rule}` : 'the mode, a hook or the tool itself'}`}</Text>]}
+            {/* each hook once, its own row a press away: what it said back (blocked, feedback, added text), else its time */}
+            {hs.length > 0 && (ns => [sec('hooks', 'Hooks', String(ns.length)), ...ns.map(n => {
+              const ys = hs.filter(y => y.name === n), said = ys.find(loud), timed = ys.filter(y => y.ms != null)
+              const did = [said && stat(said), ys.some(y => y.kind === 'prompt') && 'added text'].filter(Boolean)
+              return lr(`h${n}`, n, did.length ? did.join(', ') : timed.length ? exact(timed.reduce((t, y) => t + y.ms!, 0)) : '', { press: () => show(ys.find(y => y.kind === 'hook') ?? ys[0]!) })
+            })])([...new Set(hs.map(y => y.name))])}
+            {x.src === 'hook' && x.kind !== 'hook' && !!x.origin && blk('trig', 'ran on', [x.origin, x.detail].filter(Boolean).join(' · '))}
+            {ranOn && blk('on', 'the call it ran on', `${ranOn.name}: ${ranOn.cmd ?? ranOn.detail}`, 'mono')}
+            {blk('hcmd', 'command', cmds.join('\n'), 'code')}
+            {x.cmd ? blk('cmd', 'command', x.cmd, 'code') : x.src !== 'hook' && (x.name === 'Bash' ? blk('cmd', 'command', x.detail ?? '', 'code') : blk('in', 'input', x.detail ?? '', tool ? 'mono' : undefined))}
+            {!!x.cmd && x.detail !== title && blk('desc', 'described as', x.detail ?? '')}
+            {blk('pat', 'pattern', x.pat ?? '', 'mono')}
+            {blk('out', 'outside the project root', x.out ?? '', 'mono')}
+            {x.tok && [sec('tok', 'Tokens', x.cost != null ? `$${x.cost.toFixed(4)}` : ''),
+              lr('tin', 'in', num(ti + tr + tw), { lit: true }), lr('tcr', 'read from cache', num(tr), { indent: 2, dim: true }), lr('tcw', 'written to cache', num(tw), { indent: 2, dim: true }), lr('tout', 'out', num(to), { lit: true })]}
+            {(f => f.length > 0 && [<Text key="gfacts"> </Text>, ...f])([
+              !x.tok && x.cost != null && fact('cost', `$${x.cost.toFixed(4)}`),
+              x.kind === 'step' && fact('model', `${x.name}${x.effort != null ? ` · effort ${x.effort}` : ''}`),
+              x.kind === 'side' && !!x.detail && fact('model', x.detail),
+              x.server && fact('server tools', x.server.map(([n, ms]) => `${n} ${exact(ms ?? undefined)}`).join(', ')),
+              !!x.stop && x.stop !== 'end_turn' && fact('stop', x.stop),
+              !!x.type && x.type !== x.name && fact('type', x.type),
+            ].filter(Boolean))}
+            {blk('ftok', 'tokens', x.kind === 'fork' ? x.outcome : '')}
+            {blk('etok', 'tokens', end?.outcome ?? '')}
+            {blk('req', 'request id', x.req ?? '', 'mono')}
+            {blk('thought', 'thought, its first line', x.thought ?? '')}
+            {blk('peek', peekLabel, x.peek && title.includes(x.peek) ? '' : x.peek ?? '', tool ? 'mono' : undefined)}{/* a short reply is the title already */}
+            {blk('epeek', end?.peek && end.peek.length >= PEEK ? `reply, first ${PEEK} chars` : 'reply', end?.peek ?? '')}
+          </Box>
+        )
+      }
       return (
         <Box key="inspect" flexDirection="column" width={e.props.bodyColumns}>
-          <Box flexDirection="row" flexWrap="wrap" columnGap={2}>{/* wraps rather than clips: the engine scrolls the inspector, so its height need not be counted */}
-            <Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} />
-            {at > 0 && <Button key="prev" label="↑ prev" hotkey="p" plain onPress={() => show(steps[at - 1]!)} />}
-            {at >= 0 && at < steps.length - 1 && <Button key="next" label="↓ next" hotkey="n" plain onPress={() => show(steps[at + 1]!)} />}
-            {/* f is fclear's too: this draws after the controls, so it wins here (d.ts: two clash, later wins) */}
-            {x.child && <Button key="fonly" label={only === x.child ? 'every agent' : 'only this agent'} hotkey="f" plain onPress={only1} />}
-          </Box>
+          {navRow}
           <Text> </Text>
           {/* an Agent row's time as its row shows it: the agent's run, not the call's. The desktop: the action a title of its own that wraps, the tool and time under it */}
           {gui ? <Box flexDirection="column"><Text weight="semibold" size="heading" wrap="wrap">{action(x)}</Text><Box flexDirection="row"><Text dimColor>{x.kind === 'tool' ? x.name : toolOf(x)}</Text>{out(x.child ? ran(x) : cell(x))}</Box></Box>
@@ -1924,7 +2015,7 @@ export const register: Register = (on, options) => {
           )}
           {x.peek && (
             <Box flexDirection="column" marginTop={1}>
-              <Text dimColor>{x.kind === 'event' ? 'details' : x.kind === 'step' || x.kind === 'side' ? (stat(x) === 'failed' && !x.stop ? 'error' : x.peek.length >= PEEK ? `reply, first ${PEEK} chars` : 'reply') : x.kind === 'fork' ? (stat(x) === 'ok' ? 'reply' : 'reason') : x.kind === 'tool' ? (stat(x) === 'denied' ? 'reason' : x.peek.length >= PEEK ? `output, first ${PEEK} chars` : 'output') : stat(x) === 'feedback' ? 'feedback' : x.outcome.startsWith('block') ? 'reason' : 'text'}{x.bytes != null && x.bytes > PEEK ? ` (first ${PEEK} of ${x.bytes} chars)` : ''}</Text>
+              <Text dimColor>{peekLabel}</Text>
               <Text wrap="wrap" mono={(gui && x.kind === 'tool') || undefined}>{x.peek}</Text>{/* a call's output: a program's text */}
             </Box>
           )}
@@ -2505,19 +2596,6 @@ export const register: Register = (on, options) => {
         const tail = (ms: number[]) => ms.length ? spreadOf(ms).p90 : -1
         return [...m].sort((p, q) => tail(q[1].ms) - tail(p[1].ms))
       }
-      // The desktop's page is read by its right edge: a section's head carries its count or state there, a row its figure. So
-      // lists stay closed until asked for (a hook event's hooks, a marketplace's plugins) and nothing is a sentence.
-      // sec: a section's head. lr: a row, its name cut by the surface; press makes the name a button; bad: a word in yellow after it
-      const sec = (k: string, t: string, right = '', c?: string) => [<Text key={`gap${k}`}> </Text>,
-        <Box key={`t${k}`} flexDirection="row" columnGap={1}><Box flexGrow={1} flexShrink={1} minWidth={0}><Text weight="semibold" wrap="truncate-end">{t}</Text></Box>{right ? <Box flexShrink={0}><Text tabular color={c} dimColor={!c}>{right}</Text></Box> : null}</Box>]
-      const lr = (k: string, left: string, right = '', o: { indent?: number; dim?: boolean; press?: () => void; bad?: string } = {}) => (
-        <Box key={`r${k}`} flexDirection="row" columnGap={1}>
-          {o.indent ? <Box flexShrink={0} width={o.indent} /> : null}
-          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{o.press ? <Button key={k} label={left} plain dimColor={o.dim} onPress={o.press}><Text wrap="truncate-end">{left}</Text></Button> : <Text wrap="truncate-end" dimColor={o.dim}>{left}</Text>}</Box>
-          {right ? <Box flexShrink={0}><Text tabular dimColor>{right}</Text></Box> : null}
-          {o.bad ? <Box flexShrink={0}><Text color="yellow">{o.bad}</Text></Box> : null}
-        </Box>
-      )
       const hookRows = (ev: string) => {
         const hs = hookCfg?.[ev] ?? [], own = [...new Set(hs.filter(h => !h.plugin).map(h => h.name))]
         const theirs = [...new Set(hs.filter(h => h.plugin).map(h => h.name))].filter(n => !own.includes(n))
