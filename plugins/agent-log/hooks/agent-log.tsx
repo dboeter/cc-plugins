@@ -2057,9 +2057,9 @@ export const register: Register = (on, options) => {
     }
     const splitText = (n: number, m: Turn, most = Infinity) => splitParts(n, m, most).map(([k, ms]) => `${k} ${secs(ms)}`).join(' · ')
     // The desktop's row under a turn's header: where its time went as a bar, each part as wide as its share (of BAR glyphs,
-    // none under one), then the three largest in words behind a mark of their colour, so it reads without colour too. One
+    // none under one), then the two largest in words behind a mark of their colour, so it reads without colour too. One
     // element, so one row to the window. Theme keys, not fixed colours: a skin recolours them with the rest
-    const BAR = 8 // a `━` draws 19 px wide there: 8 leave the words their room at 40 columns
+    const BAR = 6 // a `━` draws 21 px wide there: 6 leave the two largest parts' words their room at 40 columns
     const PART: Record<string, string> = { model: 'claude', tools: 'suggestion', agents: 'merged', hooks: 'warning', permission: 'permission', you: 'permission', compact: 'inactive', 'before submit': 'inactive', other: 'inactive' }
     const splitBits = (n: number, m: Turn, bar: number, most: number) => {
       const ps = splitParts(n, m)
@@ -2072,7 +2072,7 @@ export const register: Register = (on, options) => {
       ]
     }
     const splitRow = (n: number, m: Turn) => {
-      const bits = splitBits(n, m, BAR, 3)
+      const bits = splitBits(n, m, BAR, 2)
       return bits && <Box key={`split${n}`} flexDirection="row" overflow="hidden" columnGap={1}><Box flexShrink={0} width={2} />{bits}</Box>
     }
     // one name per kind of loop: a plugin that forks every step names four loops in a turn, `you-should-know ×4`; numbered agents
