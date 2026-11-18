@@ -233,7 +233,13 @@ test('on the desktop the surface lays the rows out: nothing is cut, padded or ru
   expect(new Set(parts.map(x => x.props.color)).size).toBe(parts.length) // a colour per part
   const widths = parts.map(x => (x.children ?? []).join('').length)
   expect(widths[0]).toBeGreaterThan(widths.at(-1)!) // largest first, as wide as its share
-  expect(txt(bar)).toMatch(/▪ ›tools 17\.2s/) // the bar's parts again in words
+  expect(txt(bar)).toMatch(/■ ›tools 17\.2s/) // the bar's parts again in words
+  // the app's font draws box lines unjoined and the small marks at half size: an arrow says which call a hook belongs to
+  const seen = all.filter(x => x.type === 'Text' || x.type === 'Button').map(x => String(x.props?.label ?? '') + (x.children ?? []).filter((c: any) => typeof c === 'string').join('')).join('\n')
+  expect(seen).not.toMatch(/[╭╰├▸▾⚠▪]/)
+  expect(seen).toMatch(/^↓$/m) // a hook before its call
+  expect(seen).toMatch(/^↑$/m) // one after it
+  expect(seen).toMatch(/4 hidden ►/)
   // the row keys the cursor and the inspector go by are the terminal's
   await m.press({ key: 'bturn1' })
   expect(await m.find({ type: 'Button', key: 'back' })).toBeDefined()
@@ -304,7 +310,7 @@ test('on the desktop every row is still one element: the window fills the body a
   // the window starts inside turn 1: its header is pinned, and carries the split its own row (out of view) would show;
   // turn 2's header is in the window with its split row below it
   const head = (k: string) => (root!.children ?? []).find((x: any) => x?.props?.key === k)
-  expect(txt(head('turn1'))).toMatch(/^\*#1\*(‹\w+:━+›)+\d+ hidden ▸39\.6s$/) // the bar alone, so the time keeps its room
+  expect(txt(head('turn1'))).toMatch(/^\*#1\*(‹\w+:━+›)+\d+ hidden ►39\.6s$/) // the bar alone, so the time keeps its room
   expect(head('split1')).toBe(undefined)
   expect(txt(head('turn2'))).not.toMatch(/━/)
   expect(head('split2')).toBeDefined()

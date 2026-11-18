@@ -1805,6 +1805,13 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => { logFailure($, 'ui.focus', next.error); return next(e) })
 
   // === PANE ===
+  // The desktop app's font draws these marks at half the size of the others (● ■ ⊘): each becomes the full-size shape beside
+  // it in the font. Swapped in the drawn tree, since the marks are written into strings all over; not in text that wraps
+  // (a title, output) or in code, which may hold the same characters as someone's own
+  const DESK: Record<string, string> = { '▸': '►', '▾': '▼', '⚠': '▲', '▪': '■' }
+  const deskMarks = (n: any): any => typeof n === 'string' ? n.replace(/[▸▾⚠▪]/g, c => DESK[c]!) : Array.isArray(n) ? n.map(deskMarks)
+    : !n || typeof n !== 'object' || n.type === 'Code' || n.props?.wrap === 'wrap' ? n
+    : { ...n, ...(typeof n.props?.label === 'string' ? { props: { ...n.props, label: deskMarks(n.props.label) } } : {}), ...(n.children ? { children: deskMarks(n.children) } : {}) }
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE) return next(e) // other plugins' panes
     await load($)
@@ -1813,6 +1820,7 @@ export const register: Register = (on, options) => {
     // row laid out by counting characters is cut a third early, a padded label pads nothing and a rule of `─` wraps. There the
     // surface cuts and aligns (truncate-end, tabular digits, weight); every row is still one element, as the window counts them
     const gui = e.surface === 'desktop'
+    const desk = <T,>(t: T): T => gui ? deskMarks(t) : t
     const out = ([s, c]: [string, string?]) => s ? <Text color={c} dimColor={!c}>  {s}</Text> : null
     // back to the row the inspector opened from, or the fold that holds it, centred by the next draw; gone (evicted) -> the end
     const back = () => {
@@ -2122,7 +2130,7 @@ export const register: Register = (on, options) => {
       return (
         <Box key={k} flexDirection="row" overflow="hidden">
           {/* mono: the guides and brackets keep one width, so they meet from row to row */}
-          <Box flexShrink={0} width={2 + rail.length}><Text dimColor mono={gui || undefined}>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : link ? <Text dimColor mono={gui || undefined}>{link}</Text> : <Text>{mark}</Text>}</Box>
+          <Box flexShrink={0} width={2 + rail.length}><Text dimColor mono={gui || undefined}>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : link ? <Text dimColor>{link}</Text> : <Text>{mark}</Text>}</Box>
           {gui
             // the whole action, cut by the surface where the row ends; the place outside the root keeps its room beside it
             ? <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden" flexDirection="row">
@@ -2244,7 +2252,8 @@ export const register: Register = (on, options) => {
     type Group = { kind: 'one' | 'agent'; xs: [Entry]; link?: string; wait?: string; server?: string[] }
     // n rows on a call's bracket, the call at `at`: `╭` opens it, `╰` closes it, `├` marks the call between, `│` the rest. An end
     // that is not the call reaches toward its indented row (`╭─`), so the bracket holds the hooks and the call stands apart
-    const bracket = (n: number, at: number) => Array.from({ length: n }, (_, i) => n < 2 ? undefined : i === 0 ? (at === 0 ? '╭' : '╭─') : i === n - 1 ? (at === i ? '╰' : '╰─') : i === at ? '├' : '│')
+    // The desktop: box lines do not join from row to row there, so a hook's row says which call it is on with an arrow at it
+    const bracket = (n: number, at: number) => Array.from({ length: n }, (_, i) => n < 2 ? undefined : gui ? (i < at ? '↓' : i > at ? '↑' : ' ') : i === 0 ? (at === 0 ? '╭' : '╭─') : i === n - 1 ? (at === i ? '╰' : '╰─') : i === at ? '├' : '│')
     const groupsOf = (xs: Entry[]) => {
       const there = new Set(xs)
       const linked = (x: Entry) => x.kind !== 'tool' && !!x.use && there.has(callRow.get(x.use)!)
@@ -2511,7 +2520,7 @@ export const register: Register = (on, options) => {
     const LEGEND: [string, [string, string, string?][]][] = [
       ['How it went', [['✗', 'broke', 'red'], ['⊘', 'refused', 'cyan'], ['⚠', 'ended early', 'yellow'], ['■', 'a hook stopped it', 'yellow'], ['◷', 'slow hook', 'yellow'], ['↩', 'hook feedback', 'blue'],
         ['●', 'running now', 'green'], ['✓', 'agent finished'], ['+', 'hook added context'], ['·', 'hook changed nothing'], ['∅', 'found nothing'], ['?', 'unknown agent state']]],
-      ['Reading a row', [['↗', 'in another project', 'magenta'], ['≈', 'estimated'], ['╭ ╰', 'a call and its hooks'], ['│ ├', 'inside an open fold'], ['▸ ▾', 'open, close'], ['›', 'the filtered agent'], ['━', 'a turn\'s time, by part', 'claude']]],
+      ['Reading a row', [['↗', 'in another project', 'magenta'], ['≈', 'estimated'], ['↓ ↑', 'a hook, at its call'], ['│', 'inside an open fold'], ['▸ ▾', 'open, close'], ['›', 'the filtered agent'], ['━', 'a turn\'s time, by part', 'claude']]],
       ['Keys without a button', [['enter', 'open the row'], ['e', 'newest row'], ['b', 'back'], ['n p', 'next, previous row'], ['f', 'only this agent'], ['o', 'fold at the cursor'], ['↑ ↓', 'move the cursor'], ['tab', 'move the focus']]],
     ]
     const keysGui = () => {
@@ -2759,11 +2768,11 @@ export const register: Register = (on, options) => {
     ]
     // taken before the inspector draws: `o` pressed there must not move the window that back is about to centre
     const held = anchor; anchor = undefined
-    if (inspect) return <Box flexDirection="column">{head}{await inspector(inspect)}</Box>
-    if (page === 'keys') return <Box flexDirection="column">{head}{keysPage()}</Box>
+    if (inspect) return desk(<Box flexDirection="column">{head}{await inspector(inspect)}</Box>)
+    if (page === 'keys') return desk(<Box flexDirection="column">{head}{keysPage()}</Box>)
     if (page) { // where the session is: asked on each draw of the page, as /cd and a worktree move change it
       const [at, times] = await Promise.all([Promise.all([$.session.root(), $.session.cwd(), homeOf($)]).catch(() => undefined), timesNow($)])
-      return <Box flexDirection="column">{head}{setupPage(at, times)}</Box>
+      return desk(<Box flexDirection="column">{head}{setupPage(at, times)}</Box>)
     }
     // The cursor's move: by `move` rows that open something (pressable), in the log's order, stopping at either end. None yet, or
     // its row gone (evicted, another view) or out of the window the last draw showed (a ^↑↓, a wheel, a page scroll), it starts
@@ -2823,13 +2832,12 @@ export const register: Register = (on, options) => {
     const winRows = avail - (stick !== undefined ? 1 : 0)
     winMax = Math.max(0, rows.length - avail + (sticks(rows.length - avail) ? 1 : 0))
     winStart = win; winEnd = win + winRows - 1
-    return (
+    return desk(
       <Box flexDirection="column">
         {head}
         {stick === undefined ? null : gui && !String(rows[win]?.props?.key).startsWith('split') ? header(Number(String(rows[stick].props.key).slice(4)), String(rows[stick].props.key), true) : rows[stick]}
         {rows.slice(win, win + winRows)}
         {!follow && <Box key="jumprow" flexDirection="row" justifyContent="flex-end"><Button key="jump" label={fresh ? `↓ ${fresh} new event${fresh > 1 ? 's' : ''} (e)` : '↓ newest (e)'} hotkey="e" onPress={jump} /></Box>}
-      </Box>
-    )
+      </Box>)
   })
 }
