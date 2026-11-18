@@ -2432,7 +2432,7 @@ export const register: Register = (on, options) => {
             <Text key={`lgap${g}`}> </Text>,
             <Text key={`lt${g}`} weight="semibold">{t}</Text>,
             <Box key={`lg${g}`} flexDirection="row" flexWrap="wrap">
-              {items.map(([mk, what, c]) => <Box key={`li${mk}`} flexDirection="row" width={cw}><Box flexShrink={0} width={g === 2 ? 5 : 3}><Text color={c} mono weight={g === 2 ? 'medium' : undefined}>{mk}</Text></Box><Text wrap="truncate-end" dimColor>{what}</Text></Box>)}
+              {items.map(([mk, what, c]) => <Box key={`li${mk}`} flexDirection="row" width={cw}><Box flexShrink={0} width={[3, 4, 6][g]}>{/* the widest of each group: one glyph, `╭ ╰`, `enter` */}<Text color={c} mono weight={g === 2 ? 'medium' : undefined}>{mk}</Text></Box><Text wrap="truncate-end" dimColor>{what}</Text></Box>)}
             </Box>,
           ])}
           <Text key="lgapn"> </Text>
