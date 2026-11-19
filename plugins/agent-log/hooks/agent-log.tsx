@@ -424,6 +424,11 @@ let busy = false // main's turn is running: the header counts its time up
 // draws rows win..win+avail. winMax is the last render's, for the scroll hook; backKey is the row back centres on
 let win = 0, winMax = 0
 let tailed = -1 // the desktop: the row count its last scroll to the end was for, so a redraw with no new row does not scroll again
+let drawnOn: string | undefined // the surface the pane last drew on: ui.scroll does not say which
+// The desktop's follow after a person's scroll: off when they scroll up, on when they reach the end, else as it was. offset is
+// where the window is going (d.ts ui.scroll), so the end is contentRows less the rows showing
+export const followAfter = (e: { by: number; offset: number; bodyRows: number; contentRows: number; origin: { kind: string } }) =>
+  e.origin.kind !== 'person' ? undefined : e.by < 0 ? false : e.offset >= e.contentRows - e.bodyRows ? true : undefined
 let backKey: string | undefined
 // a row that opened or closed a fold, and its line in the window: the next draw keeps it on that line rather than pinning the end
 let anchor: { k: string; off: number } | undefined
@@ -1784,6 +1789,13 @@ export const register: Register = (on, options) => {
   // engine reports Home and End as contentRows: about a page; e still jumps to the newest row. An arrow (one row, no pointer:
   // a wheel tick carries one) moves the row cursor instead, as j and k do; the wheel and the page keys move the window
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
+    // The desktop draws the whole log and the app moves over it: every move goes on as asked. Answering one without next (as
+    // below) leaves the engine's window where it was, so the app snapped back to the end the moment it scrolled
+    if (drawnOn === 'desktop') {
+      const f = followAfter(e)
+      if (f !== undefined && f !== follow && !inspect && !page) { follow = f; $.ui.invalidate('ui.render') }
+      return next(e)
+    }
     if (inspect || page) return next(e) // the inspector and the pages wrap text, so their height is unknown: the engine scrolls them
     if (e.origin.kind === 'person' && !e.pointer && Math.abs(e.by) === 1) { move = e.by; $.ui.invalidate('ui.render'); return {} }
     if (e.origin.kind === 'person') {
@@ -1823,6 +1835,7 @@ export const register: Register = (on, options) => {
     // row laid out by counting characters is cut a third early, a padded label pads nothing and a rule of `─` wraps. There the
     // surface cuts and aligns (truncate-end, tabular digits, weight); every row is still one element, as the window counts them
     const gui = e.surface === 'desktop'
+    drawnOn = e.surface
     const desk = <T,>(t: T): T => gui ? deskMarks(t) : t
     const out = ([s, c]: [string, string?]) => s ? <Text color={c} dimColor={!c}>  {s}</Text> : null
     // back to the row the inspector opened from, or the fold that holds it, centred by the next draw; gone (evicted) -> the end
@@ -2821,10 +2834,10 @@ export const register: Register = (on, options) => {
     }
     if (!rows.length) { winMax = 0; return <Box flexDirection="column">{head}<Text dimColor wrap="truncate-end">{empty()}</Text></Box> } // a stale winMax would let a scroll turn follow off
     if (gui) {
-      // The desktop app scrolls a pane itself and sends the plugin no wheel moves (ui.scroll never fires there), so a window
-      // the plugin moves could not be scrolled at all: the whole log is drawn and the app's scrollbar moves over it. Following
-      // pulls the view to the end on each new row, and the plugin cannot see a person scroll away: a button under the log
-      // pauses it, as moving the cursor or coming back from a row does
+      // The desktop app scrolls a pane itself, and only a tree taller than the pane has anything to scroll (a window the plugin
+      // moved fit the pane, so the wheel never reached ui.scroll): the whole log is drawn and the app's scrollbar moves over
+      // it. Following pulls the view to the end on each new row; scrolling up stops it (followAfter), as the button under the
+      // log, moving the cursor or coming back from a row do
       winStart = 0; winEnd = rows.length - 1; winMax = 0; win = 0
       const reveal = backKey ?? held?.k
       backKey = undefined

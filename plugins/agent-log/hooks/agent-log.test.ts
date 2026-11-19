@@ -1,6 +1,6 @@
 // Pane tests share the module's state (level, folds, finished agents shown): a test that changes one sets it back before it ends.
 import { test, expect, mock, type TestBody } from 'claude-code/testing'
-import { ASKED, byLifecycle, hookStats, sparkOf, spreadOf, timesBy, costOf, scrub, ctxOf, harnessOf, hookName, hookTimes, markAgain, modelName, outsideOf, pack, pickRuns, placesOf, rootOf, routine, runNames, keepRun, scriptName, speaker, targetOf, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
+import { followAfter, ASKED, byLifecycle, hookStats, sparkOf, spreadOf, timesBy, costOf, scrub, ctxOf, harnessOf, hookName, hookTimes, markAgain, modelName, outsideOf, pack, pickRuns, placesOf, rootOf, routine, runNames, keepRun, scriptName, speaker, targetOf, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
 
 // the shape hooksOf builds: settings hooks by script name, plugin hooks by plugin. Texts are real rows from the store
 const cfg = {
@@ -16,6 +16,14 @@ const cfg = {
   ],
   Stop: [{ matcher: '', name: 'plan-followed' }],
 }
+
+test('on the desktop a person scrolling up stops the log following its end, and reaching the end again starts it', () => {
+  const at = (by: number, offset: number, kind = 'person') => followAfter({ by, offset, bodyRows: 30, contentRows: 200, origin: { kind } } as any)
+  expect(at(-3, 167)).toBe(false) // up from the end
+  expect(at(3, 100)).toBe(undefined) // down, still above the end: as it was
+  expect(at(3, 170)).toBe(true) // the end: 200 rows less the 30 showing
+  expect(at(-200, 0, 'plugin')).toBe(undefined) // the plugin's own move (back, the end on a new row) changes nothing
+})
 
 test('silent run names every hook whose matcher fits the target', () => {
   expect(hookName(cfg, 'PreToolUse', 'Bash')).toBe('guard, test-gate, install-cooldown, context-mode')
