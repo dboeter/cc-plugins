@@ -272,7 +272,7 @@ test('on the desktop the inspector, the keys page and the setup page are laid ou
   const said = (s: string) => insp.filter(x => x.type === 'Text' && (x.children ?? []).join('') === s)
   expect(said('Failed').length).toBe(1)
   expect(said('Time').length).toBe(1)
-  expect(said('permission decision').length).toBe(1)
+  expect(said('waiting for you to answer the permission prompt').length).toBe(1) // what the wait was for, as recorded
   expect(said('4.2s')[0]?.props?.tabular).toBe(true)
   await m.press({ key: 'back' })
   // a turn's inspector has the whole split: a bar and a row per part

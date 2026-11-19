@@ -993,7 +993,7 @@ async function loadNow($: EngineInterface): Promise<void> {
   if (dirty && key) { const tail = { key, value: saved() }; if (!await save($, tail.key, tail.value)) pendingTail = tail } // the old session's unflushed tail, before its key is dropped
   dirty = false
   const v: any = await $.store.get(k) // any shape a past version saved: checked field by field below
-  if (key) { stepOf.clear(); bills = []; unbilled = [] } // the old session's requests; not on the first load, which a step's push can trigger after its pairing was queued
+  if (key) { stepOf.clear(); bills = []; unbilled = []; sideBills = [] } // the old session's requests; not on the first load, which a step's push can trigger after its pairing was queued
   if (setup.runsOf !== id) { setup.runs.clear(); setup.runsOf = id } // the old session's hook runs; ones the new session's records counted before this load stay
   key = k
   words.clear(); openTurns.clear(); hookOpen.clear(); sel = undefined // the old session's prompts (never stored, so a resumed session's turns have none), opened turns and setup-page hook events, the cursor
@@ -1119,7 +1119,8 @@ const startOf = (y: Entry) => y.t - (y.pre ?? 0)
 let sideBills: { t: number; sig: string; cost?: number; req?: string }[] = []
 function priceSides($: EngineInterface, bill?: typeof sideBills[number]): Promise<void> {
   return mutate(async () => {
-    if (bill) sideBills = [...sideBills.filter(b => bill.t - b.t < 60000).slice(-19), bill]
+    const now = Date.now() // a record a minute old is no row's: dropped whether or not another record arrives
+    sideBills = [...sideBills.filter(b => now - b.t < 60000).slice(bill ? -19 : -20), ...bill ? [bill] : []]
     for (const b of sideBills) {
       // a count either side leaves out is 0: a usage without cache counts still meets a record that has them as 0
       const sig = (xs: unknown[]) => xs.map(v => Number(v) || 0).join()
@@ -1914,12 +1915,13 @@ export const register: Register = (on, options) => {
         const around = x.pre != null || x.post != null ? (x.pre ?? 0) + (x.post ?? 0) : undefined
         // the parts a row's time is made of. A call: its wait, its hooks, its run (the model's request before it is not the call's time)
         const parts: [string, number, string?][] = turn ? splitParts(turnOf(x), turn).map(([k, ms]): [string, number, string?] => [k, ms, PART[k]])
-          : tool ? ([[answerOf(x) ? 'waiting for you' : 'permission decision', x.wait, 'permission'], ['hooks', around, 'warning'], [x.child ? 'the call' : 'ran', x.ms, 'suggestion']] as [string, number | undefined, string][]).filter((q): q is [string, number, string] => q[1] != null)
+          // the wait named by what it waited on, as the terminal's inspector says it: you, a permission decision, or main's message
+          : tool ? ([[`waiting for ${answerOf(x) ?? x.waitFor ?? 'the decision'}`, x.wait, x.waitFor === STREAMING ? 'claude' : 'permission'], ['hooks', around, 'warning'], [x.child ? 'the call' : 'ran', x.ms, 'suggestion']] as [string, number | undefined, string][]).filter((q): q is [string, number, string] => q[1] != null)
           : ([['to the first token', x.ttft], ['thinking', x.think]] as [string, number | undefined][]).filter((q): q is [string, number] => q[1] != null)
         const sum = parts.reduce((t, q) => t + q[1], 0)
         const total = tool ? (parts.length ? sum : undefined) : x.ms
         const drawn = parts.length > 1 && parts.every(q => q[2]) && sum > 0
-        const hs = tool && x.use ? entries.filter(y => y.use === x.use && y.kind !== 'tool') : []
+        const hs = tool && x.use ? entries.filter(y => y.use === x.use && y.kind !== 'tool').flatMap(splitHooks) : [] // a merged chain, a row per hook
         const cmds = x.kind === 'hook' ? [...new Set((hookCfg?.[x.origin ?? ''] ?? []).filter(h => h.name === x.name && fits(h.matcher, x.detail || undefined)).map(h => h.cmd ?? ''))].filter(Boolean) : []
         const ranOn = x.kind === 'hook' && x.use ? entries.find(y => y.kind === 'tool' && y.use === x.use) : undefined
         const plain = (tool && (stat(x) === 'ok' || x.exit != null || !!x.insight)) || (x.kind === 'turn' && stat(x) !== 'aborted') // the sentence would only restate the head, or the Failed section under it

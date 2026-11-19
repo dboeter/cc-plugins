@@ -274,9 +274,9 @@ test('engine context that only composes the request is logged but not shown, its
 })
 
 // a store the test reads back: what agent-log wrote, by key. session.end flushes the log's last second
-const capture = (on: any, id: string, agents: object[] = []) => {
+const capture = (on: any, id: string | (() => string), agents: object[] = []) => { // id: a function for a test that switches session
   const db: Record<string, any> = {}
-  on('session.id', () => ({ value: id }))
+  on('session.id', () => ({ value: typeof id === 'function' ? id() : id }))
   on('agent.list', () => ({ value: agents }))
   on('config.list', () => ({ value: [] }))
   on('store.get', (_$: any, e: any) => ({ value: db[e.key] }))
@@ -1483,6 +1483,38 @@ for (const first of ['hook', 'collector'] as const) test(`the collector's record
   const sides = (await flushed($, id, db)).filter(x => x.kind === 'side')
   expect(sides.length).toBe(1)
   expect(sides[0]).toMatchObject({ name: 'titler', src: 'plugin', tok: [143, 0, 0, 16], cost: 0.0004, req: 'req_t' })
+})
+
+test('a collector record left over from one session never prices a plugin call in the next', {
+  plugins: [{ name: 'titler', register: on => { on('command.run', { command: 'title' } as any, async ($: any) => { await $.model.complete({ model: 'claude-haiku-5-5', prompt: 'Name this session' }); return { text: 'ok' } }) } }],
+}, async ($, on) => {
+  let sid = 'MDa', input = 50
+  const db = capture(on, () => sid)
+  on('telemetry.log', () => ({ value: undefined }) as any)
+  on('model.complete', async () => ({ value: { isAnswered: true, text: 'A title', usage: { input_tokens: input, output_tokens: 16, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }) as any)
+  await ($ as any).command.run({ command: 'title', args: '', origin: { kind: 'composer' }, presentation: 'text' }) // the first session's own call
+  await ($ as any).telemetry.log({ to: 'collector', event: 'api_request', attributes: { query_source: 'plugin_model_complete', model: 'claude-haiku-5-5', duration_ms: 1100, input_tokens: 143, cache_read_tokens: 0, cache_creation_tokens: 0, output_tokens: 16, cost_usd: 0.0004, request_id: 'req_old' } })
+  sid = 'MDb'; input = 143
+  await ($ as any).command.run({ command: 'title', args: '', origin: { kind: 'composer' }, presentation: 'text' })
+  const sides = (await flushed($, 'MDb', db)).filter(x => x.kind === 'side')
+  expect(sides.length).toBe(1)
+  expect(sides[0].req).toBe(undefined)
+  expect(sides[0].cost).toBe(undefined)
+})
+
+test('on the desktop a call\'s inspector lists each hook of a merged chain, and says what its wait was for', async ($, on) => {
+  session(on, 'DI', [
+    { t: T0, turn: 1, kind: 'tool', name: 'Bash', detail: 'List the files', cmd: 'ls', outcome: '', use: 'ui', ms: 10, pre: 900, wait: 2000, waitFor: 'the model to finish its message' },
+    hookRow({ name: 'guard, test-gate', use: 'ui', ms: 900, each: { guard: 300, 'test-gate': 600 } }),
+  ], { turn: 1 })
+  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'desktop', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 43, scroll: { offset: 0, bodyRows: 40 } } as any })
+  await m.press({ key: (await m.find({ type: 'Button', text: /^List the files/ }))!.key! })
+  expect(await m.find({ type: 'Button', text: /^guard$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /^test-gate$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /guard, test-gate/ })).toBe(undefined)
+  expect(await m.find({ type: 'Text', text: 'waiting for the model to finish its message' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: 'permission decision' })).toBe(undefined)
+  await m.press({ key: 'back' })
 })
 
 test('a plugin\'s model call whose usage leaves the cache counts out is still priced by the collector\'s record', {
