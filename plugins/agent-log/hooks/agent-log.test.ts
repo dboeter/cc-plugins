@@ -1477,6 +1477,19 @@ for (const first of ['hook', 'collector'] as const) test(`the collector's record
   expect(sides[0]).toMatchObject({ name: 'titler', src: 'plugin', tok: [143, 0, 0, 16], cost: 0.0004, req: 'req_t' })
 })
 
+test('a plugin\'s model call whose usage leaves the cache counts out is still priced by the collector\'s record', {
+  plugins: [{ name: 'titler', register: on => { on('command.run', { command: 'title' } as any, async ($: any) => { await $.model.complete({ model: 'claude-haiku-5-5', prompt: 'Name this session' }); return { text: 'ok' } }) } }],
+}, async ($, on) => {
+  const db = capture(on, 'MDgap')
+  on('telemetry.log', () => ({ value: undefined }) as any)
+  on('model.complete', async () => ({ value: { isAnswered: true, text: 'A title', usage: { input_tokens: 143, output_tokens: 16 } } }) as any)
+  await ($ as any).command.run({ command: 'title', args: '', origin: { kind: 'composer' }, presentation: 'text' })
+  await ($ as any).telemetry.log({ to: 'collector', event: 'api_request', attributes: { query_source: 'plugin_model_complete', model: 'claude-haiku-5-5', duration_ms: 1100, input_tokens: 143, cache_read_tokens: 0, cache_creation_tokens: 0, output_tokens: 16, cost_usd: 0.0004, request_id: 'req_g' } })
+  const sides = (await flushed($, 'MDgap', db)).filter(x => x.kind === 'side')
+  expect(sides.length).toBe(1)
+  expect(sides[0]).toMatchObject({ name: 'titler', cost: 0.0004, req: 'req_g' })
+})
+
 // the engine's notice, as it queued it on 2026-10-25 for every person's hook cc-plugin-sec-default sent an event past
 const skipNotice = (plugin: string, event: string) => `<task-notification>\n${plugin}: its ${event} hook was skipped. "cc-plugin-sec-default" runs first and sent the event on past it.\n</task-notification>`
 

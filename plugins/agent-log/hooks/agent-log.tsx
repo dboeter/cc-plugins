@@ -1115,7 +1115,9 @@ function priceSides($: EngineInterface, bill?: typeof sideBills[number]): Promis
   return mutate(async () => {
     if (bill) sideBills = [...sideBills.filter(b => bill.t - b.t < 60000).slice(-19), bill]
     for (const b of sideBills) {
-      const y = entries.findLast(y => y.kind === 'side' && y.src === 'plugin' && y.cost == null && y.req == null && (y.tok ?? []).join() === b.sig)
+      // a count either side leaves out is 0: a usage without cache counts still meets a record that has them as 0
+      const sig = (xs: unknown[]) => xs.map(v => Number(v) || 0).join()
+      const y = entries.findLast(y => y.kind === 'side' && y.src === 'plugin' && y.cost == null && y.req == null && !!y.tok && sig(y.tok) === sig(b.sig.split(',')))
       if (y) { y.cost = b.cost; y.req = b.req; sideBills = sideBills.filter(z => z !== b); touch($) }
     }
   }).catch(() => {})
@@ -2174,7 +2176,13 @@ export const register: Register = (on, options) => {
     // Parts under 0.1 s are left out; other is the engine's and plugins' own work between steps, before submit the turn rows' preSubmit
     // (the engine's time before your prompt's submit). most: the header's two largest
     const SHOW = ['model', 'tools', 'agents', 'hooks', 'compact', 'permission', 'you', 'before submit', 'other']
+    // once per turn per draw: the desktop asks for a turn's split from its header, its split row and its pinned header
+    const splits = new Map<number, [string, number][]>()
     const splitParts = (n: number, m: Turn, most = Infinity) => {
+      if (!splits.has(n)) splits.set(n, splitAll(n, m))
+      return splits.get(n)!.slice(0, most)
+    }
+    const splitAll = (n: number, m: Turn) => {
       const parts = SPLIT.map(() => 0)
       let span = 0, preSubmit = 0
       const add = (xs: number[], ms: number) => { xs.forEach((v, i) => { parts[i]! += v }); span += ms }
@@ -2184,7 +2192,7 @@ export const register: Register = (on, options) => {
       else if (!m.ends.length && m.first != null && m.last! > m.first) add(splitOf(m.xs, m.first, m.last!), m.last! - m.first)
       const by: Record<string, number> = { 'before submit': preSubmit, other: span - preSubmit - parts.reduce((a, b) => a + b, 0) }
       SPLIT.forEach((k, i) => { by[k] = parts[i]! })
-      return SHOW.filter(k => by[k]! >= 100).sort((p, q) => by[q]! - by[p]!).slice(0, most).map((k): [string, number] => [k, by[k]!])
+      return SHOW.filter(k => by[k]! >= 100).sort((p, q) => by[q]! - by[p]!).map((k): [string, number] => [k, by[k]!])
     }
     const splitText = (n: number, m: Turn, most = Infinity) => splitParts(n, m, most).map(([k, ms]) => `${k} ${secs(ms)}`).join(' · ')
     // The desktop's row under a turn's header: where its time went as a bar, each part as wide as its share (of BAR glyphs,
