@@ -313,15 +313,24 @@ test('on the desktop the inspector, the keys page and the setup page are laid ou
   await m.press({ key: 'back' })
 })
 
-test('on the desktop every row is still one element: the window fills the body and no more', async ($, on) => {
+test('on the desktop the whole log is drawn, each row one element: the app scrolls it, and the log follows its end until paused', async ($, on) => {
+  const scrolls: any[] = []
+  on('ui.scroll', (_$: any, e: any) => { scrolls.push(e); return {} })
   const m = await mountAt($, on, 'RVE', 43, 20, 'desktop')
   const root = await m.find({ type: 'Box' })
-  expect((root!.children ?? []).length).toBe(20)
-  // the window starts inside turn 1: its header is pinned, and carries the split its own row (out of view) would show;
-  // turn 2's header is in the window with its split row below it
-  const head = (k: string) => (root!.children ?? []).find((x: any) => x?.props?.key === k)
-  expect(txt(head('turn1'))).toMatch(/^\*#1\*(‹\w+:━+›)+\d+ hidden ►39\.6s$/) // the bar alone, so the time keeps its room
-  expect(head('split1')).toBe(undefined)
-  expect(txt(head('turn2'))).not.toMatch(/━/)
-  expect(head('split2')).toBeDefined()
+  const kids = (root!.children ?? []) as any[]
+  // the app sends the plugin no wheel moves, so a window of 20 rows could not be scrolled: every turn's rows are there
+  expect(kids.length).toBeGreaterThan(30)
+  const head = (k: string) => kids.find((x: any) => x?.props?.key === k)
+  for (const k of ['turn1', 'split1', 'turn2', 'split2']) expect(head(k)).toBeDefined()
+  expect(txt(head('turn1'))).not.toMatch(/━/) // no header is pinned: each keeps its split on the row under it
+  // following: a button under the log says so and pauses it; paused, it offers the newest rows
+  const under = async () => (await m.findAll({ type: 'Button', text: /pause$|^↓ (\d+ new|newest)/ })).length
+  expect(await m.find({ type: 'Button', text: /pause$/ })).toBeDefined()
+  expect(await under()).toBe(1)
+  await m.press({ key: 'pause' })
+  expect(await m.find({ type: 'Button', text: /pause$/ })).toBe(undefined)
+  expect(await under()).toBe(1) // the jump button in its place
+  await m.press({ key: 'jump' })
+  expect(await m.find({ type: 'Button', text: /pause$/ })).toBeDefined()
 })

@@ -423,6 +423,7 @@ let busy = false // main's turn is running: the header counts its time up
 // The pane scrolls its own rows under a header that never moves: the engine's window stays at the top (ui.scroll) and the log
 // draws rows win..win+avail. winMax is the last render's, for the scroll hook; backKey is the row back centres on
 let win = 0, winMax = 0
+let tailed = -1 // the desktop: the row count its last scroll to the end was for, so a redraw with no new row does not scroll again
 let backKey: string | undefined
 // a row that opened or closed a fold, and its line in the window: the next draw keeps it on that line rather than pinning the end
 let anchor: { k: string; off: number } | undefined
@@ -2176,7 +2177,7 @@ export const register: Register = (on, options) => {
     // Parts under 0.1 s are left out; other is the engine's and plugins' own work between steps, before submit the turn rows' preSubmit
     // (the engine's time before your prompt's submit). most: the header's two largest
     const SHOW = ['model', 'tools', 'agents', 'hooks', 'compact', 'permission', 'you', 'before submit', 'other']
-    // once per turn per draw: the desktop asks for a turn's split from its header, its split row and its pinned header
+    // once per turn per draw: a turn's split is asked for by its header, its split row and its inspector
     const splits = new Map<number, [string, number][]>()
     const splitParts = (n: number, m: Turn, most = Infinity) => {
       if (!splits.has(n)) splits.set(n, splitAll(n, m))
@@ -2229,7 +2230,7 @@ export const register: Register = (on, options) => {
     // inspector, which holds the whole split and the loops that acted. The time sits flush right, over the rows' time cell,
     // pushed there by a growing spacer; that cell never shrinks, and on a narrow pane the split truncates first. `start` (n 0)
     // is no turn: no words, no split, no time, only its hidden rows
-    const header = (n: number, k: string, pinned = false) => {
+    const header = (n: number, k: string) => {
       const m = turnIn(n), hid = hidden.get(n)?.length // not `h`: that name is the JSX factory, and shadowing it breaks every tag below
       const time = n ? `${m.aborted ? '⚠ ' : ''}${took(n, m)}` : ''
       const said = words.get(n), split = n ? splitText(n, m, 2) : ''
@@ -2244,9 +2245,7 @@ export const register: Register = (on, options) => {
       if (gui) return (
         <Box key={k} flexDirection="row" overflow="hidden" columnGap={1}>
           <Box flexShrink={0}>{m.ends.length ? <Button key={`b${k}`} label={n ? `#${n}` : 'start'} plain onPress={() => show(m.ends.at(-1)!)} /> : <Text weight="semibold">{n ? `#${n}` : 'start'}</Text>}</Box>
-          {/* pinned over a window that starts inside its turn, its split row is out of view: the bar takes the words' place.
-              The bar alone: with the parts in words beside it the row ran over and the time was clipped */}
-          {(b => b ? [b[0], <Box key="sgap" flexGrow={1} />] : null)(pinned && n ? splitBits(n, m, 6, 0) : null) ?? <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end" weight="medium">{said ?? ''}</Text></Box>}
+          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end" weight="medium">{said ?? ''}</Text></Box>
           {hid ? <Box flexShrink={0}><Button key={`hid${n}`} label={openTurns.has(n) ? `hide ${hid} ▾` : `${hid} hidden ▸`} plain dimColor onPress={flip} /></Box> : null}
           <Box flexShrink={0}><Text tabular weight="semibold" color={m.aborted ? 'yellow' : undefined}>{time}</Text></Box>
         </Box>
@@ -2821,6 +2820,29 @@ export const register: Register = (on, options) => {
       move = 0
     }
     if (!rows.length) { winMax = 0; return <Box flexDirection="column">{head}<Text dimColor wrap="truncate-end">{empty()}</Text></Box> } // a stale winMax would let a scroll turn follow off
+    if (gui) {
+      // The desktop app scrolls a pane itself and sends the plugin no wheel moves (ui.scroll never fires there), so a window
+      // the plugin moves could not be scrolled at all: the whole log is drawn and the app's scrollbar moves over it. Following
+      // pulls the view to the end on each new row, and the plugin cannot see a person scroll away: a button under the log
+      // pauses it, as moving the cursor or coming back from a row does
+      winStart = 0; winEnd = rows.length - 1; winMax = 0; win = 0
+      const reveal = backKey ?? held?.k
+      backKey = undefined
+      const after = (f: () => Promise<unknown>) => { $.clock.after(50, () => { f().catch(() => {}) }) } // once this draw is in
+      if (moved) { follow = false; const k = aim(sel!); after(() => $.ui.focus({ requestId: PANE, key: k })) }
+      else if (reveal && rowAt(reveal) >= 0) { follow = false; after(() => $.ui.scroll({ in: PANE, to: { key: reveal } })) }
+      else if (follow && rows.length !== tailed) after(() => $.ui.scroll({ in: PANE, to: 'end' }))
+      tailed = follow ? rows.length : -1
+      if (follow) fresh = 0
+      return desk(
+        <Box flexDirection="column">
+          {head}
+          {rows}
+          <Box key="jumprow" flexDirection="row" justifyContent="flex-end">{follow
+            ? <Button key="pause" label="following the newest · pause" plain dimColor onPress={() => { follow = false; $.ui.invalidate('ui.render') }} />
+            : <Button key="jump" label={fresh ? `↓ ${fresh} new event${fresh > 1 ? 's' : ''}` : '↓ newest'} hotkey="e" onPress={jump} />}</Box>
+        </Box>)
+    }
     // The window: decide follow against the rows without the jump row first, then give the jump row its own row when not
     // following, so landing on the newest row never shows `↓ newest`
     const avail0 = Math.max(1, bodyRows - head.length)
@@ -2857,7 +2879,7 @@ export const register: Register = (on, options) => {
     return desk(
       <Box flexDirection="column">
         {head}
-        {stick === undefined ? null : gui && !String(rows[win]?.props?.key).startsWith('split') ? header(Number(String(rows[stick].props.key).slice(4)), String(rows[stick].props.key), true) : rows[stick]}
+        {stick === undefined ? null : rows[stick]}
         {rows.slice(win, win + winRows)}
         {!follow && <Box key="jumprow" flexDirection="row" justifyContent="flex-end"><Button key="jump" label={fresh ? `↓ ${fresh} new event${fresh > 1 ? 's' : ''} (e)` : '↓ newest (e)'} hotkey="e" onPress={jump} /></Box>}
       </Box>)
