@@ -1,6 +1,6 @@
 // Pane tests share the module's state (level, folds, finished agents shown): a test that changes one sets it back before it ends.
 import { test, expect, mock, type TestBody } from 'claude-code/testing'
-import { ASKED, byLifecycle, hookStats, sparkOf, spreadOf, timesBy, costOf, scrub, ctxOf, harnessOf, hookName, hookTimes, markAgain, modelName, outsideOf, pack, pickRuns, placesOf, rootOf, routine, runNames, keepRun, scriptName, speaker, targetOf, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
+import { followAfter, ASKED, byLifecycle, hookStats, sparkOf, spreadOf, timesBy, costOf, scrub, ctxOf, harnessOf, hookName, hookTimes, markAgain, modelName, outsideOf, pack, pickRuns, placesOf, rootOf, routine, runNames, keepRun, scriptName, speaker, targetOf, withSilent, splitOf, tagOf, unusualOf } from './agent-log'
 
 // the shape hooksOf builds: settings hooks by script name, plugin hooks by plugin. Texts are real rows from the store
 const cfg = {
@@ -16,6 +16,14 @@ const cfg = {
   ],
   Stop: [{ matcher: '', name: 'plan-followed' }],
 }
+
+test('on the desktop a person scrolling up stops the log following its end, and reaching the end again starts it', () => {
+  const at = (by: number, offset: number, kind = 'person') => followAfter({ by, offset, bodyRows: 30, contentRows: 200, origin: { kind } } as any)
+  expect(at(-3, 167)).toBe(false) // up from the end
+  expect(at(3, 100)).toBe(undefined) // down, still above the end: as it was
+  expect(at(3, 170)).toBe(true) // the end: 200 rows less the 30 showing
+  expect(at(-200, 0, 'plugin')).toBe(undefined) // the plugin's own move (back, the end on a new row) changes nothing
+})
 
 test('silent run names every hook whose matcher fits the target', () => {
   expect(hookName(cfg, 'PreToolUse', 'Bash')).toBe('guard, test-gate, install-cooldown, context-mode')
@@ -266,9 +274,9 @@ test('engine context that only composes the request is logged but not shown, its
 })
 
 // a store the test reads back: what agent-log wrote, by key. session.end flushes the log's last second
-const capture = (on: any, id: string, agents: object[] = []) => {
+const capture = (on: any, id: string | (() => string), agents: object[] = []) => { // id: a function for a test that switches session
   const db: Record<string, any> = {}
-  on('session.id', () => ({ value: id }))
+  on('session.id', () => ({ value: typeof id === 'function' ? id() : id }))
   on('agent.list', () => ({ value: agents }))
   on('config.list', () => ({ value: [] }))
   on('store.get', (_$: any, e: any) => ({ value: db[e.key] }))
@@ -789,6 +797,32 @@ test('a call\'s hook rows sit around it, linked: PreToolUse above, the rest belo
   for (const [g, n] of [['╭', 1], ['│', 2], ['├', 1], ['╰', 1]] as const) expect((await m.findAll({ type: 'Text', text: g })).length).toBe(n)
   expect(await m.find({ type: 'Button', text: /^▸$/ })).toBe(undefined)
   await toLevel($, m, 'info')
+})
+
+test('on the desktop a call\'s hook that changed nothing has no row: the call\'s row counts them, and one that answered keeps its own', async ($, on) => {
+  const pre = (name: string) => hookRow({ name, use: 'ud' })
+  session(on, 'DK', [
+    { t: T0, turn: 1, kind: 'tool', name: 'Edit', detail: 'x.ts', outcome: '', use: 'ud', ms: 10 },
+    pre('guard'), pre('test-gate'),
+    hookRow({ name: 'lint-feedback', origin: 'PostToolUse', use: 'ud', outcome: 'block', status: 'feedback' }),
+  ], { turn: 1 })
+  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'desktop', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 43, scroll: { offset: 0, bodyRows: 40 } } as any })
+  await toLevel($, m, 'debug') // where a quiet hook's row would draw
+  const labels = (await m.findAll({ type: 'Button' })).map(b => String(b.text))
+  expect(labels.some(l => /^(guard|test-gate)/.test(l))).toBe(false)
+  expect(labels.some(l => /^lint-feedback/.test(l))).toBe(true)
+  expect(await m.find({ type: 'Text', text: '2 hooks' })).toBeDefined()
+  await toLevel($, m, 'info')
+})
+
+test('on the desktop a permission wait under a second has no row; a longer one keeps its own', async ($, on) => {
+  session(on, 'DW', [
+    { t: T0, turn: 1, kind: 'tool', name: 'Bash', detail: 'ls', outcome: '', use: 'w1', ms: 10, wait: 400, waitFor: 'the permission decision (config)' },
+    { t: T0 + 5000, turn: 1, kind: 'tool', name: 'Bash', detail: 'make', outcome: '', use: 'w2', ms: 10, wait: 3300, waitFor: 'the permission decision (config)' },
+  ], { turn: 1 })
+  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'desktop', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 43, scroll: { offset: 0, bodyRows: 40 } } as any })
+  expect((await m.findAll({ type: 'Text', text: /^Waiting for the permission decision/ })).length).toBe(1)
+  expect(await m.find({ type: 'Text', text: /3\.3s/ })).toBeDefined()
 })
 
 test('a call\'s row keeps its own time; each of its hooks times its own row', async ($, on) => {
@@ -1433,6 +1467,67 @@ test('a plugin\'s own model call is a row named by the plugin, with the start of
   on('model.complete', () => ({ value: { isAnswered: true, text: 'Fix the agent log\nmore', usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }) as any)
   await ($ as any).command.run({ command: 'title', args: '', origin: { kind: 'composer' }, presentation: 'text' })
   expect((await flushed($, 'MC', db)).find(x => x.kind === 'side')).toMatchObject({ name: 'titler', src: 'plugin', detail: 'claude-haiku-5-5', status: 'ok', tok: [10, 0, 0, 5], peek: 'Fix the agent log\nmore' })
+})
+
+// seen 2026-11-18: the setup page's model use listed one auto-title call twice, as `plugin_model_complete` with a price and as
+// `auto-title` without one, both 143 in · 16 out
+for (const first of ['hook', 'collector'] as const) test(`the collector's record of a plugin's model call prices the plugin's row and draws none of its own (${first} first)`, {
+  plugins: [{ name: 'titler', register: on => { on('command.run', { command: 'title' } as any, async ($: any) => { await $.model.complete({ model: 'claude-haiku-5-5', prompt: 'Name this session' }); return { text: 'ok' } }) } }],
+}, async ($, on) => {
+  const id = `MD${first}`, db = capture(on, id)
+  on('telemetry.log', () => ({ value: undefined }) as any)
+  const record = () => ($ as any).telemetry.log({ to: 'collector', event: 'api_request', attributes: { query_source: 'plugin_model_complete', model: 'claude-haiku-5-5', duration_ms: 1100, input_tokens: 143, cache_read_tokens: 0, cache_creation_tokens: 0, output_tokens: 16, cost_usd: 0.0004, request_id: 'req_t' } })
+  on('model.complete', async () => { if (first === 'collector') await record(); return { value: { isAnswered: true, text: 'A title', usage: { input_tokens: 143, output_tokens: 16, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } } as any })
+  await ($ as any).command.run({ command: 'title', args: '', origin: { kind: 'composer' }, presentation: 'text' })
+  if (first === 'hook') await record()
+  const sides = (await flushed($, id, db)).filter(x => x.kind === 'side')
+  expect(sides.length).toBe(1)
+  expect(sides[0]).toMatchObject({ name: 'titler', src: 'plugin', tok: [143, 0, 0, 16], cost: 0.0004, req: 'req_t' })
+})
+
+test('a collector record left over from one session never prices a plugin call in the next', {
+  plugins: [{ name: 'titler', register: on => { on('command.run', { command: 'title' } as any, async ($: any) => { await $.model.complete({ model: 'claude-haiku-5-5', prompt: 'Name this session' }); return { text: 'ok' } }) } }],
+}, async ($, on) => {
+  let sid = 'MDa', input = 50
+  const db = capture(on, () => sid)
+  on('telemetry.log', () => ({ value: undefined }) as any)
+  on('model.complete', async () => ({ value: { isAnswered: true, text: 'A title', usage: { input_tokens: input, output_tokens: 16, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }) as any)
+  await ($ as any).command.run({ command: 'title', args: '', origin: { kind: 'composer' }, presentation: 'text' }) // the first session's own call
+  await ($ as any).telemetry.log({ to: 'collector', event: 'api_request', attributes: { query_source: 'plugin_model_complete', model: 'claude-haiku-5-5', duration_ms: 1100, input_tokens: 143, cache_read_tokens: 0, cache_creation_tokens: 0, output_tokens: 16, cost_usd: 0.0004, request_id: 'req_old' } })
+  sid = 'MDb'; input = 143
+  await ($ as any).command.run({ command: 'title', args: '', origin: { kind: 'composer' }, presentation: 'text' })
+  const sides = (await flushed($, 'MDb', db)).filter(x => x.kind === 'side')
+  expect(sides.length).toBe(1)
+  expect(sides[0].req).toBe(undefined)
+  expect(sides[0].cost).toBe(undefined)
+})
+
+test('on the desktop a call\'s inspector lists each hook of a merged chain, and says what its wait was for', async ($, on) => {
+  session(on, 'DI', [
+    { t: T0, turn: 1, kind: 'tool', name: 'Bash', detail: 'List the files', cmd: 'ls', outcome: '', use: 'ui', ms: 10, pre: 900, wait: 2000, waitFor: 'the model to finish its message' },
+    hookRow({ name: 'guard, test-gate', use: 'ui', ms: 900, each: { guard: 300, 'test-gate': 600 } }),
+  ], { turn: 1 })
+  const m = await $.ui.mount({ plugin: 'agent-log', surface: 'desktop', component: 'Pane', requestId: 'agent-log', props: { ...PANE_PROPS, bodyColumns: 43, scroll: { offset: 0, bodyRows: 40 } } as any })
+  await m.press({ key: (await m.find({ type: 'Button', text: /^List the files/ }))!.key! })
+  expect(await m.find({ type: 'Button', text: /^guard$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /^test-gate$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', text: /guard, test-gate/ })).toBe(undefined)
+  expect(await m.find({ type: 'Text', text: 'waiting for the model to finish its message' })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: 'permission decision' })).toBe(undefined)
+  await m.press({ key: 'back' })
+})
+
+test('a plugin\'s model call whose usage leaves the cache counts out is still priced by the collector\'s record', {
+  plugins: [{ name: 'titler', register: on => { on('command.run', { command: 'title' } as any, async ($: any) => { await $.model.complete({ model: 'claude-haiku-5-5', prompt: 'Name this session' }); return { text: 'ok' } }) } }],
+}, async ($, on) => {
+  const db = capture(on, 'MDgap')
+  on('telemetry.log', () => ({ value: undefined }) as any)
+  on('model.complete', async () => ({ value: { isAnswered: true, text: 'A title', usage: { input_tokens: 143, output_tokens: 16 } } }) as any)
+  await ($ as any).command.run({ command: 'title', args: '', origin: { kind: 'composer' }, presentation: 'text' })
+  await ($ as any).telemetry.log({ to: 'collector', event: 'api_request', attributes: { query_source: 'plugin_model_complete', model: 'claude-haiku-5-5', duration_ms: 1100, input_tokens: 143, cache_read_tokens: 0, cache_creation_tokens: 0, output_tokens: 16, cost_usd: 0.0004, request_id: 'req_g' } })
+  const sides = (await flushed($, 'MDgap', db)).filter(x => x.kind === 'side')
+  expect(sides.length).toBe(1)
+  expect(sides[0]).toMatchObject({ name: 'titler', cost: 0.0004, req: 'req_g' })
 })
 
 // the engine's notice, as it queued it on 2026-10-25 for every person's hook cc-plugin-sec-default sent an event past

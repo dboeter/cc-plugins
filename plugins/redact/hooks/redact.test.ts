@@ -134,12 +134,14 @@ const world = (on: any, entries: Record<string, unknown> = {}, given: Record<str
   on('store.keys', () => ({ value: [...store.keys()] }))
   on('env.get', (_$: any, e: any) => ({ value: e.name === 'HOME' ? '/h' : undefined }))
   on('fs.exists', (_$: any, e: any) => ({ value: files.has(e.path) }))
-  on('fs.read', (_$: any, e: any) => { if (!files.has(e.path)) throw new Error(`ENOENT ${e.path}`); return { value: files.get(e.path) } })
+  // mtimes: a file's time, 0 (no time) unless a test sets one; reads: how often each path was read
+  const mtimes = new Map<string, number>(), reads = new Map<string, number>()
+  on('fs.read', (_$: any, e: any) => { reads.set(e.path, (reads.get(e.path) ?? 0) + 1); if (!files.has(e.path)) throw new Error(`ENOENT ${e.path}`); return { value: files.get(e.path) } })
   on('fs.write', (_$: any, e: any) => { files.set(e.path, e.text); return { value: undefined } })
-  on('fs.stat', (_$: any, e: any) => ({ value: { kind: 'file', size: files.get(e.path)?.length ?? 0, mtimeMs: 0, isLink: e.path in links, realPath: links[e.path] ?? e.path } }))
+  on('fs.stat', (_$: any, e: any) => ({ value: { kind: 'file', size: files.get(e.path)?.length ?? 0, mtimeMs: mtimes.get(e.path) ?? 0, isLink: e.path in links, realPath: links[e.path] ?? e.path } }))
   on('prompt.submit', (_$: any, e: any) => { last = e.text; return { text: e.text } })
   const entered = async ($: any, text: string) => { await $.prompt.submit({ text, origin: { kind: 'composer' } }); return last }
-  return { store, files, entered }
+  return { store, files, entered, mtimes, reads }
 }
 const DAY = 24 * 3600 * 1000
 // the rules file, a rules file of these rules, and the rules a file holds
@@ -175,6 +177,22 @@ test('every row the model reads is masked; an image stays, a response is left as
   const [row, reply] = session.appended() as any[]
   expect(row.message.content[0].content).toEqual([{ type: 'text', text: `GITHUB_TOKEN=${ph('API_KEY')}` }, image])
   expect(reply.message.content[0].text).toBe(`write to ${MAIL}`)
+})
+
+test('the rules file is read once, then again only when its time or size changed: a row does not read it', async ($, on) => {
+  const { files, mtimes, reads } = world(on, {}, BOTH)
+  mtimes.set(RULES, 1000)
+  const session = mock.session(on)
+  const row = (uuid: string, text: string) => $.session.append({ door: 'tool-result', origin: { kind: 'tool', tool: 'Bash' }, uuid,
+    message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: uuid, content: [{ type: 'text', text }] }] } } as any)
+  for (const u of ['u1', 'u2', 'u3', 'u4']) await row(u, `GITHUB_TOKEN=${GH}`)
+  expect(reads.get(RULES)).toBe(1)
+  expect((session.appended() as any[])[3].message.content[0].content[0].text).toBe(`GITHUB_TOKEN=${ph('API_KEY')}`)
+  // edited by hand: both rules off, so the next row's value passes; the vault's own values stay masked
+  files.set(RULES, file([])); mtimes.set(RULES, 2000)
+  await row('u5', `write to ${MAIL}`)
+  expect(reads.get(RULES)).toBe(2)
+  expect((session.appended() as any[])[4].message.content[0].content[0].text).toBe(`write to ${MAIL}`)
 })
 
 test('a row the hook fails to mask is withheld, not passed on', async ($, on) => {

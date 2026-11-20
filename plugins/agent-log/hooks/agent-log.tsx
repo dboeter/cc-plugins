@@ -423,6 +423,12 @@ let busy = false // main's turn is running: the header counts its time up
 // The pane scrolls its own rows under a header that never moves: the engine's window stays at the top (ui.scroll) and the log
 // draws rows win..win+avail. winMax is the last render's, for the scroll hook; backKey is the row back centres on
 let win = 0, winMax = 0
+let tailed = -1 // the desktop: the row count its last scroll to the end was for, so a redraw with no new row does not scroll again
+let drawnOn: string | undefined // the surface the pane last drew on: ui.scroll does not say which
+// The desktop's follow after a person's scroll: off when they scroll up, on when they reach the end, else as it was. offset is
+// where the window is going (d.ts ui.scroll), so the end is contentRows less the rows showing
+export const followAfter = (e: { by: number; offset: number; bodyRows: number; contentRows: number; origin: { kind: string } }) =>
+  e.origin.kind !== 'person' ? undefined : e.by < 0 ? false : e.offset >= e.contentRows - e.bodyRows ? true : undefined
 let backKey: string | undefined
 // a row that opened or closed a fold, and its line in the window: the next draw keeps it on that line rather than pinning the end
 let anchor: { k: string; off: number } | undefined
@@ -510,7 +516,8 @@ export const harnessOf = (event: string, a: Record<string, any>): Omit<Entry, 't
   }
   if (event === 'api_error') return { kind: 'event', name: 'API error', detail: [a.status_code, a.error].filter(v => v != null && v !== '').join(' '), outcome: a.attempt ? `attempt ${a.attempt}` : '', status: 'failed', ms: Number(a.duration_ms) || undefined, peek: peek(String(a.error ?? '')) }
   const q = String(a.query_source ?? '').replace(/:.*/, '')
-  if (event === 'api_request' && q && q !== 'repl_main_thread' && q !== 'agent' && q !== 'sdk') return { kind: 'side', name: q, src: 'engine', detail: String(a.model ?? ''), outcome: '', status: 'ok', ms: Number(a.duration_ms) || undefined,
+  // plugin_model_complete: a plugin's $.model.complete, which its model.complete hook logs under the plugin's name (priceSides)
+  if (event === 'api_request' && q && q !== 'repl_main_thread' && q !== 'agent' && q !== 'sdk' && q !== 'plugin_model_complete') return { kind: 'side', name: q, src: 'engine', detail: String(a.model ?? ''), outcome: '', status: 'ok', ms: Number(a.duration_ms) || undefined,
     tok: [a.input_tokens, a.cache_read_tokens, a.cache_creation_tokens, a.output_tokens].map(n => Number(n) || 0), cost: Number(a.cost_usd) || undefined, req: typeof a.request_id === 'string' ? a.request_id : undefined }
   return undefined
 }
@@ -986,7 +993,7 @@ async function loadNow($: EngineInterface): Promise<void> {
   if (dirty && key) { const tail = { key, value: saved() }; if (!await save($, tail.key, tail.value)) pendingTail = tail } // the old session's unflushed tail, before its key is dropped
   dirty = false
   const v: any = await $.store.get(k) // any shape a past version saved: checked field by field below
-  if (key) { stepOf.clear(); bills = []; unbilled = [] } // the old session's requests; not on the first load, which a step's push can trigger after its pairing was queued
+  if (key) { stepOf.clear(); bills = []; unbilled = []; sideBills = [] } // the old session's requests; not on the first load, which a step's push can trigger after its pairing was queued
   if (setup.runsOf !== id) { setup.runs.clear(); setup.runsOf = id } // the old session's hook runs; ones the new session's records counted before this load stay
   key = k
   words.clear(); openTurns.clear(); hookOpen.clear(); sel = undefined // the old session's prompts (never stored, so a resumed session's turns have none), opened turns and setup-page hook events, the cursor
@@ -1106,6 +1113,22 @@ const startOf = (y: Entry) => y.t - (y.pre ?? 0)
 // opt.ahead: on a tool row, its PreToolUse context attachments to come. opt.above: on such an attachment, the tool it goes with.
 // opt.after: on a PostToolUse attachment, the tool it followed (its newest call of that name in the loop, by start)
 // opt.start: on a tool row, when its call began: its t is pre after it. opt.once: left out when the session holds a row of the same kind, name, detail and outcome
+// A plugin's $.model.complete reaches the log twice: the model.complete hook has the plugin's name and its reply, the collector's
+// api_request (query_source plugin_model_complete) its price. One row, the hook's, priced by the record whichever lands first:
+// a record with no row yet waits here a minute. Matched by their token counts, as a step's bill is
+let sideBills: { t: number; sig: string; cost?: number; req?: string }[] = []
+function priceSides($: EngineInterface, bill?: typeof sideBills[number]): Promise<void> {
+  return mutate(async () => {
+    const now = Date.now() // a record a minute old is no row's: dropped whether or not another record arrives
+    sideBills = [...sideBills.filter(b => now - b.t < 60000).slice(bill ? -19 : -20), ...bill ? [bill] : []]
+    for (const b of sideBills) {
+      // a count either side leaves out is 0: a usage without cache counts still meets a record that has them as 0
+      const sig = (xs: unknown[]) => xs.map(v => Number(v) || 0).join()
+      const y = entries.findLast(y => y.kind === 'side' && y.src === 'plugin' && y.cost == null && y.req == null && !!y.tok && sig(y.tok) === sig(b.sig.split(',')))
+      if (y) { y.cost = b.cost; y.req = b.req; sideBills = sideBills.filter(z => z !== b); touch($) }
+    }
+  }).catch(() => {})
+}
 function push($: EngineInterface, e: Omit<Entry, 't'>, opt: { ahead?: number; above?: string; after?: string; start?: number; once?: boolean } = {}): void {
   const t = opt.start ?? Date.now() // when it happened, not when the chain gets to it: rows are placed by it
   mutate(async () => {
@@ -1276,7 +1299,8 @@ export const register: Register = (on, options) => {
       const sig = [a.input_tokens, a.cache_read_tokens, a.cache_creation_tokens, a.output_tokens].map(Number).join()
       const bill = { t: Date.now(), sig, cost: Number(a.cost_usd) || undefined, req: typeof a.request_id === 'string' ? a.request_id : undefined }
       const s = unbilled.find(u => u.sig === sig)
-      if (!s) bills = [...bills.filter(b => bill.t - b.t < 60000).slice(-19), bill]
+      if (String(a.query_source ?? '').startsWith('plugin_model_complete')) priceSides($, bill)
+      else if (!s) bills = [...bills.filter(b => bill.t - b.t < 60000).slice(-19), bill]
       else { // the step's row is in, or queued ahead of this on the chain
         unbilled = unbilled.filter(u => u !== s)
         // a text-less step a full log evicted on its own push was folded without its price: the price joins its totals line
@@ -1696,7 +1720,7 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => { logFailure($, 'agent.spawn', next.error); return next(e) })
 
   // A plugin's own model call ($.model.complete): one row, under main, named by the plugin; its reply's start, never its prompt.
-  // The collector records none of these (none of 100 in the event log carried an api_request), so nothing logs it twice
+  // The collector records each too, as an api_request of its own: that one draws no row and prices this one (priceSides)
   on('model.complete', async ($, e, next) => {
     const t0 = Date.now()
     const r: any = await next(e)
@@ -1706,6 +1730,7 @@ export const register: Register = (on, options) => {
       const v = r?.value ?? r, u = v?.usage
       if (v && by !== 'agent-log') push($, { kind: 'side', name: by, src: 'plugin', detail: e.model, outcome: '', status: v.isAnswered ? 'ok' : v.reason === 'aborted' ? 'aborted' : 'failed', ms: Date.now() - t0,
         tok: u ? [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens, u.output_tokens] : undefined, peek: peek(v.isAnswered ? v.text : [v.reason, v.status, v.error?.message].filter(Boolean).join(' ')) }, { start: t0 })
+      if (v && by !== 'agent-log') priceSides($) // the collector's record may be in already
     } catch {}
     return r
   }).catch(($, e, next) => { logFailure($, 'model.complete', next.error); return next(e) })
@@ -1765,6 +1790,13 @@ export const register: Register = (on, options) => {
   // engine reports Home and End as contentRows: about a page; e still jumps to the newest row. An arrow (one row, no pointer:
   // a wheel tick carries one) moves the row cursor instead, as j and k do; the wheel and the page keys move the window
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
+    // The desktop draws the whole log and the app moves over it: every move goes on as asked. Answering one without next (as
+    // below) leaves the engine's window where it was, so the app snapped back to the end the moment it scrolled
+    if (drawnOn === 'desktop') {
+      const f = followAfter(e)
+      if (f !== undefined && f !== follow && !inspect && !page) { follow = f; $.ui.invalidate('ui.render') }
+      return next(e)
+    }
     if (inspect || page) return next(e) // the inspector and the pages wrap text, so their height is unknown: the engine scrolls them
     if (e.origin.kind === 'person' && !e.pointer && Math.abs(e.by) === 1) { move = e.by; $.ui.invalidate('ui.render'); return {} }
     if (e.origin.kind === 'person') {
@@ -1789,10 +1821,23 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => { logFailure($, 'ui.focus', next.error); return next(e) })
 
   // === PANE ===
+  // The desktop app's font draws these marks at half the size of the others (● ■ ⊘): each becomes the full-size shape beside
+  // it in the font. Swapped in the drawn tree, since the marks are written into strings all over; not in text that wraps
+  // (a title, output) or in code, which may hold the same characters as someone's own
+  const DESK: Record<string, string> = { '▸': '►', '▾': '▼', '⚠': '▲', '▪': '■' }
+  const deskMarks = (n: any): any => typeof n === 'string' ? n.replace(/[▸▾⚠▪]/g, c => DESK[c]!) : Array.isArray(n) ? n.map(deskMarks)
+    : !n || typeof n !== 'object' || n.type === 'Code' || n.props?.wrap === 'wrap' ? n
+    : { ...n, ...(typeof n.props?.label === 'string' ? { props: { ...n.props, label: deskMarks(n.props.label) } } : {}), ...(n.children ? { children: deskMarks(n.children) } : {}) }
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE) return next(e) // other plugins' panes
     await load($)
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text, Button, Code } = $.ui.resolve(e)
+    // The desktop app draws a proportional face in cells wider than its letters (bodyColumns 43 where ~65 letters fit), so a
+    // row laid out by counting characters is cut a third early, a padded label pads nothing and a rule of `─` wraps. There the
+    // surface cuts and aligns (truncate-end, tabular digits, weight); every row is still one element, as the window counts them
+    const gui = e.surface === 'desktop'
+    drawnOn = e.surface
+    const desk = <T,>(t: T): T => gui ? deskMarks(t) : t
     const out = ([s, c]: [string, string?]) => s ? <Text color={c} dimColor={!c}>  {s}</Text> : null
     // back to the row the inspector opened from, or the fold that holds it, centred by the next draw; gone (evicted) -> the end
     const back = () => {
@@ -1803,6 +1848,21 @@ export const register: Register = (on, options) => {
       // the cursor on the row back lands on, the ring with it: j and k go on from the row the inspector showed last
       if (key) { sel = key; $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: `b${key}` }).catch(() => {}) }) }
     }
+    // The desktop's page is read by its right edge: a section's head carries its count or state there, a row its figure. So
+    // lists stay closed until asked for (a hook event's hooks, a marketplace's plugins) and nothing is a sentence.
+    // sec: a section's head. lr: a row, its name cut by the surface; press makes the name a button; bad: a word in yellow after it;
+    // mark: a square in a part's colour before it; lit: the figure is the row's point, so not dimmed. The inspector reads the same way
+    const sec = (k: string, t: string, right = '', c?: string) => [<Text key={`gap${k}`}> </Text>,
+      <Box key={`t${k}`} flexDirection="row" columnGap={1}><Box flexGrow={1} flexShrink={1} minWidth={0}><Text weight="semibold" wrap="truncate-end">{t}</Text></Box>{right ? <Box flexShrink={0}><Text tabular color={c} dimColor={!c}>{right}</Text></Box> : null}</Box>]
+    const lr = (k: string, left: string, right = '', o: { indent?: number; dim?: boolean; press?: () => void; bad?: string; mark?: string; lit?: boolean } = {}) => (
+      <Box key={`r${k}`} flexDirection="row" columnGap={1}>
+        {o.indent ? <Box flexShrink={0} width={o.indent} /> : null}
+        {o.mark ? <Box flexShrink={0}><Text color={o.mark}>▪</Text></Box> : null}
+        <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{o.press ? <Button key={k} label={left} plain dimColor={o.dim} onPress={o.press}><Text wrap="truncate-end">{left}</Text></Button> : <Text wrap="truncate-end" dimColor={o.dim}>{left}</Text>}</Box>
+        {right ? <Box flexShrink={0}><Text tabular dimColor={o.lit ? undefined : true}>{right}</Text></Box> : null}
+        {o.bad ? <Box flexShrink={0}><Text color="yellow">{o.bad}</Text></Box> : null}
+      </Box>
+    )
     const inspector = async (x: Entry) => {
       const a = x.agent ? ((await $.agent.list().catch(() => [])) as AgentInfo[]).find(y => y.id === x.agent) : undefined
       const who = x.agent ? (a ? `${nameOf(a.id)} · ${a.description}` : `${names[x.agent] ?? 'subagent'} ${x.agent}`) : 'main loop'
@@ -1828,18 +1888,100 @@ export const register: Register = (on, options) => {
       nav = { prev: at > 0 ? steps[at - 1] : undefined, next: at >= 0 ? steps[at + 1] : undefined }
       // an Agent row's agent: the log filtered to its rows (pick), back on the log; pressed again there, every loop's
       const only1 = () => { const id = x.child!; inspect = undefined; pageBack = false; backTo = undefined; follow = true; $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}); pick(id) }
-      const kv = (k: string, v: string) => <Box key={k} flexDirection="row"><Box flexShrink={0} width={8}><Text dimColor>{k}</Text></Box><Text wrap="wrap">{v}</Text></Box>
+      // as: on the desktop a command is drawn as code, a pattern or an id in the monospaced face; the terminal is all one face.
+      // The key column there is 7 cells: its cells are wider than its letters, and the longest key (`command`) fits in 6
+      const kv = (k: string, v: string, as?: 'code' | 'mono') => <Box key={k} flexDirection="row"><Box flexShrink={0} width={gui ? 7 : 8}><Text dimColor>{k}</Text></Box>
+        {gui && as === 'code' ? <Box flexGrow={1} flexShrink={1} minWidth={0}><Code source={v} language="bash" wrap="wrap" /></Box> : <Text wrap="wrap" mono={(gui && !!as) || undefined}>{v}</Text>}</Box>
+      const navRow = (
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>{/* wraps rather than clips: the engine scrolls the inspector, so its height need not be counted */}
+          <Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} />
+          {at > 0 && <Button key="prev" label="↑ prev" hotkey="p" plain onPress={() => show(steps[at - 1]!)} />}
+          {at >= 0 && at < steps.length - 1 && <Button key="next" label="↓ next" hotkey="n" plain onPress={() => show(steps[at + 1]!)} />}
+          {/* f is fclear's too: this draws after the controls, so it wins here (d.ts: two clash, later wins) */}
+          {x.child && <Button key="fonly" label={only === x.child ? 'every agent' : 'only this agent'} hotkey="f" plain onPress={only1} />}
+        </Box>
+      )
+      const peekLabel = !x.peek ? '' : (x.kind === 'event' ? 'details' : x.kind === 'step' || x.kind === 'side' ? (stat(x) === 'failed' && !x.stop ? 'error' : x.peek.length >= PEEK ? `reply, first ${PEEK} chars` : 'reply') : x.kind === 'fork' ? (stat(x) === 'ok' ? 'reply' : 'reason') : x.kind === 'tool' ? (stat(x) === 'denied' ? 'reason' : x.peek.length >= PEEK ? `output, first ${PEEK} chars` : 'output') : stat(x) === 'feedback' ? 'feedback' : x.outcome.startsWith('block') ? 'reason' : 'text') + (x.bytes != null && x.bytes > PEEK ? ` (first ${PEEK} of ${x.bytes} chars)` : '')
+      if (gui) {
+        // The desktop reads by sections, not a column of keys: what failed first, then where the row's time went (a bar and
+        // a figure per part), who allowed it and its hooks. A long value (command, path, output) sits full width under its name
+        const tool = x.kind === 'tool', title = action(x), W = Math.max(6, Math.floor(e.props.bodyColumns / 2) - 3)
+        const meta = [tool ? x.name : toolOf(x), x.agent ? who : '', x.turn != null ? (x.turn ? `turn ${x.turn}` : 'session start') : '', new Date(x.t).toLocaleTimeString(), `${ago(Date.now() - x.t)} ago`].filter(Boolean)
+        const blk = (k: string, label: string, v: string, as?: 'code' | 'mono') => !v ? null : [<Text key={`g${k}`}> </Text>, <Text key={`l${k}`} dimColor>{label}</Text>,
+          <Box key={`v${k}`} flexDirection="column">{as === 'code' ? <Code source={v} language="bash" wrap="wrap" /> : <Text wrap="wrap" mono={as === 'mono' || undefined}>{v}</Text>}</Box>]
+        const fact = (k: string, v: string) => lr(`f${k}`, k, v, { dim: true, lit: true })
+        const asked = tool && x.step ? entries.find(y => y.kind === 'step' && y.step === x.step) : undefined
+        const turn = x.kind === 'turn' && !x.agent ? turnIn(turnOf(x)) : undefined
+        const around = x.pre != null || x.post != null ? (x.pre ?? 0) + (x.post ?? 0) : undefined
+        // the parts a row's time is made of. A call: its wait, its hooks, its run (the model's request before it is not the call's time)
+        const parts: [string, number, string?][] = turn ? splitParts(turnOf(x), turn).map(([k, ms]): [string, number, string?] => [k, ms, PART[k]])
+          // the wait named by what it waited on, as the terminal's inspector says it: you, a permission decision, or main's message
+          : tool ? ([[`waiting for ${answerOf(x) ?? x.waitFor ?? 'the decision'}`, x.wait, x.waitFor === STREAMING ? 'claude' : 'permission'], ['hooks', around, 'warning'], [x.child ? 'the call' : 'ran', x.ms, 'suggestion']] as [string, number | undefined, string][]).filter((q): q is [string, number, string] => q[1] != null)
+          : ([['to the first token', x.ttft], ['thinking', x.think]] as [string, number | undefined][]).filter((q): q is [string, number] => q[1] != null)
+        const sum = parts.reduce((t, q) => t + q[1], 0)
+        const total = tool ? (parts.length ? sum : undefined) : x.ms
+        const drawn = parts.length > 1 && parts.every(q => q[2]) && sum > 0
+        const hs = tool && x.use ? entries.filter(y => y.use === x.use && y.kind !== 'tool').flatMap(splitHooks) : [] // a merged chain, a row per hook
+        const cmds = x.kind === 'hook' ? [...new Set((hookCfg?.[x.origin ?? ''] ?? []).filter(h => h.name === x.name && fits(h.matcher, x.detail || undefined)).map(h => h.cmd ?? ''))].filter(Boolean) : []
+        const ranOn = x.kind === 'hook' && x.use ? entries.find(y => y.kind === 'tool' && y.use === x.use) : undefined
+        const plain = (tool && (stat(x) === 'ok' || x.exit != null || !!x.insight)) || (x.kind === 'turn' && stat(x) !== 'aborted') // the sentence would only restate the head, or the Failed section under it
+        const [ti = 0, tr = 0, tw = 0, to = 0] = x.tok ?? []
+        return (
+          <Box key="inspect" flexDirection="column" width={e.props.bodyColumns}>
+            {navRow}
+            <Text> </Text>
+            <Text weight="semibold" size="heading" wrap="wrap">{title}</Text>
+            <Box flexDirection="row" flexWrap="wrap" columnGap={2}>{meta.map((t, n) => <Text key={`m${n}`} dimColor>{t}</Text>)}</Box>
+            {!plain && <Text dimColor wrap="wrap">{what}</Text>}
+            {(x.exit != null || !!x.insight) && [sec('fail', BAD.has(stat(x)) ? 'Failed' : 'Result', x.exit != null ? `exit ${x.exit}` : '', x.exit ? 'red' : undefined),
+              x.insight ? <Text key="broke" wrap="wrap">{x.insight}</Text> : null]}
+            {total != null && [sec('time', 'Time', exact(total)),
+              drawn ? <Box key="tbar" flexDirection="row">{parts.map(([k, ms, c]) => <Text key={`tb${k}`} color={c}>{'━'.repeat(Math.max(1, Math.round(ms / sum * W)))}</Text>)}</Box> : null,
+              ...(parts.length > 1 || !tool ? parts.map(([k, ms, c]) => lr(`p${k}`, k, exact(ms), { mark: c, lit: true })) : []),
+              x.child ? lr('pran', 'the agent ran', ran(x)[0], { dim: true }) : null,
+              asked ? lr('pask', `${modelName(asked.name)} request before it`, exact(asked.ms), { dim: true }) : null,
+              turn && turn.agents.size > 1 ? <Text key="loops" dimColor wrap="wrap">{loops(turn.agents)}</Text> : null]}
+            {!!x.check && [sec('perm', 'Permission', x.check === 'ask' ? (x.via === 'user_reject' || x.via === 'user_abort' ? 'rejected' : 'asked') : x.check === 'allow' ? 'allowed' : 'denied', stat(x) === 'denied' ? 'red' : undefined),
+              <Text key="permby" dimColor wrap="wrap">{x.check === 'ask' ? [x.rule && `rule ${x.rule}`, VIA[x.via ?? ''] ?? (x.via ? `${x.via} decided` : 'the mode or you decided')].filter(Boolean).join('; ') : `by ${x.rule ? `rule ${x.rule}` : 'the mode, a hook or the tool itself'}`}</Text>]}
+            {/* each hook once, its own row a press away: what it said back (blocked, feedback, added text), else its time */}
+            {hs.length > 0 && (ns => [sec('hooks', 'Hooks', String(ns.length)), ...ns.map(n => {
+              const ys = hs.filter(y => y.name === n), said = ys.find(loud), timed = ys.filter(y => y.ms != null)
+              const did = [said && stat(said), ys.some(y => y.kind === 'prompt') && 'added text'].filter(Boolean)
+              return lr(`h${n}`, n, did.length ? did.join(', ') : timed.length ? exact(timed.reduce((t, y) => t + y.ms!, 0)) : '', { press: () => show(ys.find(y => y.kind === 'hook') ?? ys[0]!) })
+            })])([...new Set(hs.map(y => y.name))])}
+            {x.src === 'hook' && x.kind !== 'hook' && !!x.origin && blk('trig', 'ran on', [x.origin, x.detail].filter(Boolean).join(' · '))}
+            {ranOn && blk('on', 'the call it ran on', `${ranOn.name}: ${ranOn.cmd ?? ranOn.detail}`, 'mono')}
+            {blk('hcmd', 'command', cmds.join('\n'), 'code')}
+            {x.cmd ? blk('cmd', 'command', x.cmd, 'code') : x.src !== 'hook' && (x.name === 'Bash' ? blk('cmd', 'command', x.detail ?? '', 'code') : blk('in', 'input', x.detail ?? '', tool ? 'mono' : undefined))}
+            {!!x.cmd && x.detail !== title && blk('desc', 'described as', x.detail ?? '')}
+            {blk('pat', 'pattern', x.pat ?? '', 'mono')}
+            {blk('out', 'outside the project root', x.out ?? '', 'mono')}
+            {x.tok && [sec('tok', 'Tokens', x.cost != null ? `$${x.cost.toFixed(4)}` : ''),
+              lr('tin', 'in', num(ti + tr + tw), { lit: true }), lr('tcr', 'read from cache', num(tr), { indent: 2, dim: true }), lr('tcw', 'written to cache', num(tw), { indent: 2, dim: true }), lr('tout', 'out', num(to), { lit: true })]}
+            {(f => f.length > 0 && [<Text key="gfacts"> </Text>, ...f])([
+              !x.tok && x.cost != null && fact('cost', `$${x.cost.toFixed(4)}`),
+              x.kind === 'step' && fact('model', `${x.name}${x.effort != null ? ` · effort ${x.effort}` : ''}`),
+              x.kind === 'side' && !!x.detail && fact('model', x.detail),
+              x.server && fact('server tools', x.server.map(([n, ms]) => `${n} ${exact(ms ?? undefined)}`).join(', ')),
+              !!x.stop && x.stop !== 'end_turn' && fact('stop', x.stop),
+              !!x.type && x.type !== x.name && fact('type', x.type),
+            ].filter(Boolean))}
+            {blk('ftok', 'tokens', x.kind === 'fork' ? x.outcome : '')}
+            {blk('etok', 'tokens', end?.outcome ?? '')}
+            {blk('req', 'request id', x.req ?? '', 'mono')}
+            {blk('thought', 'thought, its first line', x.thought ?? '')}
+            {blk('peek', peekLabel, x.peek && title.includes(x.peek) ? '' : x.peek ?? '', tool ? 'mono' : undefined)}{/* a short reply is the title already */}
+            {blk('epeek', end?.peek && end.peek.length >= PEEK ? `reply, first ${PEEK} chars` : 'reply', end?.peek ?? '')}
+          </Box>
+        )
+      }
       return (
         <Box key="inspect" flexDirection="column" width={e.props.bodyColumns}>
-          <Box flexDirection="row" flexWrap="wrap" columnGap={2}>{/* wraps rather than clips: the engine scrolls the inspector, so its height need not be counted */}
-            <Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} />
-            {at > 0 && <Button key="prev" label="↑ prev" hotkey="p" plain onPress={() => show(steps[at - 1]!)} />}
-            {at >= 0 && at < steps.length - 1 && <Button key="next" label="↓ next" hotkey="n" plain onPress={() => show(steps[at + 1]!)} />}
-            {/* f is fclear's too: this draws after the controls, so it wins here (d.ts: two clash, later wins) */}
-            {x.child && <Button key="fonly" label={only === x.child ? 'every agent' : 'only this agent'} hotkey="f" plain onPress={only1} />}
-          </Box>
+          {navRow}
           <Text> </Text>
-          <Box flexDirection="row"><Text weight="semibold">{action(x)}</Text><Text dimColor>  {x.kind === 'tool' ? x.name : toolOf(x)}</Text>{out(x.child ? ran(x) : cell(x))}</Box>{/* an Agent row's time as its row shows it: the agent's run, not the call's */}
+          {/* an Agent row's time as its row shows it: the agent's run, not the call's. The desktop: the action a title of its own that wraps, the tool and time under it */}
+          {gui ? <Box flexDirection="column"><Text weight="semibold" size="heading" wrap="wrap">{action(x)}</Text><Box flexDirection="row"><Text dimColor>{x.kind === 'tool' ? x.name : toolOf(x)}</Text>{out(x.child ? ran(x) : cell(x))}</Box></Box>
+            : <Box flexDirection="row"><Text weight="semibold">{action(x)}</Text><Text dimColor>  {x.kind === 'tool' ? x.name : toolOf(x)}</Text>{out(x.child ? ran(x) : cell(x))}</Box>}
           <Text dimColor wrap="wrap">{what}</Text>
           <Text> </Text>
           {kv('when', `${x.turn != null ? `${x.turn ? `turn ${x.turn}` : 'session start'} · ` : ''}${new Date(x.t).toLocaleTimeString()} (${ago(Date.now() - x.t)} ago)`)}
@@ -1847,10 +1989,10 @@ export const register: Register = (on, options) => {
           {x.src === 'hook' && !!x.origin && kv('trigger', [x.origin, x.detail].filter(Boolean).join(' · '))}
           {/* a hook's input: the call it ran on, as its row stores it; its command as your settings or the plugin's hooks.json write it */}
           {x.kind === 'hook' && x.use && (c => c && kv('input', `${c.name}: ${c.cmd ?? c.detail}`))(entries.find(y => y.kind === 'tool' && y.use === x.use))}
-          {x.kind === 'hook' && (cs => cs.length > 0 && kv('command', cs.join('\n')))([...new Set((hookCfg?.[x.origin ?? ''] ?? []).filter(h => h.name === x.name && fits(h.matcher, x.detail || undefined)).map(h => h.cmd ?? ''))].filter(Boolean))}
-          {x.cmd ? kv('command', x.cmd) : !!x.detail && x.src !== 'hook' && kv(x.name === 'Bash' ? 'command' : 'input', x.detail)}
+          {x.kind === 'hook' && (cs => cs.length > 0 && kv('command', cs.join('\n'), 'code'))([...new Set((hookCfg?.[x.origin ?? ''] ?? []).filter(h => h.name === x.name && fits(h.matcher, x.detail || undefined)).map(h => h.cmd ?? ''))].filter(Boolean))}
+          {x.cmd ? kv('command', x.cmd, 'code') : !!x.detail && x.src !== 'hook' && (x.name === 'Bash' ? kv('command', x.detail, 'code') : kv('input', x.detail))}
           {!!x.cmd && !!x.detail && kv('what', x.detail)}
-          {!!x.pat && kv('pattern', x.pat)}
+          {!!x.pat && kv('pattern', x.pat, 'mono')}
           {!!x.out && kv('where', `${x.out}, outside the session's project root`)}
           {x.exit != null && kv('exit', String(x.exit))}
           {/* the check's verdict, then who settled an ask: `asked you; you allowed it once`, `allowed by rule Bash(git push:*)` */}
@@ -1872,7 +2014,7 @@ export const register: Register = (on, options) => {
           {x.asked && kv('calls', counted(x.asked))}
           {x.server && kv('server', x.server.map(([n, ms]) => `${n} ${exact(ms ?? undefined)}`).join(', '))}
           {!!x.stop && kv('stop', x.stop)}
-          {!!x.req && kv('request', x.req)}
+          {!!x.req && kv('request', x.req, 'mono')}
           {/* a call's request: the model's time before it, which the call's own row leaves out. Not `asked`: decided's `asked you` is the permission prompt */}
           {x.kind === 'tool' && !!x.step && (s => s && kv('model', `${modelName(s.name)} in a ${exact(s.ms)} request${s.thought ? `: ${s.thought}` : ''}`))(entries.find(y => y.kind === 'step' && y.step === x.step))}
           {!!x.child && kv('ran', ran(x)[0])}
@@ -1899,8 +2041,8 @@ export const register: Register = (on, options) => {
           )}
           {x.peek && (
             <Box flexDirection="column" marginTop={1}>
-              <Text dimColor>{x.kind === 'event' ? 'details' : x.kind === 'step' || x.kind === 'side' ? (stat(x) === 'failed' && !x.stop ? 'error' : x.peek.length >= PEEK ? `reply, first ${PEEK} chars` : 'reply') : x.kind === 'fork' ? (stat(x) === 'ok' ? 'reply' : 'reason') : x.kind === 'tool' ? (stat(x) === 'denied' ? 'reason' : x.peek.length >= PEEK ? `output, first ${PEEK} chars` : 'output') : stat(x) === 'feedback' ? 'feedback' : x.outcome.startsWith('block') ? 'reason' : 'text'}{x.bytes != null && x.bytes > PEEK ? ` (first ${PEEK} of ${x.bytes} chars)` : ''}</Text>
-              <Text wrap="wrap">{x.peek}</Text>
+              <Text dimColor>{peekLabel}</Text>
+              <Text wrap="wrap" mono={(gui && x.kind === 'tool') || undefined}>{x.peek}</Text>{/* a call's output: a program's text */}
             </Box>
           )}
           {end?.peek && (
@@ -1955,12 +2097,19 @@ export const register: Register = (on, options) => {
     const runs = (id?: string) => id ? entries.filter(y => y.kind === 'turn' && y.agent === id) : [] // a spawned agent's turn ends: one per run
     const kept = entries.filter(x => (only === undefined || (x.agent ?? 'main') === only) && VIEWS[view](x)).sort((p, q) => turnOf(p) - turnOf(q))
     // the level by the merged row, so a slow chain keeps all its hooks; an opened turn's rows below it too, drawn dim (partsOf)
-    const shown = kept.filter(x => lvl(x) >= level || openTurns.has(turnOf(x))).flatMap(splitHooks)
+    const atLevel = kept.filter(x => lvl(x) >= level || openTurns.has(turnOf(x))).flatMap(splitHooks)
+    // The desktop: a hook on a drawn call that changed nothing and was not slow gets no row. Its call's row counts it (tucked)
+    // and the call's inspector lists it, so a log opened to its hidden rows is its calls, not five hooks around each
+    const calls = new Set(gui ? atLevel.filter(x => x.kind === 'tool' && x.use).map(x => x.use!) : [])
+    const tuck = (x: Entry) => x.kind === 'hook' && !!x.use && calls.has(x.use) && lvl(x) === 0
+    const tucked = new Map<string, number>()
+    for (const x of atLevel) if (tuck(x)) tucked.set(x.use!, (tucked.get(x.use!) ?? 0) + 1)
+    const shown = atLevel.filter(x => !tuck(x))
     const rowsOf = shown.filter(x => x.kind !== 'turn')
     // rows the level alone hides, per turn, opened or not: the header counts them, and its `N hidden ▸` draws them in place
     // (openTurns). A turn with none at or above the level draws no header at all
     const hidden = new Map<number, Entry[]>()
-    for (const x of kept) if (x.kind !== 'turn' && lvl(x) < level) { const n = turnOf(x); if (!hidden.has(n)) hidden.set(n, []); hidden.get(n)!.push(...splitHooks(x)) } // turn ends are never drawn
+    for (const x of kept) if (x.kind !== 'turn' && lvl(x) < level) { const n = turnOf(x); if (!hidden.has(n)) hidden.set(n, []); hidden.get(n)!.push(...splitHooks(x).filter(y => !tuck(y))) } // turn ends are never drawn
     // a spawned agent's rows fold under its Agent row while that row is drawn; without it (a view or level that hides it, a filter
     // on the agent) they stay flat
     const drawn = new Set(shown)
@@ -1981,6 +2130,7 @@ export const register: Register = (on, options) => {
     const cols = e.props.bodyColumns ?? 40
     const END = 9 // fits `● 59m59s`: secs is at most 6 wide
     const fit = (s: string, n: number) => s.length <= n ? s : s.slice(0, Math.max(0, n - 1)) + '…'
+    const cut = gui ? (s: string) => s : fit // text the surface cuts itself on the desktop (gui)
     // a path cut from the left at a folder boundary, so its last folders stay whole: `…/acme/projects/dv`
     const lfit = (s: string, n: number) => { if (s.length <= n) return s; const t = s.slice(s.length - n + 1), j = t.indexOf('/'); return '…' + (j >= 0 ? t.slice(j) : t) }
     // mark: drawn in the disclosure's cell when there is none (the header's `›` on the agent the log is filtered to).
@@ -1990,24 +2140,36 @@ export const register: Register = (on, options) => {
     // dim and without the ↗, so another project and ~/.claude differ without colour
     // link: the row's place on its call's bracket (bracketed), drawn dim in the mark's cell so a bracketed row keeps the column of
     // one without. dim: a routine row, drawn quiet (partsOf's brightness rule)
-    type Line = { k: string; act: string; press?: () => void; st?: [string, string?]; who?: string; tail?: string; disc?: [boolean, () => void]; indent?: number; rail?: string; mark?: string; link?: string; dim?: boolean; away?: string[] }
+    type Line = { k: string; act: string; press?: () => void; st?: [string, string?]; who?: string; tail?: string; disc?: [boolean, () => void]; indent?: number; rail?: string; mark?: string; link?: string; dim?: boolean; away?: string[]; more?: string }
     const pressable = new Set<string>() // this draw's lines that open something: where the row cursor can stop
     // a stop whose ring is not its line's `b` Button: the tree's main and done toggle, a running turn's `N hidden ▸`. flips: what
     // o presses on the cursor's line, its ▸ (an Agent fold, a turn's hidden rows, the finished agents)
     const aims = new Map<string, string>(), flips = new Map<string, () => void>()
     const aim = (k: string) => aims.get(k) ?? `b${k}`
-    const line = ({ k, act, press, st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ', link, dim, away }: Line) => {
+    // The tint of a call's rows on the desktop: a grey a tenth opaque, so it shows on a dark and a light theme alike. No theme
+    // key names a surface, and a text colour as a background would drown the row
+    const BANDS: Record<string, string> = { a: '#80808014', b: '#80808033' }
+    const line = ({ k, act, press, st = [''], who = '', tail = '', disc, indent = 0, rail = ' '.repeat(indent), mark = ' ', link, dim, away, more }: Line) => {
       if (press) pressable.add(k)
       const usual = !!away?.every(routine)
       const there = away?.length ? ` ${usual ? '' : '↗ '}${lfit(away[0]!, 24)}${away.length > 1 ? ` +${away.length - 1}` : ''}` : ''
       const room = cols - 2 - rail.length - who.length - tail.length - there.length - END - 1
       if (link?.endsWith('─') && who.startsWith(' ')) who = `─${who.slice(1)}` // a bracket's end (`╭─`) runs on into its row's indent: `╭── guard`
       return (
-        <Box key={k} flexDirection="row" overflow="hidden">
-          <Box flexShrink={0} width={2 + rail.length}><Text dimColor>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : link ? <Text dimColor>{link}</Text> : <Text>{mark}</Text>}</Box>
-          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{who ? <Text dimColor>{who}</Text> : null}{press ? <Button key={`b${k}`} label={fit(act, room) + tail} plain dimColor={dim} onPress={press} /> : <Text wrap="truncate-end" dimColor={dim}>{fit(act, room) + tail}</Text>}{there ? <Text color={usual ? undefined : 'magenta'} dimColor={usual}>{there}</Text> : null}</Box>
+        <Box key={k} flexDirection="row" overflow="hidden" backgroundColor={gui && link ? BANDS[link] : undefined}>
+          {/* mono: the guides and brackets keep one width, so they meet from row to row */}
+          <Box flexShrink={0} width={2 + rail.length}><Text dimColor mono={gui || undefined}>{rail}</Text>{disc ? <Button key={`d${k}`} label={disc[0] ? '▾' : '▸'} plain onPress={disc[1]} /> : link && !gui ? <Text dimColor>{link}</Text> : <Text>{mark}</Text>}</Box>
+          {gui
+            // the whole action, cut by the surface where the row ends; the place outside the root keeps its room beside it
+            ? <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden" flexDirection="row">
+                {who ? <Box flexShrink={0}><Text dimColor>{who}</Text></Box> : null}
+                <Box flexShrink={1} minWidth={0} overflow="hidden">{press ? <Button key={`b${k}`} label={act + tail} plain dimColor={dim} onPress={press}><Text wrap="truncate-end">{act + tail}</Text></Button> : <Text wrap="truncate-end" dimColor={dim}>{act + tail}</Text>}</Box>
+                {there ? <Box flexShrink={0}><Text color={usual ? undefined : 'magenta'} dimColor={usual}>{there}</Text></Box> : null}
+                {more ? <Box flexShrink={0} marginLeft={1}><Text dimColor size="caption">{more}</Text></Box> : null}
+              </Box>
+            : <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">{who ? <Text dimColor>{who}</Text> : null}{press ? <Button key={`b${k}`} label={fit(act, room) + tail} plain dimColor={dim} onPress={press} /> : <Text wrap="truncate-end" dimColor={dim}>{fit(act, room) + tail}</Text>}{there ? <Text color={usual ? undefined : 'magenta'} dimColor={usual}>{there}</Text> : null}</Box>}
           {/* flush right, as the turn header's time: times of any width end on the same column */}
-          <Box flexShrink={0} width={END} justifyContent="flex-end"><Text color={st[1]} dimColor={!st[1]}>{fit(st[0], END - 1)}</Text></Box>
+          <Box flexShrink={0} width={END} justifyContent="flex-end"><Text color={st[1]} dimColor={!st[1]} tabular={gui || undefined}>{fit(st[0], END - 1)}</Text></Box>
         </Box>
       )
     }
@@ -2030,7 +2192,13 @@ export const register: Register = (on, options) => {
     // Parts under 0.1 s are left out; other is the engine's and plugins' own work between steps, before submit the turn rows' preSubmit
     // (the engine's time before your prompt's submit). most: the header's two largest
     const SHOW = ['model', 'tools', 'agents', 'hooks', 'compact', 'permission', 'you', 'before submit', 'other']
-    const splitText = (n: number, m: Turn, most = Infinity) => {
+    // once per turn per draw: a turn's split is asked for by its header, its split row and its inspector
+    const splits = new Map<number, [string, number][]>()
+    const splitParts = (n: number, m: Turn, most = Infinity) => {
+      if (!splits.has(n)) splits.set(n, splitAll(n, m))
+      return splits.get(n)!.slice(0, most)
+    }
+    const splitAll = (n: number, m: Turn) => {
       const parts = SPLIT.map(() => 0)
       let span = 0, preSubmit = 0
       const add = (xs: number[], ms: number) => { xs.forEach((v, i) => { parts[i]! += v }); span += ms }
@@ -2040,7 +2208,27 @@ export const register: Register = (on, options) => {
       else if (!m.ends.length && m.first != null && m.last! > m.first) add(splitOf(m.xs, m.first, m.last!), m.last! - m.first)
       const by: Record<string, number> = { 'before submit': preSubmit, other: span - preSubmit - parts.reduce((a, b) => a + b, 0) }
       SPLIT.forEach((k, i) => { by[k] = parts[i]! })
-      return SHOW.filter(k => by[k]! >= 100).sort((p, q) => by[q]! - by[p]!).slice(0, most).map(k => `${k} ${secs(by[k])}`).join(' · ')
+      return SHOW.filter(k => by[k]! >= 100).sort((p, q) => by[q]! - by[p]!).map((k): [string, number] => [k, by[k]!])
+    }
+    const splitText = (n: number, m: Turn, most = Infinity) => splitParts(n, m, most).map(([k, ms]) => `${k} ${secs(ms)}`).join(' · ')
+    // The desktop's row under a turn's header: where its time went as a bar, each part as wide as its share (of BAR glyphs,
+    // none under one), then the two largest in words behind a mark of their colour, so it reads without colour too. One
+    // element, so one row to the window. Theme keys, not fixed colours: a skin recolours them with the rest
+    const BAR = 6 // a `━` draws 21 px wide there: 6 leave the two largest parts' words their room at 40 columns
+    const PART: Record<string, string> = { model: 'claude', tools: 'suggestion', agents: 'merged', hooks: 'warning', permission: 'permission', you: 'permission', compact: 'inactive', 'before submit': 'inactive', other: 'inactive' }
+    const splitBits = (n: number, m: Turn, bar: number, most: number) => {
+      const ps = splitParts(n, m)
+      if (!ps.length) return null
+      const sum = ps.reduce((a, [, ms]) => a + ms, 0)
+      const ws = ps.map(([, ms]) => Math.max(1, Math.round(ms / sum * bar)))
+      return [
+        <Box key="sbar" flexShrink={0}>{ps.map(([k], i) => <Text key={`sb${k}`} color={PART[k]}>{'━'.repeat(ws[i]!)}</Text>)}</Box>,
+        <Box key="swords" flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end">{ps.slice(0, most).map(([k, ms]) => [<Text key={`sm${k}`} color={PART[k]}>▪ </Text>, <Text key={`sw${k}`} dimColor tabular>{`${k} ${secs(ms)}   `}</Text>])}</Text></Box>,
+      ]
+    }
+    const splitRow = (n: number, m: Turn) => {
+      const bits = splitBits(n, m, BAR, 2)
+      return bits && <Box key={`split${n}`} flexDirection="row" overflow="hidden" columnGap={1}><Box flexShrink={0} width={2} />{bits}</Box>
     }
     // one name per kind of loop: a plugin that forks every step names four loops in a turn, `you-should-know ×4`; numbered agents
     // count as their type, `general-purpose ×2`
@@ -2068,6 +2256,15 @@ export const register: Register = (on, options) => {
         $.ui.invalidate('ui.render')
       }
       if (hid) flips.set(k, flip)
+      // the desktop: the prompt's words at full strength, the turn's landmark; the split has the row below (splitRow)
+      if (gui) return (
+        <Box key={k} flexDirection="row" overflow="hidden" columnGap={1}>
+          <Box flexShrink={0}>{m.ends.length ? <Button key={`b${k}`} label={n ? `#${n}` : 'start'} plain onPress={() => show(m.ends.at(-1)!)} /> : <Text weight="semibold">{n ? `#${n}` : 'start'}</Text>}</Box>
+          <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden"><Text wrap="truncate-end" weight="medium">{said ?? ''}</Text></Box>
+          {hid ? <Box flexShrink={0}><Button key={`hid${n}`} label={openTurns.has(n) ? `hide ${hid} ▾` : `${hid} hidden ▸`} plain dimColor onPress={flip} /></Box> : null}
+          <Box flexShrink={0}><Text tabular weight="semibold" color={m.aborted ? 'yellow' : undefined}>{time}</Text></Box>
+        </Box>
+      )
       return (
         <Box key={k} flexDirection="row" overflow="hidden">
           <Box flexShrink={0}>{m.ends.length ? <Button key={`b${k}`} label={n ? `#${n}` : 'start'} plain onPress={() => show(m.ends.at(-1)!)} /> : <Text weight="semibold">{n ? `#${n}` : 'start'}</Text>}</Box>
@@ -2088,7 +2285,10 @@ export const register: Register = (on, options) => {
     type Group = { kind: 'one' | 'agent'; xs: [Entry]; link?: string; wait?: string; server?: string[] }
     // n rows on a call's bracket, the call at `at`: `╭` opens it, `╰` closes it, `├` marks the call between, `│` the rest. An end
     // that is not the call reaches toward its indented row (`╭─`), so the bracket holds the hooks and the call stands apart
-    const bracket = (n: number, at: number) => Array.from({ length: n }, (_, i) => n < 2 ? undefined : i === 0 ? (at === 0 ? '╭' : '╭─') : i === n - 1 ? (at === i ? '╰' : '╰─') : i === at ? '├' : '│')
+    // The desktop: box lines do not join from row to row there, so the rows on a call share a tint instead (line: BANDS), `a`
+    // and `b` by turns: two such calls in a row would read as one block in one tint
+    let bands = 0
+    const bracket = (n: number, at: number, band = n > 1 ? 'ab'[bands++ % 2] : undefined) => Array.from({ length: n }, (_, i) => n < 2 ? undefined : gui ? band : i === 0 ? (at === 0 ? '╭' : '╭─') : i === n - 1 ? (at === i ? '╰' : '╰─') : i === at ? '├' : '│')
     const groupsOf = (xs: Entry[]) => {
       const there = new Set(xs)
       const linked = (x: Entry) => x.kind !== 'tool' && !!x.use && there.has(callRow.get(x.use)!)
@@ -2141,7 +2341,8 @@ export const register: Register = (on, options) => {
     // a call's wait, drawn from its own fields above it; pressed, the call's inspector
     // only a wait on a decision: one on the model finishing the message that holds the call is the model's time (splitOf counts
     // it so), and would draw a row for every call. The inspector still says it
-    const waits = (y: Entry) => y.wait != null && (!!answerOf(y) || y.waitFor !== STREAMING)
+    // The desktop: a wait under a second has no row. Nearly every call has one there, and its time is in the call's inspector
+    const waits = (y: Entry) => y.wait != null && (!!answerOf(y) || y.waitFor !== STREAMING) && (!gui || y.wait >= SLOW)
     const waitLine = (y: Entry, rail: string, link?: string) => line({ k: `e${idOf(y)}w`, act: `Waiting for ${answerOf(y) ?? y.waitFor ?? 'the decision'}`, press: () => show(y), st: [secs(y.wait)], who: '  ', rail, link })
     // A group's parts, from the one switch on its kind:
     // - head: its own row, given the press (its fold's toggle when it has one, else the inspector on target) and that disclosure
@@ -2186,7 +2387,7 @@ export const register: Register = (on, options) => {
           head: (rail, who, press) => {
             const rs = [
               ...(waits(x) ? [(r: string) => waitLine(x, r, g.wait)] : []),
-              (r: string) => line({ k, act: hooked ? action(x, true) : actOf(x), tail: byOf(x), press, st: c, who: hooked ? `  ${who}` : who, rail: r, link: g.link, dim, away: awayOf([x]) }),
+              (r: string) => line({ k, act: hooked ? action(x, true) : actOf(x), tail: byOf(x), press, st: c, who: hooked ? `  ${who}` : who, rail: r, link: g.link, dim, away: awayOf([x]), more: (n => n ? `${n} hook${n > 1 ? 's' : ''}` : undefined)(x.kind === 'tool' && x.use ? tucked.get(x.use) : 0) }),
               ...server,
             ], mid = rail.endsWith('╰ ') ? `${rail.slice(0, -2)}├ ` : rail
             return rs.map((f, i) => f(i < rs.length - 1 ? mid : rail))
@@ -2227,6 +2428,7 @@ export const register: Register = (on, options) => {
         if (cur !== undefined) rows.push(<Text key={`gap${rows.length}`}> </Text>) // a row of its own, not a margin: the window counts elements as rows
         const hk = `turn${n}` // by its turn, not its place: folds opening above it must not rename it, or an anchor on it is lost
         rows.push(header(n, hk)); cur = n; tops.add(hk)
+        if (gui && n) { const sr = splitRow(n, turnIn(n)); if (sr) rows.push(sr) }
         // its `#N` opens the turn: a stop for the row cursor as a row is. A running turn's opens nothing, so it stops only for its
         // `N hidden ▸`, which takes the ring
         if (turnIn(n).ends.length) pressable.add(hk)
@@ -2284,10 +2486,12 @@ export const register: Register = (on, options) => {
     }
     // Bright in the controls means active, nothing else: the view shown, the page open, the loop filtered to. The active view also
     // carries a `•` after its name, so it reads without colour; the others a space in its place, so a view switch keeps every label's width
-    const vbtn = (v: View, k: string) => <Button key={`v${v}`} label={`${v}${view === v ? '•' : ' '}`} hotkey={k} plain dimColor={view !== v} onPress={() => setView(v)} />
+    // The desktop draws each a native button with its key on a cap: no padding there, and the open view reads by its weight
+    const vbtn = (v: View, k: string) => gui ? <Button key={`v${v}`} label={v} hotkey={k} plain dimColor={view !== v} onPress={() => setView(v)}><Text weight={view === v ? 'semibold' : undefined}>{v}</Text></Button>
+      : <Button key={`v${v}`} label={`${v}${view === v ? '•' : ' '}`} hotkey={k} plain dimColor={view !== v} onPress={() => setView(v)} />
     // one width whatever the level (`level info  `), as `fold  ` is: a label that changed width could repack the controls
     const LVW = Math.max(...LEVELS.map(l => l.length)) + 6
-    const lbtn = <Button key="lvl" label={`level ${LEVELS[level]}`.padEnd(LVW)} hotkey="l" plain dimColor onPress={nextLevel} />
+    const lbtn = <Button key="lvl" label={gui ? `level ${LEVELS[level]}` : `level ${LEVELS[level]}`.padEnd(LVW)} hotkey="l" plain dimColor onPress={nextLevel} />
     const kbtn = <Button key="legend" label="keys" hotkey="i" plain dimColor={page !== 'keys'} onPress={() => openPage('keys')} />
     // `^↑↓ turn`: ctrl+↑ and ctrl+↓ press these from the prompt or the pane (`^`: ctrl, apart from the cursor's plain ↓ ↑). They are the engine's Global chords for the diff panel's file
     // list (app:diffFileListUp/Down, also meta+↑↓), which a Button's `action` takes while that panel is closed; open, the panel keeps them
@@ -2305,7 +2509,7 @@ export const register: Register = (on, options) => {
     // Always drawn, one width (`fold` padded): a label that changed width could change how the controls pack, and with it the
     // header's height, moving the anchored row
     const folds = foldsOf(top), shut = folds.some(id => !expanded.has(id))
-    const obtn = <Button key="folds" label={shut || !folds.length ? 'unfold' : 'fold  '} hotkey="o" plain dimColor onPress={() => {
+    const obtn = <Button key="folds" label={shut || !folds.length ? 'unfold' : gui ? 'fold' : 'fold  '} hotkey="o" plain dimColor onPress={() => {
       const i = sel ? rowAt(sel) : -1, flip = sel && !inspect && !page && (treeStops.includes(sel) || (i >= winStart && i <= winEnd)) ? flips.get(sel) : undefined
       if (flip) return flip()
       for (const id of folds) if (shut) expanded.add(id); else expanded.delete(id)
@@ -2340,13 +2544,40 @@ export const register: Register = (on, options) => {
     const bgN = setup.bg?.tasks.length ?? 0, cronN = setup.bg?.crons.length ?? 0
     // the row itself says only what needs the eye: the model, and a rate limit once it nears (80%); the rest is on the page
     // led by `setup`, so the button says what it opens: `s: setup · Opus 5.5 · limit 85%`
-    const setupText = ['setup', [setup.model && `${modelName(setup.model)}${setup.effort != null ? ` ${setup.effort}` : ''}`, peak && peak.percentUsed >= 80 && `limit ${Math.round(peak.percentUsed)}%`].filter(Boolean).join(' · ')].filter(Boolean).join(' · ')
+    // the desktop's row has no room for the model beside the keys: the page has it, the row keeps the limit
+    const setupText = ['setup', [!gui && setup.model && `${modelName(setup.model)}${setup.effort != null ? ` ${setup.effort}` : ''}`, peak && peak.percentUsed >= 80 && `limit ${Math.round(peak.percentUsed)}%`].filter(Boolean).join(' · ')].filter(Boolean).join(' · ')
     // a page in place of the log; its own key pressed on it again, back to the log
     const openPage = (p: NonNullable<typeof page>) => {
       if (page === p && !inspect) return back()
       page = p; inspect = undefined; pageBack = false; follow = false; $.ui.invalidate('ui.render'); $.ui.scroll({ in: PANE, to: 'start' }).catch(() => {}); $.clock.after(50, () => { $.ui.focus({ requestId: PANE, key: 'back' }).catch(() => {}) })
     }
-    const keysPage = () => (
+    // The desktop's keys page: a legend to glance at, not to read. Each mark with two or three words, in grids under what the
+    // marks are about; the keys the controls do not already show on a cap. The terminal's page keeps its full sentences
+    const LEGEND: [string, [string, string, string?][]][] = [
+      ['How it went', [['✗', 'broke', 'red'], ['⊘', 'refused', 'cyan'], ['⚠', 'ended early', 'yellow'], ['■', 'a hook stopped it', 'yellow'], ['◷', 'slow hook', 'yellow'], ['↩', 'hook feedback', 'blue'],
+        ['●', 'running now', 'green'], ['✓', 'agent finished'], ['+', 'hook added context'], ['·', 'hook changed nothing'], ['∅', 'found nothing'], ['?', 'unknown agent state']]],
+      ['Reading a row', [['↗', 'in another project', 'magenta'], ['≈', 'estimated'], ['░', 'a call and its hooks'], ['│', 'inside an open fold'], ['▸ ▾', 'open, close'], ['›', 'the filtered agent'], ['━', 'a turn\'s time, by part', 'claude']]],
+      ['Keys without a button', [['enter', 'open the row'], ['e', 'newest row'], ['b', 'back'], ['n p', 'next, previous row'], ['f', 'only this agent'], ['o', 'fold at the cursor'], ['↑ ↓', 'move the cursor'], ['tab', 'move the focus']]],
+    ]
+    const keysGui = () => {
+      const per = Math.max(1, Math.floor(cols / 20)), cw = Math.floor(cols / per) // two columns at 43, more in a wide pane
+      return (
+        <Box key="keys" flexDirection="column" width={e.props.bodyColumns}>
+          <Box flexDirection="row" columnGap={2}><Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} /></Box>
+          {LEGEND.flatMap(([t, items], g) => [
+            <Text key={`lgap${g}`}> </Text>,
+            <Text key={`lt${g}`} weight="semibold">{t}</Text>,
+            <Box key={`lg${g}`} flexDirection="row" flexWrap="wrap">
+              {items.map(([mk, what, c]) => <Box key={`li${mk}`} flexDirection="row" width={cw}><Box flexShrink={0} width={[3, 4, 6][g]}>{/* the widest of each group: one glyph, `╭ ╰`, `enter` */}<Text color={c} mono weight={g === 2 ? 'medium' : undefined}>{mk}</Text></Box><Text wrap="truncate-end" dimColor>{what}</Text></Box>)}
+            </Box>,
+          ])}
+          <Text key="lgapn"> </Text>
+          <Text key="ln1" dimColor wrap="wrap">Bright rows did something; dim rows are routine.</Text>
+          <Text key="ln2" dimColor wrap="wrap">In a turn's split, before submit is the engine's time before your prompt, and other its work between steps.</Text>
+        </Box>
+      )
+    }
+    const keysPage = () => gui ? keysGui() : (
       <Box key="keys" flexDirection="column" width={e.props.bodyColumns}>
         <Box flexDirection="row" columnGap={2}><Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} /></Box>
         <Text key="gapmk"> </Text>
@@ -2415,6 +2646,25 @@ export const register: Register = (on, options) => {
         const theirs = [...new Set(hs.filter(h => h.plugin).map(h => h.name))].filter(n => !own.includes(n))
         const each = eachHook(ev), open = hookOpen.has(ev) && each.length > 0
         const flip = () => { if (!hookOpen.delete(ev)) hookOpen.add(ev); $.ui.invalidate('ui.render') }
+        // The desktop: an event is one line, closed: its name, how many hooks it has and its runs flush right. Opened (any event
+        // with a hook opens there), a line per hook: its median and p90, and how it spreads only when it is not steady
+        if (gui) {
+          const names = [...new Set([...each.map(([n]) => n), ...own, ...theirs])], isOpen = hookOpen.has(ev) && names.length > 0
+          const r = setup.runs.get(ev)
+          const right = [`${names.length} hook${names.length === 1 ? '' : 's'}`, r && runs(r.n), r && exact(r.ms)].filter(Boolean).join(' · ')
+          const bad = r ? [r.errors && `${r.errors} failed`, r.cancelled && `${r.cancelled} cancelled`].filter(Boolean).join(' · ') : ''
+          const statOf = (n: string): [string, string?] => {
+            const ms = each.find(([m]) => m === n)?.[1].ms ?? []
+            if (!ms.length) return [theirs.includes(n) && !own.includes(n) ? 'not timed' : '—']
+            if (ms.length < FEW) return [`${runs(ms.length)} · ${exact(Math.max(...ms))} at most`]
+            const s = spreadOf(ms)
+            return [`${exact(s.med)} · p90 ${exact(s.p90)}`, s.feel === 'steady' ? undefined : s.feel]
+          }
+          return [
+            lr(`hk${ev}`, `${isOpen ? '▾' : '▸'} ${ev}`, right, { press: names.length ? flip : undefined, bad }),
+            ...(isOpen ? names.map(n => { const [st, feel] = statOf(n); return lr(`hk${ev}:${n}`, n, st, { indent: 2, dim: true, bad: feel }) }) : []),
+          ]
+        }
         return [
           <Box key={`khk${ev}`} flexDirection="row">
             <Box flexShrink={0} width={hookW}>{each.length ? <Button key={`hk${ev}`} label={fit(`${open ? '▾' : '▸'} ${ev}`, hookW - 2)} plain dimColor onPress={flip} />
@@ -2444,6 +2694,46 @@ export const register: Register = (on, options) => {
         // the counted problems a full log evicted or /agentlog clear cleared: no row left to open
         ...Object.entries(totals.bad).map(([k, c]) => !!c && <Text key={`pe${k}`} wrap="truncate-end">{`✗ ${problem(k, c)}, no longer in the log`}</Text>),
       ]
+      if (gui) {
+        const useRows = (label: string, k: string, ys: Entry[]) => {
+          const u = useOf(ys, totals.use[k])
+          return [lr(`us${k}`, label, [`${u.n} request${u.n === 1 ? '' : 's'}`, exact(u.ms), u.cost != null && `$${u.cost.toFixed(2)}`].filter(Boolean).join(' · ')),
+            u.tok ? lr(`ut${k}`, `${num(u.tok[0])} in · ${num(u.tok[1])} out`, '', { indent: 2, dim: true }) : null]
+        }
+        const gone = Object.entries(totals.bad).filter(([, c]) => !!c)
+        const flipMk = (mk: string) => () => { if (!hookOpen.delete(`mk:${mk}`)) hookOpen.add(`mk:${mk}`); $.ui.invalidate('ui.render') } // hookOpen: the page's open lists, cleared with the session
+        const inFlight = bgN + cronN
+        return (
+          <Box key="setup" flexDirection="column" width={e.props.bodyColumns}>
+            <Box flexDirection="row" columnGap={2}><Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} /></Box>
+            {sec('cc', setup.model ? `${modelName(setup.model)}${setup.effort != null ? ` · ${setup.effort}` : ''}` : 'Session', setup.mode ?? '')}
+            {at && lr('root', tilde(at[0], at[2]), '', { dim: true })}
+            {at && at[1] !== at[0] && lr('cwd', tilde(at[1], at[2]), 'cwd', { dim: true })}
+            {added.map((d, i) => lr(`add${i}`, d, 'added', { dim: true }))}
+            {sec('pb', 'Problems', problems.length ? problems.join(', ') : 'none', problems.length ? 'red' : undefined)}
+            {bad.slice(-20).map(x => lr(`pb${idOf(x)}`, `✗ ${action(x)}`, '', { press: () => show(x) }))}
+            {gone.map(([k, c]) => lr(`pe${k}`, `✗ ${problem(k, c)}`, 'no longer in the log', { dim: true }))}
+            {sec('wh', 'Outside the root', outs.length ? `${outs.length} place${outs.length === 1 ? '' : 's'}` : 'none')}
+            {outs.slice(0, 5).map(([p, n], i) => lr(`out${i}`, p === '~' ? '~ (home)' : p, calls(n), { dim: true }))}
+            {outs.length > 5 && lr('outmore', `+${outs.length - 5} more`, '', { dim: true })}
+            {sec('hk', 'Hooks', [`${hookN} command${hookN === 1 ? '' : 's'}`, setup.runs.size && runs(ran.n), setup.runs.size && exact(ran.ms)].filter(Boolean).join(' · '))}
+            {events.flatMap(hookRows)}
+            {timing && timing.startsWith('off') ? <Text key="hktimes" dimColor wrap="wrap">Per-hook times are off: see the README.</Text> : null}
+            {sec('pl', 'Plugins', String(plugins || 'none'))}
+            {setup.plugins.size ? [...setup.plugins].map(([n, pl]) => lr(`pl${n}`, n, [pl.version, pl.hooks && 'hooks', pl.mcp && 'MCP'].filter(Boolean).join(' · ')))
+              : [...markets].flatMap(([mk, ns]) => { const isOpen = hookOpen.has(`mk:${mk}`); return [lr(`pl${mk}`, `${isOpen ? '▾' : '▸'} ${mk}`, String(ns.length), { press: flipMk(mk) }), ...(isOpen ? ns.map(n => lr(`pl${mk}:${n}`, n, '', { indent: 2, dim: true })) : [])] })}
+            {sec('us', 'Model use')}
+            {useRows('main', 'main', steps.filter(x => !x.agent))}
+            {(steps.some(x => x.agent) || totals.use.agents) && useRows('subagents', 'agents', steps.filter(x => x.agent))}
+            {sides.map(([n, ys]) => useRows(SIDE[n] ?? n, `side:${n}`, ys))}
+            {forks.map(([n, ys]) => useRows(n, `plugin:${n}`, ys))}
+            {/* the engine says what runs in the background only as a turn ends: none has ended since this instance loaded */}
+            {sec('bg', 'Background tasks', !setup.bg ? 'shown once a turn ends' : inFlight ? `${inFlight} running` : 'none running')}
+            {setup.bg?.tasks.map((t, i) => lr(`bg${i}`, t.command ?? t.description, t.status, { dim: true }))}
+            {setup.bg?.crons.map((c, i) => lr(`cr${i}`, first(c.prompt), `${c.schedule}${c.recurring ? '' : ' (once)'}`, { dim: true }))}
+          </Box>
+        )
+      }
       return (
         <Box key="setup" flexDirection="column" width={e.props.bodyColumns}>
           <Box flexDirection="row" columnGap={2}><Button key="back" label="← back" hotkey="b" plain autoFocus onPress={back} /></Box>
@@ -2479,13 +2769,17 @@ export const register: Register = (on, options) => {
     // only presses a drawn Button. Counted, not wrapped by flex: the window needs the header's exact height. plain + hotkey draws
     // `a: all•`, label + 3 cells (a view's label is its name and the `•` cell); Button takes no bold, so the views not active are drawn dim instead
     const VIEW_KEYS: Partial<Record<View, string>> = { all: 'a', model: 'm', harness: 'h', outside: 'u' }
-    const items: [number, any][] = SHOWN.map((v): [number, any] => [v.length + 4, vbtn(v, VIEW_KEYS[v]!)])
+    const items: [number, any][] = SHOWN.map((v): [number, any] => [v.length + (gui ? 3 : 4), vbtn(v, VIEW_KEYS[v]!)]) // the desktop's label has no `•` cell
     const broke = problems.length ? `✗ ${problems[0]}${problems.length > 1 ? ` +${problems.length - 1}` : ''}` : '', away = elsewhere ? `↗ ${elsewhere} other project` : ''
-    const bare: [number, any][] = [...items, [LVW + 3, lbtn], [9, obtn], [7, kbtn], [8, tbtn], [4, cbtn(1)], [4, cbtn(-1)],
+    const bare: [number, any][] = [...items, [LVW + 3, lbtn], [9, obtn], [7, kbtn], [gui ? 12 : 8, tbtn], [gui ? 6 : 4, cbtn(1)], [gui ? 6 : 4, cbtn(-1)], // the desktop: `^ ↑ ↓ turn` draws 102 px, `J ↓` 44
       ...(broke ? [[broke.length, <Text key="broke" color="red">{broke}</Text>] as [number, any]] : []),
       ...(away ? [[away.length, <Text key="away" color="magenta">{away}</Text>] as [number, any]] : []),
       [setupText.length + 3, <Button key="fsetup" label={setupText} hotkey="s" plain dimColor={page !== 'setup'} onPress={() => openPage('setup')} />]]
-    const controls = pack(bare.map(([w]) => w), cols - 1).map((row, r) => <Box key={`ctl${r}`} flexDirection="row" columnGap={2} overflow="hidden">{row.map(i => bare[i]![1])}</Box>)
+    // The desktop, measured off screenshots at 41 and 43 columns: a cell is 10.6 px, a counted cell of a button 8.5, and the
+    // gap between two buttons 33 px, twice the 2 cells pack counts. So each item counts 2 more and the row holds a quarter
+    // more, less 2 for the scrollbar a page that scrolls draws inside the body (bodyColumns counts it in): the four views on
+    // one row from 41 columns. The widths stay the padded ones, so a label that changes (level, fold) never repacks the rows
+    const controls = pack(bare.map(([w]) => gui ? w + 2 : w), gui ? Math.floor(cols * 1.25) - 2 : cols - 1).map((row, r) => <Box key={`ctl${r}`} flexDirection="row" columnGap={2} overflow="hidden">{row.map(i => bare[i]![1])}</Box>)
     // the agent tree, only while an agent runs or the log is filtered: a finished agent is filtered to from its Agent row's
     // inspector (f), so a tree of finished agents would only take the log's rows
     const treeOn = agents.some(a => a.status === 'running') || only !== undefined
@@ -2499,20 +2793,22 @@ export const register: Register = (on, options) => {
       ...(treeOn ? [<Box key="main" flexDirection="row" overflow="hidden" columnGap={2}>
         <Button key="fmain" label="main" plain dimColor={only !== 'main'} onPress={() => pick('main')} />
         {/* f outside the inspector; inside it fonly's f draws later and wins */}
-        {only ? <Button key="fclear" label={fit(`filter: ${nameOf(only)} ✕`, cols - 8)} hotkey="f" plain onPress={() => pick(only!)} /> : null}
+        {only ? <Button key="fclear" label={cut(`filter: ${nameOf(only)} ✕`, cols - 8)} hotkey="f" plain onPress={() => pick(only!)} /> : null}
       </Box>, ...tree.slice(0, most).map(agentRow)] : []),
       ...(treeOn && (done || more) ? [<Box key="done" flexDirection="row"><Text>  </Text><Button key="fdone" label={toggle} plain dimColor onPress={flipDone} /></Box>] : []),
       // unfocused, the rule says how to give the pane the keys (its hotkeys and j k press nothing until then); in the rule, so the
       // header keeps its height either way. A click, not ctrl+x tab: that chord focuses a band above the prompt first when one has buttons
+      // the desktop: a blank row parts the controls from the log (a rule of glyphs wraps there), and carries the hint
+      gui ? <Text key="rule" dimColor size="caption" wrap="truncate-end">{e.props.isFocused === false ? 'Click the pane to use its keys' : ' '}</Text> :
       <Text key="rule" dimColor>{e.props.isFocused === false && cols > 24 ? `── click to focus ${'─'.repeat(cols - 19)}` : '─'.repeat(Math.max(1, cols - 1))}</Text>,
     ]
     // taken before the inspector draws: `o` pressed there must not move the window that back is about to centre
     const held = anchor; anchor = undefined
-    if (inspect) return <Box flexDirection="column">{head}{await inspector(inspect)}</Box>
-    if (page === 'keys') return <Box flexDirection="column">{head}{keysPage()}</Box>
+    if (inspect) return desk(<Box flexDirection="column">{head}{await inspector(inspect)}</Box>)
+    if (page === 'keys') return desk(<Box flexDirection="column">{head}{keysPage()}</Box>)
     if (page) { // where the session is: asked on each draw of the page, as /cd and a worktree move change it
       const [at, times] = await Promise.all([Promise.all([$.session.root(), $.session.cwd(), homeOf($)]).catch(() => undefined), timesNow($)])
-      return <Box flexDirection="column">{head}{setupPage(at, times)}</Box>
+      return desk(<Box flexDirection="column">{head}{setupPage(at, times)}</Box>)
     }
     // The cursor's move: by `move` rows that open something (pressable), in the log's order, stopping at either end. None yet, or
     // its row gone (evicted, another view) or out of the window the last draw showed (a ^↑↓, a wheel, a page scroll), it starts
@@ -2539,6 +2835,29 @@ export const register: Register = (on, options) => {
       move = 0
     }
     if (!rows.length) { winMax = 0; return <Box flexDirection="column">{head}<Text dimColor wrap="truncate-end">{empty()}</Text></Box> } // a stale winMax would let a scroll turn follow off
+    if (gui) {
+      // The desktop app scrolls a pane itself, and only a tree taller than the pane has anything to scroll (a window the plugin
+      // moved fit the pane, so the wheel never reached ui.scroll): the whole log is drawn and the app's scrollbar moves over
+      // it. Following pulls the view to the end on each new row; scrolling up stops it (followAfter), as the button under the
+      // log, moving the cursor or coming back from a row do
+      winStart = 0; winEnd = rows.length - 1; winMax = 0; win = 0
+      const reveal = backKey ?? held?.k
+      backKey = undefined
+      const after = (f: () => Promise<unknown>) => { $.clock.after(50, () => { f().catch(() => {}) }) } // once this draw is in
+      if (moved) { follow = false; const k = aim(sel!); after(() => $.ui.focus({ requestId: PANE, key: k })) }
+      else if (reveal && rowAt(reveal) >= 0) { follow = false; after(() => $.ui.scroll({ in: PANE, to: { key: reveal } })) }
+      else if (follow && rows.length !== tailed) after(() => $.ui.scroll({ in: PANE, to: 'end' }))
+      tailed = follow ? rows.length : -1
+      if (follow) fresh = 0
+      return desk(
+        <Box flexDirection="column">
+          {head}
+          {rows}
+          <Box key="jumprow" flexDirection="row" justifyContent="flex-end">{follow
+            ? <Button key="pause" label="following the newest · pause" plain dimColor onPress={() => { follow = false; $.ui.invalidate('ui.render') }} />
+            : <Button key="jump" label={fresh ? `↓ ${fresh} new event${fresh > 1 ? 's' : ''}` : '↓ newest'} hotkey="e" onPress={jump} />}</Box>
+        </Box>)
+    }
     // The window: decide follow against the rows without the jump row first, then give the jump row its own row when not
     // following, so landing on the newest row never shows `↓ newest`
     const avail0 = Math.max(1, bodyRows - head.length)
@@ -2572,13 +2891,12 @@ export const register: Register = (on, options) => {
     const winRows = avail - (stick !== undefined ? 1 : 0)
     winMax = Math.max(0, rows.length - avail + (sticks(rows.length - avail) ? 1 : 0))
     winStart = win; winEnd = win + winRows - 1
-    return (
+    return desk(
       <Box flexDirection="column">
         {head}
-        {stick !== undefined ? rows[stick] : null}
+        {stick === undefined ? null : rows[stick]}
         {rows.slice(win, win + winRows)}
         {!follow && <Box key="jumprow" flexDirection="row" justifyContent="flex-end"><Button key="jump" label={fresh ? `↓ ${fresh} new event${fresh > 1 ? 's' : ''} (e)` : '↓ newest (e)'} hotkey="e" onPress={jump} /></Box>}
-      </Box>
-    )
+      </Box>)
   })
 }

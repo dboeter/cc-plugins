@@ -281,7 +281,7 @@ export const migrate = (t: string) => {
 // the top of the file because the engine only follows `$` into such functions.
 type Tab = 'session' | 'rules' | 'help'
 const TABS: Record<string, Tab> = { '': 'session', show: 'session', session: 'session', rules: 'rules', patterns: 'rules', test: 'rules', guide: 'help', help: 'help' }
-type Kept = { rules: unknown[]; compiled: Pattern[]; broken?: string; last?: string; file?: Promise<string>; seeded?: boolean; note: string; extra: number
+type Kept = { rules: unknown[]; compiled: Pattern[]; broken?: string; last?: string; sig?: string; file?: Promise<string>; seeded?: boolean; note: string; extra: number
   vault?: { id: string; held: Promise<Held> }; env?: { id: string; seen: Seen }; envOn?: boolean; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; cursor?: string; ruleAt?: number; arm?: string; opened?: boolean; tab: Tab; sample: string }
 // CLAUDE_CONFIG_DIR, else ~/.claude; USERPROFILE is Windows' HOME
 const place = ($: EngineInterface, k: Kept) => k.file ??= (async () => {
@@ -324,9 +324,15 @@ const take = (k: Kept, t: string) => {
   k.envOn = JSON.parse(t).envFiles !== false
   k.compiled = compile(rules, YOURS)
 }
+// Every masked event comes through here (a row, an attachment, a tool's description), so the file is read only when its
+// time or size changed since the last read that took. A time of 0 is no time (a filesystem without one): read every time
 const sync = async ($: EngineInterface, k: Kept) => {
-  const t = await text($, k, await place($, k))
-  if (t !== undefined) take(k, t)
+  const path = await place($, k)
+  const st = await $.fs.stat(path).catch(() => undefined)
+  const sig = st?.mtimeMs ? `${st.mtimeMs}:${st.size}` : undefined
+  if (sig && sig === k.sig) return
+  const t = await text($, k, path)
+  if (t !== undefined) { take(k, t); k.sig = sig }
 }
 // Writes the file's rules as `f` changes them, and the keys in `top`, its other keys kept; a file
 // that did not read or parse is left alone, never written over. Undefined when saved, else why not.

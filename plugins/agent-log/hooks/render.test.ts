@@ -97,14 +97,14 @@ const seed = () => {
 }
 
 const agentlog = ($: any, args: string) => $.command.run({ command: 'agentlog', args, origin: { kind: 'composer' }, presentation: 'text' })
-const mountAt = async ($: any, on: any, id: string, cols: number, bodyRows: number) => {
+const mountAt = async ($: any, on: any, id: string, cols: number, bodyRows: number, surface: 'terminal' | 'desktop' = 'terminal') => {
   on('session.id', () => ({ value: id }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('agent.list', () => ({ value: [{ id: 'A', type: 'Explore', description: 'map how hooks are named', status: 'completed' }] }))
   on('config.list', () => ({ value: [] }))
   on('ui.panes', () => ({ value: [{ id: 'agent-log' }] })) // the pane is up: /agentlog sets the level, it does not toggle it shut
   mock.store(on, { [`r:${id}`]: { entries: seed(), seen: {}, turn: 2, names: { A: 'Explore' } } })
-  return $.ui.mount({ plugin: 'agent-log', surface: 'terminal', component: 'Pane', requestId: 'agent-log', props: { title: 'Agent log', isFocused: false, placement: 'dock', bodyColumns: cols, scroll: { offset: 0, bodyRows } } as any })
+  return $.ui.mount({ plugin: 'agent-log', surface, component: 'Pane', requestId: 'agent-log', props: { title: 'Agent log', isFocused: false, placement: 'dock', bodyColumns: cols, scroll: { offset: 0, bodyRows } } as any })
 }
 
 test('the review\'s session at 100×60: every level, view and page draws', async ($, on) => {
@@ -198,4 +198,139 @@ test('the review\'s session at 60×20: the header leaves the log its room', asyn
   expect(ruleAt(lines)).toBe(3)
   for (const l of lines.slice(0, 3)) expect(plainOf(l).length).toBeLessThanOrEqual(59)
   expect(lines.length).toBe(20) // the window fills the rest
+})
+
+// The desktop app draws a proportional face in cells wider than its letters, so nothing there is laid out by counting
+// characters: the surface cuts a long action, no label is padded, no rule is drawn from glyphs
+const flat = (el: any): any[] => !el || typeof el === 'string' ? [] : [el, ...(el.children ?? []).flatMap(flat)]
+test('on the desktop the surface lays the rows out: nothing is cut, padded or ruled by counting characters', async ($, on) => {
+  const m = await mountAt($, on, 'RVD', 43, 48, 'desktop')
+  const root = await m.find({ type: 'Box' })
+  const all = flat(root)
+  const texts = all.filter(x => x.type === 'Text').map(x => txt(x))
+  expect(texts.some(t => /─{3}/.test(t))).toBe(false) // a run of ─ wraps onto a second line there
+  // the whole action, cut by the surface: at 43 columns the terminal's count cuts it after 31 letters
+  const act = all.find(x => x.type === 'Text' && /^Waiting for you to answer the permission prompt$/.test(txt(x)))
+  expect(act?.props?.wrap).toBe('truncate-end')
+  expect(texts.some(t => /…$/.test(t))).toBe(false)
+  // the controls: every key the terminal has, no label padded, the open view marked by weight, not a `•`
+  const btn = async (key: string) => (await m.find({ type: 'Button', key }))!
+  for (const [key, hotkey] of [['vall', 'a'], ['vmodel', 'm'], ['vharness', 'h'], ['voutside', 'u'], ['lvl', 'l'], ['folds', 'o'], ['legend', 'i'], ['cdown', 'j'], ['cup', 'k'], ['fsetup', 's']] as const) {
+    const b = await btn(key)
+    expect(b.props?.hotkey).toBe(hotkey)
+    expect(txt({ ...b, type: 'Box' })).not.toMatch(/•|\s$/)
+    expect(String(b.props?.label ?? '')).not.toMatch(/•|\s$/)
+  }
+  expect(flat(await btn('vall')).some(x => x.type === 'Text' && x.props?.weight === 'semibold')).toBe(true)
+  expect(flat(await btn('vmodel')).some(x => x.type === 'Text' && x.props?.weight === 'semibold')).toBe(false)
+  // times in digits of one width, so they line up
+  expect(all.some(x => x.type === 'Text' && x.props?.tabular && /^39\.6s$/.test(txt(x)))).toBe(true)
+  // a turn's split: a bar of its parts, each as wide as its share, and the same split in words beside it
+  const bar = all.find(x => x.type === 'Box' && x.props?.key === 'split1')
+  expect(bar).toBeDefined()
+  const parts = flat(bar).filter(x => x.type === 'Text' && /^━+$/.test((x.children ?? []).join('')))
+  expect(parts.length).toBeGreaterThan(1)
+  expect(new Set(parts.map(x => x.props.color)).size).toBe(parts.length) // a colour per part
+  const widths = parts.map(x => (x.children ?? []).join('').length)
+  expect(widths[0]).toBeGreaterThan(widths.at(-1)!) // largest first, as wide as its share
+  expect(txt(bar)).toMatch(/■ ›tools 17\.2s/) // the bar's parts again in words
+  // the app's font draws box lines unjoined and the small marks at half size: an arrow says which call a hook belongs to
+  const seen = all.filter(x => x.type === 'Text' || x.type === 'Button').map(x => String(x.props?.label ?? '') + (x.children ?? []).filter((c: any) => typeof c === 'string').join('')).join('\n')
+  expect(seen).not.toMatch(/[╭╰├▸▾⚠▪]/)
+  // a call and the rows on it (its hooks, its wait) share one tint; a call alone has none
+  const rowOf = (re: RegExp) => all.find(x => x.type === 'Box' && x.props?.overflow === 'hidden' && x.props?.flexDirection === 'row' && re.test(txt(x)))
+  const tint = rowOf(/Run the tests/)?.props?.backgroundColor
+  expect(tint).toBeDefined()
+  expect(rowOf(/Waiting for you/)?.props?.backgroundColor).toBe(tint)
+  expect(rowOf(/lint-feedback/)?.props?.backgroundColor).toBe(rowOf(/Edit agent-log\.tsx/)?.props?.backgroundColor)
+  expect(rowOf(/Read index\.ts/)?.props?.backgroundColor).toBeUndefined()
+  // the next call with rows on it takes the other tint, so two such calls in a row do not read as one block
+  const next = rowOf(/Clean the build output/)?.props?.backgroundColor
+  expect(next).toBeDefined()
+  expect(next).not.toBe(tint)
+  expect(rowOf(/guard/)?.props?.backgroundColor).toBe(next)
+  expect(seen).toMatch(/3 hidden ►/) // the terminal's 4, less a call's quiet hook, which has no row here
+  // the row keys the cursor and the inspector go by are the terminal's
+  await m.press({ key: 'bturn1' })
+  expect(await m.find({ type: 'Button', key: 'back' })).toBeDefined()
+  await m.press({ key: 'back' })
+  await m.press({ key: 'hid0' })
+  expect(flat(await m.find({ type: 'Box' })).some(x => x.type === 'Text' && /^install-check on SessionStart startup/.test(txt(x)))).toBe(true)
+  await m.press({ key: 'hid0' })
+})
+
+test('on the desktop the inspector, the keys page and the setup page are laid out by the surface too', async ($, on) => {
+  const m = await mountAt($, on, 'RVP', 43, 48, 'desktop')
+  const tree = async () => flat(await m.find({ type: 'Box' }))
+  // the inspector: the action as a title that wraps, the command as code, nothing cut by a count
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Run the tests/ }))!.key! })
+  const insp = await tree()
+  const title = insp.find(x => x.type === 'Text' && x.props?.weight === 'semibold' && /^Run the tests/.test(txt(x)))
+  expect(title?.props?.wrap).toBe('wrap')
+  expect(insp.find(x => x.type === 'Code')?.props?.source).toBe('claude plugin test plugins/agent-log')
+  // sections read by their right edge, not a column of keys: the failure first, then where the time went
+  const said = (s: string) => insp.filter(x => x.type === 'Text' && (x.children ?? []).join('') === s)
+  expect(said('Failed').length).toBe(1)
+  expect(said('Time').length).toBe(1)
+  expect(said('waiting for you to answer the permission prompt').length).toBe(1) // what the wait was for, as recorded
+  expect(said('4.2s')[0]?.props?.tabular).toBe(true)
+  await m.press({ key: 'back' })
+  // a turn's inspector has the whole split: a bar and a row per part
+  await m.press({ key: (await m.find({ type: 'Button', text: /^#1/ }))!.key! })
+  const turn = await tree()
+  expect(turn.find(x => x.props?.key === 'tbar')?.children?.length).toBe(5)
+  expect(turn.filter(x => x.type === 'Text' && ['tools', 'other', 'you', 'hooks'].includes((x.children ?? []).join(''))).length).toBe(4) // `model` is a view's button too
+  await m.press({ key: 'back' })
+  await m.press({ key: (await m.find({ type: 'Button', text: /^Run the tests/ }))!.key! })
+  for (const k of ['agent', 'took', 'when', 'waited']) expect(said(k).length).toBe(0) // no column of names
+  expect(insp.filter(x => x.type === 'Text' && txt(x) === txt(title)).length).toBe(1) // the title is said once
+  const keyed = insp.filter(x => x.props?.key != null).map(x => x.props.key)
+  expect(new Set(keyed).size).toBe(keyed.length)
+  await m.press({ key: 'back' })
+  // the keys page: a legend, not sentences. Each mark in its colour with a few words, in grids under a heading
+  await m.press({ key: 'legend' })
+  const keys = await tree()
+  const says = (xs: any[], s: string) => xs.some(x => x.type === 'Text' && (x.children ?? []).join('') === s)
+  expect(keys.find(x => x.type === 'Text' && x.props?.color === 'red' && (x.children ?? []).join('') === '✗')).toBeDefined()
+  expect(says(keys, 'broke')).toBe(true)
+  expect(says(keys, '━')).toBe(true) // the desktop's own mark
+  for (const t of ['How it went', 'Reading a row', 'Keys without a button']) expect(keys.some(x => x.type === 'Text' && x.props?.weight === 'semibold' && txt(x) === t)).toBe(true)
+  expect(keys.filter(x => x.type === 'Text').every(x => txt(x).length < 110)).toBe(true) // nothing to read through
+  expect(keys.some(x => x.type === 'Box' && x.props?.flexWrap === 'wrap')).toBe(true)
+  await m.press({ key: 'legend' })
+  // the setup page: sections whose heads carry their state at the right edge; a problem's whole line, cut by the surface
+  await m.press({ key: 'fsetup' })
+  const setup = await tree()
+  const prob = setup.find(x => x.type === 'Button' && /^✗ API error: overloaded_error 529/.test(String(x.props?.label)))
+  expect(flat(prob).some(x => x.type === 'Text' && x.props?.wrap === 'truncate-end')).toBe(true)
+  expect(setup.some(x => x.type === 'Text' && /…$/.test(txt(x)))).toBe(false)
+  const head = (t: string) => setup.find(x => x.type === 'Box' && x.props?.flexDirection === 'row' && (x.children ?? []).length === 2 && txt(x.children[0]) === t)
+  expect(txt(head('Problems'))).toBe('Problems‹red:1 API error, 1 MCP server down›')
+  expect(txt(head('Outside the root'))).toBe('Outside the root2 places')
+  expect(head('Hooks')).toBeDefined()
+  expect(txt(head('Background tasks'))).toBe('Background tasksshown once a turn ends') // no turn has ended since this instance loaded
+  expect(setup.some(x => x.type === 'Text' && /: /.test(txt(x)) && x.props?.weight === 'semibold' && !/^✗/.test(txt(x)))).toBe(false) // no `Title: sentence` heads
+  await m.press({ key: 'back' })
+})
+
+test('on the desktop the whole log is drawn, each row one element: the app scrolls it, and the log follows its end until paused', async ($, on) => {
+  const scrolls: any[] = []
+  on('ui.scroll', (_$: any, e: any) => { scrolls.push(e); return {} })
+  const m = await mountAt($, on, 'RVE', 43, 20, 'desktop')
+  const root = await m.find({ type: 'Box' })
+  const kids = (root!.children ?? []) as any[]
+  // the app sends the plugin no wheel moves, so a window of 20 rows could not be scrolled: every turn's rows are there
+  expect(kids.length).toBeGreaterThan(30)
+  const head = (k: string) => kids.find((x: any) => x?.props?.key === k)
+  for (const k of ['turn1', 'split1', 'turn2', 'split2']) expect(head(k)).toBeDefined()
+  expect(txt(head('turn1'))).not.toMatch(/━/) // no header is pinned: each keeps its split on the row under it
+  // following: a button under the log says so and pauses it; paused, it offers the newest rows
+  const under = async () => (await m.findAll({ type: 'Button', text: /pause$|^↓ (\d+ new|newest)/ })).length
+  expect(await m.find({ type: 'Button', text: /pause$/ })).toBeDefined()
+  expect(await under()).toBe(1)
+  await m.press({ key: 'pause' })
+  expect(await m.find({ type: 'Button', text: /pause$/ })).toBe(undefined)
+  expect(await under()).toBe(1) // the jump button in its place
+  await m.press({ key: 'jump' })
+  expect(await m.find({ type: 'Button', text: /pause$/ })).toBeDefined()
 })
