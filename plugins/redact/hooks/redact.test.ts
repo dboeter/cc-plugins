@@ -287,19 +287,26 @@ test('a pattern from the options is masked too', { options: { patterns: ['acme_[
 
 test('a pattern that does not compile is skipped and named in the status line, the rest stay on', { options: { patterns: ['(', 'ACME: acme_[a-z0-9]{8}'] } }, async ($, on) => {
   const { entered } = world(on)
-  const statuses = statusLine(on)
   expect(await entered($, `id ${ACME} ok`)).toBe(`id ${ph('ACME')} ok`)
-  expect(statuses.at(-1)).toBe('1 masked · skipped pattern #1 (/redact show)')
+  expect(await light($)).toBe('⚠ redact: skipped pattern #1 (/redact show)')
 })
 
-// the status lines the plugin set, in order
+// the status lines the plugin pinned, in order: none, as the engine draws them as warnings
 const statusLine = (on: any) => {
   const lines: (string | undefined)[] = []
   on('ui.status', (_$: any, e: any) => { lines.push(e.text); return { value: undefined } as any })
   return lines
 }
+const STATUS = { text: null, isManaged: false, isWorking: false, maxRows: 5, columns: 80 }
+// the indicator under the prompt as drawn, with a statusLine command's output `text` above it
+const light = async ($: any, props: object = {}) => {
+  const m = await $.ui.mount({ plugin: 'redact', surface: 'terminal', component: 'StatusLine', requestId: 'status', props: { ...STATUS, ...props } })
+  const t = (await m.find({ type: 'Text', text: /redact/ }))?.text
+  await m.unmount()
+  return t
+}
 
-test('a new rules file holds the two examples, off: nothing is masked, and the status line says so', async ($, on) => {
+test('a new rules file holds the two examples, off: no rule masks, env files alone do, and the indicator is on', async ($, on) => {
   const { files, entered } = world(on)
   const statuses = statusLine(on)
   const toasts = toasted(on)
@@ -309,7 +316,8 @@ test('a new rules file holds the two examples, off: nothing is masked, and the s
   expect(EXAMPLES.map(r => r.enabled)).toEqual([false, false])
   expect(JSON.parse(files.get(RULES)!)).toEqual({ rules: EXAMPLES })
   expect(await entered($, `GITHUB_TOKEN=${GH} ${MAIL}`)).toBe(`GITHUB_TOKEN=${GH} ${MAIL}`)
-  expect(statuses).toEqual(['0 masked · no rules on'])
+  expect(await light($)).toBe('● redact')
+  expect(statuses.filter(Boolean)).toEqual([])
   await $.command.run({ command: 'redact', args: `test ${MAIL}` } as any)
   expect(toasts.at(-1)).toBe('redact: no rule matched: none is on')
   const m = await mount($)
@@ -321,14 +329,29 @@ test('a new rules file holds the two examples, off: nothing is masked, and the s
   expect(await m.find({ text: /○ off/ })).toBeDefined()
 })
 
-test('the status line counts what this session masked', async ($, on) => {
-  const { entered } = world(on, {}, BOTH)
-  const statuses = statusLine(on)
+test('the indicator under the prompt: a green dot while anything masks, a yellow warning when nothing does', async ($, on) => {
+  const { entered, files } = world(on, {}, BOTH)
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await entered($, `GITHUB_TOKEN=${GH} and ${MAIL}`)
+  expect(await light($)).toBe('● redact')
+  const m = await $.ui.mount({ plugin: 'redact', surface: 'terminal', component: 'StatusLine', requestId: 'status', props: STATUS })
+  expect((await m.find({ type: 'Text', text: /^●$/ }))?.props.color).toBe('green')
+  await m.unmount()
+  files.set(RULES, JSON.stringify({ rules: JSON.parse(files.get(RULES)!).rules.map((r: any) => ({ ...r, enabled: false })), envFiles: false }))
   await entered($, 'nothing here')
-  expect(statuses).toEqual(['0 masked', '2 masked'])
+  expect(await light($)).toBe('⚠ redact off')
+  const n = await $.ui.mount({ plugin: 'redact', surface: 'terminal', component: 'StatusLine', requestId: 'status', props: STATUS })
+  expect((await n.find({ type: 'Text', text: /^⚠ redact/ }))?.props.color).toBe('warning')
+})
+
+test("the indicator goes under a statusLine command's output, and gives way when it fills the rows", async ($, on) => {
+  world(on, {}, BOTH)
+  on('ui.render', { component: 'StatusLine' }, ($$: any, e: any) => { const { Text } = $$.ui.resolve(e); return h(Text, {}, e.props.text ?? '') as any })
+  const m = await $.ui.mount({ plugin: 'redact', surface: 'terminal', component: 'StatusLine', requestId: 'status', props: { ...STATUS, text: 'hud' } })
+  expect((await m.findAll({ type: 'Text' })).map((t: any) => t.text).filter((t: string) => t === 'hud' || t === '● redact')).toEqual(['hud', '● redact'])
+  await m.unmount()
+  expect(await light($, { text: 'a\nb', maxRows: 2 })).toBeUndefined()
 })
 
 test('a masking failure that drops context, system prompt sections or a reminder is toasted', async ($, on) => {
@@ -424,7 +447,7 @@ test('a rules file that does not parse keeps the last rules read, says so, and i
   expect(await entered($, `key ${GH}`)).toBe(`key ${ph('API_KEY')}`)
   files.set(RULES, '{ broken')
   expect(await entered($, `mail ${MAIL}`)).toBe(`mail ${ph('EMAIL')}`)
-  expect(statuses.at(-1)).toBe('2 masked · redact-rules.json is no JSON object with a rules list, last rules kept (/redact rules)')
+  expect(await light($)).toBe('⚠ redact: rules file broken (/redact rules)')
   expect(await run('add x_[0-9]+')).toContain('not saved')
   expect(files.get(RULES)).toBe('{ broken')
   expect(await (await mount($)).find({ text: /⚠ 1 rule invalid/ })).toBeDefined()
@@ -507,7 +530,6 @@ test('the pane names the rule that masked each value; the model reads it masked 
 
 test('the pane toggles the terminal to draw placeholders, as the model reads them', async ($, on) => {
   world(on, HOLDS_GH)
-  const statuses = statusLine(on)
   const drawn: string[] = []
   on('ui.render', { component: 'AssistantMessage' }, ($$: any, e: any) => {
     drawn.push(e.props.text)
@@ -519,7 +541,7 @@ test('the pane toggles the terminal to draw placeholders, as the model reads the
   const m = await mount($)
   await m.press({ key: 'raw' })
   await draw()
-  expect(statuses.at(-1)).toContain('drawn as the model reads it')
+  expect(await light($)).toBe("● redact · Claude's view")
   await m.press({ key: 'raw' })
   await draw()
   // the toggle redraws what is mounted, so the first message is drawn again with its value

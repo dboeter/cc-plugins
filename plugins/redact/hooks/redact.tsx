@@ -436,19 +436,21 @@ const hold = async ($: EngineInterface, k: Kept) => {
 // A toast that never throws: a catch's notice of what it left out (the model never learns it is
 // missing), a refusal the person should see.
 const told = ($: EngineInterface, text: string) => { try { $.ui.toast(text) } catch {} }
-// The status line under the prompt: how many values this session's vault holds, so masking shows
-// though the terminal draws the real values back. Set only when it changes. No `redact:` in front:
-// the engine heads the line with the plugin's name itself.
-const badge = ($: EngineInterface, k: Kept, h: Held) => {
-  const n = Object.keys(h.v.ph).length
-  // with no rule on, a count alone would read as protected: nothing new is masked
-  const line = [`${n} masked`, ...k.compiled.length + k.extra ? [] : ['no rules on'],
-    ...k.broken ? [`${FILE} ${k.broken}, last rules kept (/redact rules)`] : [],
-    ...k.skipped.length ? [`skipped pattern ${k.skipped.join(', ')} (/redact show)`] : [],
-    ...k.raw ? ['drawn as the model reads it'] : []].join(' · ')
+// The indicator under the prompt, as the pane's status shows it: on while a rule or the env files
+// mask, off when nothing does, a fault to fix. Drawn at the StatusLine site, not by $.ui.status,
+// which the engine draws as a warning whatever it says.
+const light = (k: Kept) =>
+  k.broken ? { on: false, text: 'redact: rules file broken (/redact rules)' }
+  : k.skipped.length ? { on: false, text: `redact: skipped pattern ${k.skipped.join(', ')} (/redact show)` }
+  : k.compiled.length + k.extra || k.envOn !== false ? { on: true, text: 'redact', tail: k.raw ? "Claude's view" : undefined }
+  : { on: false, text: 'redact off' }
+// Redraws the indicator when what it says changes; once, clears a line an earlier version pinned.
+const badge = ($: EngineInterface, k: Kept, _h?: Held) => {
+  const line = JSON.stringify(light(k))
   if (line === k.shown) return
+  if (k.shown === undefined) try { $.ui.status(undefined) } catch {}
   k.shown = line
-  try { $.ui.status(line) } catch {}
+  try { $.ui.invalidate('ui.render') } catch {}
 }
 // Drops a placeholder from the vault. Its number is never handed out again (`n` stays), so a row
 // still holding it never restores to another value: a call naming it is refused, and the value,
@@ -850,6 +852,24 @@ export const register: Register = (on, options) => {
     else return next(e)
     $.ui.invalidate('ui.render')
     return next(e)
+  })
+
+  // Under a statusLine command's output, and left out when that output fills the rows it has.
+  on('ui.render', { component: 'StatusLine' }, async ($, e, next) => {
+    await sync($, kept)
+    const rows = e.props.text ? e.props.text.replace(/\n$/, '').split('\n').length : 0
+    if (rows >= e.props.maxRows) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const l = light(kept)
+    const beneath = await next(e)
+    return (
+      <Box flexDirection="column">
+        {beneath}
+        {l.on
+          ? <Text wrap="truncate-end"><Text color="green">●</Text> {l.text}{l.tail ? <Text dimColor> · {l.tail}</Text> : null}</Text>
+          : <Text color="warning" wrap="truncate-end">⚠ {l.text}</Text>}
+      </Box>
+    )
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
