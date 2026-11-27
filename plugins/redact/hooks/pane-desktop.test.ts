@@ -170,28 +170,50 @@ test('desktop: no button carries a hotkey, as no key is named', async ($, on) =>
   }
 })
 
-test('test preview runs against the vault: a held value masks, a held placeholder stays, and the field shows no value off the terminal', async ($, on) => {
+test('test preview runs against the vault: a held value masks, a held placeholder stays, and the field is left empty off the terminal', async ($, on) => {
   world(on, TWO, { [RULES]: file(EXAMPLES, { envFiles: false }) })
   on('ui.open', () => ({ value: { isPlaced: true } }) as any)
   await (await menu($, { selection: { text: `use ${PASS} and ${ph('API_KEY')}` } })).press({ key: 'redact-test' })
   const m = await mount($, { surface: 'desktop' })
-  expect((await m.find({ key: 'test' }))?.props.value).toBe(`use ${ph('SECRET')} and ${ph('API_KEY')}`)
+  // masked in the field, an edit beside the placeholder would test as masked where the real text is not
+  expect((await m.find({ key: 'test' }))?.props.value).toBe('')
   const all = (await texts(m)).join('\n')
   expect(all).toContain(`Claude gets: use ${ph('SECRET')} and ${ph('API_KEY')}`)
   expect(all).not.toContain(PASS)
-  expect(all).not.toContain('no rule matched')
+  // the held value counts as a match; the placeholder the sample carried does not
+  expect(all).toContain('1 matched')
+})
+
+test('/redact test answers as the pane does: a held value masks in the toast too', async ($, on) => {
+  world(on, TWO, { [RULES]: file(EXAMPLES, { envFiles: false }) })
+  on('ui.open', () => ({ value: { isPlaced: true } }) as any)
+  const toasts = toasted(on)
+  await $.command.run({ command: 'redact', args: `test login ${PASS}` } as any)
+  expect(toasts.at(-1)).toContain(`login ${ph('SECRET')}`)
+  expect(toasts.at(-1)).not.toContain(PASS)
+})
+
+test('chip: a warning too long for the gutter says less rather than vanishing', async ($, on) => {
+  world(on, {}, { [RULES]: '{ not json' })
+  expect((await (await chip($, 'desktop', 14)).find({ type: 'Text', text: / redact off$/ }))?.props.color).toBe('warning')
 })
 
 test('menu: a pick the vault cannot save is taken out again, and the toast says not masked', async ($, on) => {
   const { store } = world(on, {}, { [RULES]: file(EXAMPLES, { envFiles: false }) }, '/p', 'disk full')
   const toasts = toasted(on)
+  let sent = ''
+  on('prompt.submit', (_$: any, e: any) => { sent = e.text; return { text: e.text } })
   await (await menu($, { selection: { text: PASS } })).press({ key: 'redact-mask' })
   // the kit reports a hook that throws as no implementation, so the reason's words are its own
-  expect(toasts.at(-1)).toMatch(/^redact: not masked, the vault could not be saved \(.+\)$/)
+  expect(toasts.at(-1)).toMatch(/^redact: not masked, the vault could not be read or saved \(.+\)$/)
   expect(store.get('vault:s1')).toBeUndefined()
   // and a second press tries again rather than saying it is already masked
   await (await menu($, { selection: { text: PASS } })).press({ key: 'redact-mask' })
   expect(toasts.at(-1)).toMatch(/^redact: not masked/)
+  // the vault is left as it was, clean: a prompt that masks nothing still goes
+  const r: any = await $.prompt.submit({ text: 'plain words', origin: { kind: 'composer' } } as any)
+  expect(r?.drop).toBeUndefined()
+  expect(sent).toBe('plain words')
 })
 
 test('widget: a pick while it shows updates its count', async ($, on) => {
