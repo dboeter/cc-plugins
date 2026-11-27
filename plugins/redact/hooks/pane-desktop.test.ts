@@ -120,7 +120,7 @@ test('menu: mask the selection puts it in the vault, so later text masks it, and
   const m = await menu($, { selection: { text: `  ${PASS}\n` } })
   await m.press({ key: 'redact-mask' })
   expect((store.get('vault:s1') as any).ph[ph('SECRET')]).toBe(PASS)
-  expect(toasts.at(-1)).toMatch(new RegExp(`masked as ${ph('SECRET').replace(/[[\]⟦⟧]/g, '.')} from now on.*already sent`))
+  expect(toasts.at(-1)).toMatch(new RegExp(`masked as ${ph('SECRET').replace(/[[\]⟦⟧]/g, '.')}: this exact text, as a whole word, from now on.*already sent`))
   await $.prompt.submit({ text: `log in with ${PASS}`, origin: { kind: 'composer' } } as any)
   expect(sent).toBe(`log in with ${ph('SECRET')}`)
 })
@@ -157,4 +157,57 @@ test('chip: off as a warning; none on the terminal (its status line has it), non
   expect((await (await chip($, 'desktop')).find({ type: 'Text', text: /redact off/ }))?.props.color).toBe('warning')
   expect(await (await chip($, 'terminal')).find({ key: 'redact-chip' })).toBeUndefined()
   expect(await (await chip($, 'desktop', 4)).find({ key: 'redact-chip' })).toBeUndefined()
+})
+
+// ---- After the council review
+
+test('desktop: no button carries a hotkey, as no key is named', async ($, on) => {
+  world(on, TWO, { [RULES]: file(EXAMPLES) })
+  const m = await mount($, { surface: 'desktop' })
+  for (const tab of ['tab-session', 'tab-rules']) {
+    await m.press({ key: tab })
+    expect((await m.findAll({ type: 'Button' })).filter((b: any) => b.props.hotkey)).toEqual([])
+  }
+})
+
+test('test preview runs against the vault: a held value masks, a held placeholder stays, and the field shows no value off the terminal', async ($, on) => {
+  world(on, TWO, { [RULES]: file(EXAMPLES, { envFiles: false }) })
+  on('ui.open', () => ({ value: { isPlaced: true } }) as any)
+  await (await menu($, { selection: { text: `use ${PASS} and ${ph('API_KEY')}` } })).press({ key: 'redact-test' })
+  const m = await mount($, { surface: 'desktop' })
+  expect((await m.find({ key: 'test' }))?.props.value).toBe(`use ${ph('SECRET')} and ${ph('API_KEY')}`)
+  const all = (await texts(m)).join('\n')
+  expect(all).toContain(`Claude gets: use ${ph('SECRET')} and ${ph('API_KEY')}`)
+  expect(all).not.toContain(PASS)
+  expect(all).not.toContain('no rule matched')
+})
+
+test('menu: a pick the vault cannot save is taken out again, and the toast says not masked', async ($, on) => {
+  const { store } = world(on, {}, { [RULES]: file(EXAMPLES, { envFiles: false }) }, '/p', 'disk full')
+  const toasts = toasted(on)
+  await (await menu($, { selection: { text: PASS } })).press({ key: 'redact-mask' })
+  // the kit reports a hook that throws as no implementation, so the reason's words are its own
+  expect(toasts.at(-1)).toMatch(/^redact: not masked, the vault could not be saved \(.+\)$/)
+  expect(store.get('vault:s1')).toBeUndefined()
+  // and a second press tries again rather than saying it is already masked
+  await (await menu($, { selection: { text: PASS } })).press({ key: 'redact-mask' })
+  expect(toasts.at(-1)).toMatch(/^redact: not masked/)
+})
+
+test('widget: a pick while it shows updates its count', async ($, on) => {
+  world(on, {}, { [RULES]: file(ON) })
+  const w = await widget($)
+  expect((await texts(w)).join('\n')).toContain('0 masked')
+  await (await menu($, { selection: { text: PASS } })).press({ key: 'redact-mask' })
+  expect((await texts(w)).join('\n')).toContain('1 masked')
+})
+
+test('menu: no mask row for part of a placeholder', async ($, on) => {
+  world(on, TWO)
+  expect(await (await menu($, { selection: { text: 'API_KEY_1⟧ failed' } })).find({ key: 'redact-mask' })).toBeUndefined()
+})
+
+test('chip: a broken rules file says so as a warning', async ($, on) => {
+  world(on, {}, { [RULES]: '{ not json' })
+  expect((await (await chip($, 'desktop')).find({ type: 'Text', text: /rules broken/ }))?.props.color).toBe('warning')
 })
