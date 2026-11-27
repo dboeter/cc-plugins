@@ -358,3 +358,23 @@ test('a toast\'s redact: prefix is hidden with the rest', async ($, on) => {
   await $.command.run({ command: 'redact', args: 'test plain words' } as any)
   expect(toasts.at(-1)).not.toContain(V)
 })
+
+// ---- Round 7: a toast composed whole, hidden once; no vault, no reply shown
+
+test('the /redact test toast hides a held value that spans its prefix and a CRLF', async ($, on) => {
+  const V = 'redact: → tok' + '\r\n1234x'
+  world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: V } } }, { [RULES]: file(ON) })
+  on('ui.open', () => ({ value: { isPlaced: true } }) as any)
+  const toasts = toasted(on)
+  await $.command.run({ command: 'redact', args: `test tok\r\n1234x ${GH}` } as any)
+  expect(toasts.at(-1)).not.toContain('redact: → tok\n1234x')
+  expect(toasts.at(-1)).not.toContain(V)
+})
+
+test('with a vault that cannot be read, a /redact reply that could echo rule text is not shown', async ($, on) => {
+  world(on, {}, { [RULES]: file(EXAMPLES) }, '/p', undefined, 'unreadable')
+  const toasts = toasted(on)
+  await $.command.run({ command: 'redact', args: `add ${PASS}(` } as any)
+  expect(toasts.at(-1)).not.toContain(PASS)
+  expect(toasts.at(-1)).toMatch(/reply is not shown/)
+})

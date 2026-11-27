@@ -421,7 +421,11 @@ const REFUSED = /^(not added|not saved|nothing added|already|no such)/
 // a command's output row is one the model reads, and none of /redact is its business
 // (prompt.submit drops the line itself).
 const USAGE = 'show | rules | help | test [text] | add <rule> | remove <n|name> | on <n|name> | off <n|name> | env on|off'
-const answer = async ($: EngineInterface, k: Kept, fromSettings: Pattern[], args: string) => {
+// A reply is its text, raw; `/redact test` adds the vault to hide it with (its trial, which holds
+// the session's and what the sample matched). The caller composes the whole toast line and hides
+// it once: no prefix or cleanup step comes after the hiding.
+type Reply = string | { text: string; vault: Held }
+const answer = async ($: EngineInterface, k: Kept, fromSettings: Pattern[], args: string): Promise<Reply | undefined> => {
   const [, verb = '', rest = ''] = /^\s*(\S*)\s*([\s\S]*?)\s*$/.exec(args) ?? []
   if (verb === 'add') return add($, k, rest)
   if (verb === 'off' || verb === 'on') return turn($, k, rest, verb === 'on')
@@ -431,15 +435,13 @@ const answer = async ($: EngineInterface, k: Kept, fromSettings: Pattern[], args
     await sync($, k)
     // read first: unread, nothing is changed and the pane is not opened
     let h: Held
-    try { h = await hold($, k) } catch (err) { return `not tested, the vault could not be read (${(err as Error)?.message ?? err})` }
+    try { h = await hold($, k) } catch (err) { return { text: `not tested, the vault could not be read (${(err as Error)?.message ?? err})`, vault: fresh() } }
     k.tab = 'rules'; k.note = ''; k.sample = rest
     await $.ui.open({ id: PANE, title: TITLE, focus: true }); k.opened = true
     $.ui.invalidate('ui.render')
-    // a toast reaches every surface: the sample and the source drawn with no held value in them
     const { trial, out, hits } = tryOn(rest, h, [...k.compiled, ...fromSettings])
     const warn = inside(out, trial) ? `. ${INSIDE}` : ''
-    // composed whole, then hidden: no text joined after hiding can complete a held value
-    return seen((hits.length ? `→ ${out} (${hits.map(x => `${x.p} by ${x.by}`).join(', ')})` : k.compiled.length + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on') + warn, trial)
+    return { text: (hits.length ? `→ ${out} (${hits.map(x => `${x.p} by ${x.by}`).join(', ')})` : k.compiled.length + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on') + warn, vault: trial }
   }
   const tab = !rest ? TABS[verb] : undefined
   if (tab) { k.tab = tab; k.note = ''; if (verb === 'help' || verb === 'guide') k.help = true; await $.ui.open({ id: PANE, title: TITLE, focus: true }); k.opened = true; return undefined }
@@ -879,9 +881,12 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'redact' }, async ($, e) => {
     const reply = await answer($, kept, fromSettings, e.args)
-    // the whole line hidden, its prefix too: a toast reaches every surface. Unread, the reply
-    // carries no value (a vault that cannot be read answers that it could not)
-    if (reply) told($, await hold($, kept).then(h => seen(`redact: ${reply}`, h), () => `redact: ${reply}`))
+    if (!reply) return {}
+    // A toast reaches every surface: the whole line composed, its prefix too, then hidden once.
+    // With no vault to hide it with, the reply is not shown: it can echo rule text (a regex error).
+    const text = `redact: ${typeof reply === 'string' ? reply : reply.text}`
+    const vault = typeof reply === 'string' ? await hold($, kept).catch(() => undefined) : reply.vault
+    told($, vault ? seen(text, vault) : 'redact: done, but its reply is not shown, as the vault could not be read to hide values in it')
     return {}
   })
 
