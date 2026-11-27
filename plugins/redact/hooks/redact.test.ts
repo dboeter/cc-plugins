@@ -1,5 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing'
-import { EXAMPLES, composeEnvFiles, envValues, fresh, mask, migrate, restore } from './redact'
+import { COMPACT_NOTE, EXAMPLES, PLACEHOLDER_GUIDE, SUBAGENT_NOTE, composeEnvFiles, envValues, fresh, isEnvSecret, mask, migrate, restore } from './redact'
 
 // Fixtures are split so no literal matches ~/dotagents/scripts/git-hooks/lib/secret-content.ere,
 // which dotagents' pre-push gate runs over every added line (this file came from there), and
@@ -216,7 +216,9 @@ test('what the first request carries is masked: context blocks, the system promp
   const ctx: any = await $.prompt.context({ blocks: [] } as any)
   expect(ctx.blocks.map((b: any) => b.text)).toEqual([`deploy key ${ph('API_KEY')}`, `The address is ${ph('EMAIL')}.`, '2026-10-17'])
   const sys: any = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] } as any)
-  expect(sys.sections.map((s: any) => s.text)).toEqual(['You are Claude.', `key ${ph('API_KEY', 2)}`])
+  expect(sys.sections.map((s: any) => s.id)).toEqual(['intro', 'env', 'redact:placeholders'])
+  expect(sys.sections.slice(0, 2).map((s: any) => s.text)).toEqual(['You are Claude.', `key ${ph('API_KEY', 2)}`])
+  expect(sys.sections[2]).toMatchObject({ id: 'redact:placeholders', scope: 'session', text: expect.stringContaining('⟦LABEL_n⟧') })
   expect(((await $.prompt.attachment({ type: 'file', text: 'x', origin: { kind: 'engine' } } as any)) as any).text).toBe(`the file says ${ph('API_KEY', 2)}`)
   const described = async (tool: string) => ((await $.tool.describe({ tool, description: `mail ${other}` } as any)) as any).description
   expect(await described('mcp__x__post')).toBe(`mail ${ph('EMAIL', 2)}`)
@@ -824,4 +826,212 @@ test('an env file changed during the session is read again before the next promp
   expect(Object.keys((store.get('vault:s1') as any).ph)).toEqual([ph('A_KEY')])
   files.set('/p/.env', `A_KEY=${ACME}\nB_KEY=${GH}`)
   expect(await entered($, `use ${GH}`)).toBe(`use ${ph('B_KEY')}`)
+})
+
+test('prompt.compose appends a session-scoped placeholder guide while active or vaulted, and omits it when off and empty', async ($, on) => {
+  const { files } = world(on, {}, { [RULES]: JSON.stringify({ envFiles: false, rules: [] }) })
+  const shared = { id: 'intro', text: 'You are Claude.', scope: 'shared' as const }
+  on('prompt.compose', () => ({ sections: [shared] }) as any)
+  const req = { model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] } as any
+  // off and vault empty: core list returned untouched
+  const off: any = await $.prompt.compose(req)
+  expect(off.sections).toEqual([shared])
+  // envFiles on: guide appended as session after shared, using _n notation (never escaped)
+  files.set(RULES, JSON.stringify({ envFiles: true, rules: [] }))
+  const active: any = await $.prompt.compose(req)
+  expect(active.sections[0]).toEqual(shared)
+  expect(active.sections[1]).toMatchObject({ id: 'redact:placeholders', scope: 'session' })
+  expect(active.sections[1].text).toContain('⟦LABEL_n⟧')
+  expect(active.sections[1].text).toContain('⟦!LABEL_n⟧')
+  expect(active.sections[1].text).not.toMatch(/⟦!?\w+_\d+⟧/)
+  // turning everything off after a value is vaulted keeps the guide because vaulted values stay masked
+  files.set(RULES, JSON.stringify({ envFiles: false, rules: ON }))
+  await $.prompt.submit({ text: `token ${GH}`, origin: { kind: 'composer' } } as any)
+  files.set(RULES, JSON.stringify({ envFiles: false, rules: [] }))
+  const vaulted: any = await $.prompt.compose(req)
+  expect(vaulted.sections.map((s: any) => s.id)).toEqual(['intro', 'redact:placeholders'])
+})
+
+test('prompt.compose does not duplicate redact:placeholders if already present', async ($, on) => {
+  world(on, {}, BOTH)
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude.', scope: 'shared' }, { id: 'redact:placeholders', text: 'custom', scope: 'session' }] }) as any)
+  const sys: any = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] } as any)
+  expect(sys.sections.map((s: any) => s.id)).toEqual(['intro', 'redact:placeholders'])
+  expect(sys.sections[1].text).toBe('custom')
+})
+
+test('placeholder guide notes pass through mask and restore unchanged', () => {
+  const h = fresh()
+  for (const note of [PLACEHOLDER_GUIDE, COMPACT_NOTE, SUBAGENT_NOTE]) {
+    expect(mask(note, h, EX)).toBe(note)
+    const missing = new Set<string>()
+    expect(restore(note, h, missing)).toBe(note)
+    expect(missing.size).toBe(0)
+  }
+})
+
+test('session.compact adds a placeholder preservation instruction only when the vault holds values', async ($, on) => {
+  const { entered } = world(on, {}, BOTH)
+  const seen: (string | undefined)[] = []
+  on('session.compact', (_$: any, e: any) => { seen.push(e.instructions); return { messages: e.messages } as any })
+  const base = { trigger: 'manual', messages: [{ role: 'user', text: 'hi', toolUses: [] }] } as any
+  // empty vault: untouched
+  await $.session.compact(base)
+  expect(seen.at(-1)).toBeUndefined()
+  // non-empty vault without instructions: adds note
+  await entered($, `token ${GH}`)
+  await $.session.compact(base)
+  expect(seen.at(-1)).toContain('⟦LABEL_n⟧')
+  // precompute trigger and subagent compaction also preserve placeholders
+  await $.session.compact({ ...base, trigger: 'precompute', agentId: 'sub-1' })
+  expect(seen.at(-1)).toContain('⟦LABEL_n⟧')
+  // appends to existing instructions without clobbering them
+  await $.session.compact({ ...base, instructions: 'Focus on API routes.' })
+  expect(seen.at(-1)).toMatch(/^Focus on API routes\.\n\n.*⟦LABEL_n⟧/)
+  // idempotent when already present
+  const existing = seen.at(-1)!
+  await $.session.compact({ ...base, instructions: existing })
+  expect(seen.at(-1)).toBe(existing)
+})
+
+test('session.compact fails open if the store throws', async ($, on) => {
+  on('session.id', () => ({ value: 's1' }))
+  on('store.get', () => { throw new Error('store down') })
+  const seen: (string | undefined)[] = []
+  on('session.compact', (_$: any, e: any) => { seen.push(e.instructions); return { messages: e.messages } as any })
+  await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'hi', toolUses: [] }], instructions: 'keep' } as any)
+  expect(seen).toEqual(['keep'])
+})
+
+test('agent.spawn briefs fresh non-fork, non-workflow subagents while active or vaulted, and skips resumes/forks/workflows/teammates/off', async ($, on) => {
+  const { files, entered } = world(on, {}, { [RULES]: JSON.stringify({ envFiles: false, rules: [] }) })
+  const prompts: string[] = []
+  on('agent.spawn', (_$: any, e: any) => { prompts.push(e.prompt); return { model: 'sonnet', agentId: 'a1' } as any })
+  const base = { tool_use_id: 't1', prompt: 'Inspect .env', description: 'inspect', subagentType: 'Explore', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'opus', background: false, fork: false } as any
+  // off and empty vault: untouched
+  await $.agent.spawn(base)
+  expect(prompts.at(-1)).toBe('Inspect .env')
+  // active: appends note (and handles empty prompt cleanly)
+  files.set(RULES, JSON.stringify({ envFiles: true, rules: [] }))
+  await $.agent.spawn(base)
+  expect(prompts.at(-1)).toMatch(/^Inspect \.env\n\nNote: Tokens shaped like ⟦LABEL_n⟧/)
+  await $.agent.spawn({ ...base, prompt: '' })
+  expect(prompts.at(-1)).toBe(SUBAGENT_NOTE)
+  // idempotent
+  await $.agent.spawn({ ...base, prompt: prompts.at(-2)! })
+  expect(prompts.at(-1)).toBe(prompts.at(-3))
+  // skipped on fork, resume, workflow, teammate
+  for (const patch of [{ fork: true }, { resume: { agentId: 'a0' } }, { workflow: { runId: 'wf_1', agentIndex: 1 } }, { isTeammate: true as const }]) {
+    await $.agent.spawn({ ...base, ...patch })
+    expect(prompts.at(-1)).toBe('Inspect .env')
+  }
+  // vault non-empty with rules and envFiles off: still briefs subagents
+  files.set(RULES, JSON.stringify({ envFiles: false, rules: ON }))
+  await entered($, `token ${GH}`)
+  files.set(RULES, JSON.stringify({ envFiles: false, rules: [] }))
+  await $.agent.spawn(base)
+  expect(prompts.at(-1)).toContain(SUBAGENT_NOTE)
+})
+
+test('agent.spawn fails open if the store throws', async ($, on) => {
+  on('session.id', () => ({ value: 's1' }))
+  on('store.get', () => { throw new Error('store down') })
+  const prompts: string[] = []
+  on('agent.spawn', (_$: any, e: any) => { prompts.push(e.prompt); return { model: 'sonnet', agentId: 'a1' } as any })
+  await $.agent.spawn({ tool_use_id: 't1', prompt: 'Inspect', description: 'inspect', subagentType: 'Explore', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'opus', background: false, fork: false } as any)
+  expect(prompts).toEqual(['Inspect'])
+})
+
+test('isEnvSecret leaves benign config values readable while still masking secrets and capability URLs', () => {
+  // benign values that pass strong() but should stay readable
+  for (const [k, v] of [
+    ['API_URL', 'http://localhost:3000'],
+    ['NEXTAUTH_URL', 'http://localhost:3000'],
+    ['KEYCLOAK_URL', 'https://sso.example.com/v1'],
+    ['JWT_ISSUER', 'https://auth.example.com'],
+    ['SESSION_STORE', 'redis://localhost:6379'],
+    ['APP_URL', 'https://api.example.com/v1'],
+    ['APP_ORIGIN', 'https://api.example.com/v1/graphql'],
+    ['DATABASE_URL', 'postgres://localhost:5432/myapp_dev'],
+    ['DOCKER_DB_URL', 'postgres://db:5432/myapp_dev'],
+    ['REDIS_URL', 'redis://127.0.0.1:6379/0'],
+    ['HOST', '127.0.0.1'],
+    ['BIND', '0.0.0.0:8080'],
+    ['IPV6_HOST', '[::1]:3000'],
+    ['REDIS_ADDR', 'localhost:6379'],
+    ['DB_ADDR', 'db.internal:5432'],
+    ['DATA_DIR', '/var/lib/myapp'],
+    ['LOG_FILE', './logs/app.log'],
+    ['SQLITE_URL', 'file:./dev.db'],
+    ['SQLITE_DSN_FILE', 'sqlite:///var/lib/app.sqlite3'],
+    ['PARENT_CFG', '../shared/config.json'],
+    ['CONFIG_PATH', '~/config/app.yaml'],
+    ['SSL_PRIVATE_KEY_PATH', '/etc/ssl/private/server.key'],
+    ['TZ', 'America/New_York'],
+    ['TZ_ALT', 'Etc/GMT+2'],
+    ['LANG', 'en_US.UTF-8'],
+    ['RELEASE_DATE', '2026-11-27'],
+    ['BUILD_TS', '2026-11-27T12:00:00.123Z'],
+    ['AWS_REGION', 'us-east-1'],
+    ['GCP_REGION', 'europe-west1'],
+    ['NODE_VERSION', 'v18.17.0'],
+  ] as const) {
+    expect([k, v, isEnvSecret(k, v)]).toEqual([k, v, false])
+  }
+  // real secrets and capability URLs that MUST still be masked
+  const sg = 'S' + 'G.' + 'a'.repeat(20) + '.' + 'b'.repeat(20)
+  const alchemy = 'https://eth-mainnet.g.alchemy.com/v2/' + 'aB3dE6gH9jK2mN5pQ8rS'
+  const infura = 'https://mainnet.infura.io/v3/' + '0123456789abcdef0123456789abcdef'
+  const slackHook = 'https://hooks.slack.com/services/T12345678/B12345678/' + 'xK9mP2qR7vW4zA8c'
+  const s3Key = 's3://' + 'AK' + 'IA' + 'A'.repeat(16)
+  const skHost = 'https://' + 'sk-' + 'live-' + 'a'.repeat(24) + '.example.com/'
+  for (const [k, v] of [
+    ['GITHUB_TOKEN', GH],
+    ['DATABASE_URL', 'postgres://user:s3cr3t@localhost:5432/mydb'],
+    ['API_URL', 'https://api.example.com/v1?api_key=abc12345'],
+    ['APP_URL', 'https://api.example.com/v1#token=abc12345'],
+    ['ZAPIER_URL', 'https://hooks.zapier.com/hooks/catch/1234567/abcdefg/'],
+    ['ZAPIER_HOOK_URL', 'https://hooks.zapier.com/v1/notify'],
+    ['NTFY_URL', 'https://ntfy.sh/mysecrettopic42'],
+    ['PING_URL', 'https://example.com/ping/a1b2c3d4e5f'],
+    ['S3_ENDPOINT', s3Key],
+    ['LAMBDA_URL', 'https://a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6.lambda-url.us-east-1.on.aws/'],
+    ['REDIS_URL', 'redis://default-pw-abc123:6379'],
+    ['BAD_HOST_URL', skHost],
+    ['WEBHOOK_PATH', '/hooks/xK9mP2qR7vW4'],
+    ['WEBHOOK_PATH', '/hooks/internal'],
+    ['SLACK_WEBHOOK_URL', slackHook],
+    ['SLACK_URL', slackHook],
+    ['ALCHEMY_URL', alchemy],
+    ['INFURA_URL', infura],
+    ['SECRET_URL', 'https://internal.example.com/v1'],
+    ['DB_PASS' + 'WORD', 'correct-horse-battery'],
+    ['SENDGRID_VAR', sg],
+    ['JWT_SECRET', '/aB3dE6+gH9jK2mN=='],
+    ['API_BLOB', '/aB3dE6gH9jK2mN5p/qR8sT1uV4wX7yZ0a'],
+    ['SHORT_BLOB', '/aB3dE6gH9jK2mN5/qR8sT1uV4wX7yZ0'],
+    ['MIXED_BLOB', '/abcDEFghiJKL/mnoPQRstuVWX'],
+    ['FAKE_TZ', 'Europe/aB3dE6gH9jK2mN5pQ8rS'],
+  ] as const) {
+    expect([k, v, isEnvSecret(k, v)]).toEqual([k, v, true])
+  }
+})
+
+test('env seeding leaves benign URLs, addresses, paths and timezones readable in a session', async ($, on) => {
+  const env = [
+    'GITHUB_TOKEN=' + GH,
+    'API_URL=http://localhost:3000',
+    'DATA_DIR=/var/lib/myapp',
+    'TZ=America/New_York',
+    'DATABASE_URL=postgres://user:s3cr3t@localhost:5432/mydb',
+  ].join('\n')
+  const { store, files } = world(on, {}, { '/p/.env': env })
+  listed(on, files)
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
+  const vault = store.get('vault:s1') as any
+  expect(vault.ph).toEqual({
+    [ph('GITHUB_TOKEN')]: GH,
+    [ph('DATABASE_URL')]: 'postgres://user:s3cr3t@localhost:5432/mydb',
+  })
 })

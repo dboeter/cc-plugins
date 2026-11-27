@@ -521,12 +521,23 @@ const keep = ($: EngineInterface, k: Kept, h: Held) => {
     catch (err) { h.dirty = true; throw err }
   })
 }
+const GUIDE_ID = 'redact:placeholders'
+export const PLACEHOLDER_GUIDE = [
+  `Tokens shaped like ${OPEN}LABEL_n⟧ (such as ${OPEN}API_KEY_n⟧) are live value handles substituted automatically with their real values before any tool runs.`,
+  '- Use them verbatim in commands, code, and edits as if they were the real values. Do not ask the user for the underlying value, treat them as missing/template text, or alter their brackets or numbers.',
+  '- Do not inspect, decode, slice, or probe a handle to reveal its underlying value (e.g., via echo, base64, xxd, or scripts); only transform a handle when the task itself requires it (such as encoding a credential for a config or header).',
+  '- Work silently with them: do not mention redaction or placeholders to the user unless asked or a tool call refuses one.',
+  `- Every tool receives the real value (including git commits, PR bodies, and web/MCP calls)—placing a handle there publishes the real value. To write a handle literally as text, escape it as ${ESC}LABEL_n⟧.`,
+].join('\n')
+export const COMPACT_NOTE = `Preserve any ${OPEN}LABEL_n⟧ tokens verbatim in the summary; they are live value handles restored automatically before tools run.`
+export const SUBAGENT_NOTE = `Note: Tokens shaped like ${OPEN}LABEL_n⟧ are live value handles restored automatically before tools run. Use them verbatim without asking for real values, probing to reveal them, or mentioning masking unless asked; escape literal text as ${ESC}LABEL_n⟧.`
+
 // One hook's masking: the session's vault with the file's rules that are on, then the settings'.
 const masker = async ($: EngineInterface, k: Kept, fixed: readonly Pattern[]) => {
   await sync($, k)
   const h = await hold($, k)
   const patterns = [...k.compiled, ...fixed]
-  return { m: (s: string) => mask(s, h, patterns), done: async () => { await keep($, k, h); badge($, k, h) } }
+  return { h, m: (s: string) => mask(s, h, patterns), done: async () => { await keep($, k, h); badge($, k, h) } }
 }
 // drops the vaults of sessions untouched for KEEP_MS; a --resume of one finds its placeholders gone
 const prune = async ($: EngineInterface) => {
@@ -574,6 +585,68 @@ const ENV_LINE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*(?:"([^"]*)
 // a value that only names another (`${OTHER}`, `$OTHER`) or runs a command (`$(cat key)`, an
 // `.envrc`'s) holds no secret of its own
 const REF = /^\$\{?\w+\}?$|^\$\(|^`/
+// Word-bounded credential key names: benign-value exemptions never apply to these
+// (except *_FILE / *_DIR — or *_PATH on non-hook keys — for benign filesystem paths like SSL_PRIVATE_KEY_PATH).
+const SECRET_KEY = /(?:^|[_.-])(?:SECRET|TOKEN|KEY|PASS|PASSWORD|PASSWD|PWD|CREDENTIAL|CREDENTIALS|WEBHOOK|HOOK|DSN|SIGNING|PRIVATE|COOKIE|BEARER)(?:$|[_.-])/i
+const HOOK_KEY = /(?:^|[_.-])(?:WEBHOOK|HOOK)(?:$|[_.-])/i
+const PATH_KEY = /(?:^|_)(?:PATH|FILE|DIR)$/i
+// Safe DNS label: lowercase letters/hyphens, at most 24 chars, optional short trailing digit suffix (e.g. us-east-1, db1, s3).
+const SAFE_HOST_LABEL = /^[a-z](?:[a-z-]{0,21}[a-z])?(?:-[0-9]{1,2}|[0-9])?$/
+const SAFE_IPV4 = /^(?:\d{1,3}\.){3}\d{1,3}$/
+const SAFE_IPV6 = /^\[[0-9a-fA-F:]+\]$/
+const isSafeHost = (host: string, allowSingleLabel: boolean) => {
+  if (host === 'localhost' || SAFE_IPV4.test(host) || SAFE_IPV6.test(host)) return true
+  const labels = host.split('.')
+  if (!allowSingleLabel && labels.length < 2) return false
+  return labels.every(l => l.length <= 24 && SAFE_HOST_LABEL.test(l))
+}
+// Known web/db schemes only (excludes s3:// etc. where the authority may be a key id).
+const URL_PARTS = /^(https?|wss?|postgres(?:ql)?|mysql|mariadb|mongodb|redis|rediss|amqps?):\/\/([^/?#@:\s]+|\[[0-9a-fA-F:]+\])(?::(\d{1,5}))?(\/[^?#\s]*)?$/
+const DB_SCHEME = /^(?:postgres(?:ql)?|mysql|mariadb|mongodb|redis|rediss|amqps?)$/
+// Ordinary URL path segment: pure lowercase words (no mixed letters+digits, except v1/v2), short single/small numbers (< 5 digits).
+const SAFE_URL_SEG = /^(?:v\d{1,2}|[a-z][a-z_-]{0,14}|\d{1,4})$/
+const CAPABILITY_SEG = /^(?:hooks?|webhooks?|catch|callback|callbacks)$/
+const isBenignUrl = (v: string) => {
+  const m = URL_PARTS.exec(v)
+  if (!m) return false
+  const [, scheme = '', host = '', , path = ''] = m
+  if (!isSafeHost(host, DB_SCHEME.test(scheme))) return false
+  if (!path || path === '/') return true
+  const segs = path.replace(/^\/+|\/+$/g, '').split('/')
+  if (segs.length > 3) return false
+  return segs.every(s => SAFE_URL_SEG.test(s) && !CAPABILITY_SEG.test(s))
+}
+// IPv4, bracketed IPv6, localhost[:port], or lowercase safe-label dotted host:port (mandatory port avoids dotted tokens like SG.xxx.yyy).
+const PLAIN_ADDR = /^(?:(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?|\[[0-9a-fA-F:]+\](?::\d{1,5})?|localhost(?::\d{1,5})?|([a-z0-9-]+(?:\.[a-z0-9-]+)+):\d{1,5})$/
+const isBenignAddr = (v: string) => {
+  const m = PLAIN_ADDR.exec(v)
+  return !!m && (!m[1] || isSafeHost(m[1], false))
+}
+// Clear filesystem path starting with ./, ../, ~/, or / with at least two segments (plus file: / sqlite:// local DB paths).
+const PLAIN_PATH = /^(?:(?:\.\.?|~)(?:\/[A-Za-z0-9._-]+)+|(?:\/[A-Za-z0-9._-]+){2,})\/?$/
+const tokenLikeSegment = (seg: string) =>
+  /^[0-9a-f]{10,}$/i.test(seg)
+  || (seg.length >= 10 && /[a-z]/.test(seg) && /[A-Z]/.test(seg) && /[0-9]/.test(seg))
+  || (seg.length >= 12 && /[a-z]/.test(seg) && /[A-Z]/.test(seg) && !/^[A-Z][a-z]+(?:[-_][A-Z][a-z]+)*$/.test(seg))
+  || (seg.length >= 16 && /[A-Za-z]/.test(seg) && /[0-9]/.test(seg))
+const isBenignPath = (v: string) => {
+  const p = v.startsWith('file:') ? v.slice(5) : v.startsWith('sqlite://') ? v.slice(9) : v
+  return PLAIN_PATH.test(p) && !p.split('/').some(tokenLikeSegment)
+}
+const PLAIN_DATE = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/
+const PLAIN_TZ = /^(?:(?:Africa|America|Antarctica|Arctic|Asia|Atlantic|Australia|Europe|Indian|Pacific)\/[A-Z][A-Za-z_-]{1,23}(?:\/[A-Z][A-Za-z_-]{1,23})?|Etc\/(?:UTC|GMT(?:[+-]\d{1,2})?))$/
+const isBenignTz = (v: string) => PLAIN_TZ.test(v) && !v.split('/').some(tokenLikeSegment)
+const PLAIN_LOCALE = /^[a-z]{2,3}(?:_[A-Z]{2})?\.(?:UTF-?8|ASCII|ISO-8859-\d+)$/i
+const PLAIN_REGION = /^(?:(?:us|eu|ap|ca|sa|me|af|il|cn|us-gov)-(?:north|south|east|west|central|northeast|northwest|southeast|southwest)-\d|(?:us|europe|asia|australia|northamerica|southamerica|me|africa)-(?:north|south|east|west|central|northeast|northwest|southeast|southwest)\d)$/
+const PLAIN_SEMVER = /^v?\d+\.\d+\.\d+(?:-[a-z0-9.]{1,12})?$/
+export const isEnvSecret = (key: string, value: string) => {
+  if (value.includes(OPEN) || REF.test(value) || !strong(value)) return false
+  const secretKey = SECRET_KEY.test(key)
+  if (isBenignPath(value) && (!secretKey || (PATH_KEY.test(key) && !HOOK_KEY.test(key)))) return false
+  if (secretKey) return true
+  if (isBenignUrl(value) || isBenignAddr(value) || PLAIN_DATE.test(value) || isBenignTz(value) || PLAIN_LOCALE.test(value) || PLAIN_REGION.test(value) || PLAIN_SEMVER.test(value)) return false
+  return true
+}
 export const envValues = (text: string) => text.split(/\r?\n/).flatMap(l => {
   const r = ENV_LINE.exec(l)
   const value = r && (r[2] ?? r[3] ?? r[4] ?? '')
@@ -613,7 +686,7 @@ const seed = async ($: EngineInterface, h: Held, dir: string, seen: Seen) => {
     const { got, changed } = await reread($, seen, path, envValues)
     if (!changed) continue
     for (const { key, value } of got) {
-      if (value.includes(OPEN) || REF.test(value) || !strong(value)) continue
+      if (!isEnvSecret(key, value)) continue
       const label = key.toUpperCase().replace(/[.-]/g, '_')
       mint(h, value, LABEL.test(label) ? label : 'ENV', `${name}: ${key}`)
     }
@@ -772,17 +845,44 @@ export const register: Register = (on, options) => {
     return blocks.some((b, i) => b !== r.blocks[i]) ? { ...r, blocks } : r
   }).catch(($, _e, next) => { told($, `${failed('the first request\'s context (CLAUDE.md, the date)', next.error.kind)}, so it was left out.`); return { blocks: [] } })
 
+  const isActive = (h: Held) => kept.compiled.length + fromSettings.length > 0 || kept.envOn !== false || h.byValue.size > 0
+
   // The system prompt. Nothing changed hands core's own list back, so `shared` sections keep the
   // prompt cache; failing, only those stay: they read the same for everyone, so hold nothing of ours.
+  // While masking is active (including envFiles on with an empty vault) or the vault holds values,
+  // append a static `session` guide upfront so flipping from empty to vaulted never busts the
+  // session prompt cache mid-conversation.
   on('prompt.compose', async ($, e, next) => {
     const r = await next(e)
-    const { m, done } = await masker($, kept, fromSettings)
-    const sections = r.sections.map(s => { const text = m(s.text); return text === s.text ? s : { ...s, text } })
+    const { h, m, done } = await masker($, kept, fromSettings)
+    const maskedSections = r.sections.map(s => { const text = m(s.text); return text === s.text ? s : { ...s, text } })
     await done()
-    return sections.some((s, i) => s !== r.sections[i]) ? { sections } : r
+    const changed = maskedSections.some((s, i) => s !== r.sections[i])
+    if (!isActive(h) || maskedSections.some(s => s.id === GUIDE_ID)) return changed ? { sections: maskedSections } : r
+    return { sections: [...maskedSections, { id: GUIDE_ID, text: PLACEHOLDER_GUIDE, scope: 'session' as const }] }
   }).catch(async ($, e, next) => {
     told($, `${failed('the system prompt', next.error.kind)}, so only its shared sections were sent.`)
     return { sections: (await next(e)).sections.filter(s => s.scope === 'shared') }
+  })
+
+  // Keeps exact ⟦LABEL_n⟧ handles intact across compaction summaries when the vault holds values.
+  on('session.compact', async ($, e, next) => {
+    let vaulted = false
+    try { vaulted = (await hold($, kept)).byValue.size > 0 } catch {}
+    if (!vaulted || e.instructions?.includes(COMPACT_NOTE)) return next(e)
+    const instructions = e.instructions ? `${e.instructions}\n\n${COMPACT_NOTE}` : COMPACT_NOTE
+    return next({ ...e, instructions })
+  })
+
+  // Custom subagents may replace the session system prompt, so brief fresh subagents when masking
+  // is active (or the vault holds values). Skips resumes (rewrites ignored), forks (inherit parent),
+  // teammates (use prompt.compose), and workflow runs (may hold hidden placeholder prompts).
+  on('agent.spawn', async ($, e, next) => {
+    if (e.resume || e.fork || e.workflow || e.isTeammate || e.prompt.includes(SUBAGENT_NOTE)) return next(e)
+    let active = false
+    try { await sync($, kept); active = isActive(await hold($, kept)) } catch {}
+    if (!active) return next(e)
+    return next({ ...e, prompt: e.prompt ? `${e.prompt}\n\n${SUBAGENT_NOTE}` : SUBAGENT_NOTE })
   })
 
   // What the engine injects per request (a reminder, a mentioned file, a hook's context): the
