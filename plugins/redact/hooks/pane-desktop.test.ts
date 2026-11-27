@@ -329,3 +329,32 @@ test('/redact test with a vault that cannot be read: a toast, the sample kept, n
   expect(toasts.at(-1)).toMatch(/^redact: not tested, the vault could not be read/)
   expect(opened).toHaveLength(0)
 })
+
+// ---- Round 6: a step that replaces characters hides before it too; every prefix inside the hiding
+
+test('desktop: a held value with a line break, in a Session heading, stays hidden', async ($, on) => {
+  const V = 'tokabc' + '\n1234x'
+  world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: V }, by: { [ph('SECRET')]: `rule: ${V}` } } })
+  const all = (await texts(await mount($, { surface: 'desktop' }))).join('\n')
+  expect(all).not.toContain('tokabc⏎1234x')
+  expect(all).not.toContain(V)
+  expect(all).toContain(`rule: ${ph('SECRET')}`)
+})
+
+test('desktop: a rule name drawn with its number forms no held value', async ($, on) => {
+  const V = '1. hunter2' + 'isgood'
+  world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: V } } },
+    { [RULES]: file([{ name: 'hunter2' + 'isgood', pattern: 'zz_[0-9]+', replacement: 'ZZ', enabled: true }]) })
+  const m = await mount($, { surface: 'desktop' })
+  await m.press({ key: 'tab-rules' })
+  expect((await texts(m)).join('\n')).not.toContain(V)
+})
+
+test('a toast\'s redact: prefix is hidden with the rest', async ($, on) => {
+  const V = 'redact: no rule' + ' matched'
+  world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: V } } }, { [RULES]: file(EXAMPLES, { envFiles: false }) })
+  on('ui.open', () => ({ value: { isPlaced: true } }) as any)
+  const toasts = toasted(on)
+  await $.command.run({ command: 'redact', args: 'test plain words' } as any)
+  expect(toasts.at(-1)).not.toContain(V)
+})

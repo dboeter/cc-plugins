@@ -879,7 +879,9 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'redact' }, async ($, e) => {
     const reply = await answer($, kept, fromSettings, e.args)
-    if (reply) told($, `redact: ${reply}`)
+    // the whole line hidden, its prefix too: a toast reaches every surface. Unread, the reply
+    // carries no value (a vault that cannot be read answers that it could not)
+    if (reply) told($, await hold($, kept).then(h => seen(`redact: ${reply}`, h), () => `redact: ${reply}`))
     return {}
   })
 
@@ -1226,12 +1228,14 @@ export const register: Register = (on, options) => {
     // A rule with no name is drawn by its regex, and a literal regex is the value itself: off the
     // terminal, rule text is masked by the vault like any other text.
     // Every text the pane draws from rules, sources or samples goes through here as the last step,
-    // after any formatting: off the terminal, no held value is drawn, whatever joined it.
+    // after any formatting: off the terminal, no held value is drawn, whatever joined it. A step
+    // that replaces characters (line breaks to ⏎) hides before it too: oneLine.
     const offTerminal = (s: string) => e.surface === 'terminal' ? clean(lf(s)) : seen(s, held)
+    const oneLine = (s: string) => offTerminal((e.surface === 'terminal' ? s : seen(s, held)).replace(/\r\n|\r|\n/g, '⏎'))
     const reveal = (p: string) => { kept.revealed.has(p) ? kept.revealed.delete(p) : kept.revealed.add(p); $.ui.invalidate('ui.render') }
     // a long pattern is cut in the middle, so its row keeps the remove button on a narrow terminal
     const pattern = (text: string) => <Box flexShrink={1}><Text wrap="truncate-middle">{offTerminal(text)}</Text></Box>
-    const skip = (f: string | undefined) => f ? <Text color="red"> skipped: {offTerminal(f)}</Text> : null
+    const skip = (f: string | undefined) => f ? <Text color="red">{offTerminal(` skipped: ${f}`)}</Text> : null
     const broken = rules.filter(fault).length + settings.filter(lineFault).length + (kept.broken ? 1 : 0)
     // a placeholder as the pane writes it, `_n` for its number: no digits, so no restore reads it as
     // one; `open` ESC writes the escaped form
@@ -1334,7 +1338,7 @@ export const register: Register = (on, options) => {
         {vault.length === 0 && ruleCount > 0 && para('Nothing masked yet.', 'ink')}
         {[...groups].map(([by, xs]) => (
           <Box key={`by-${by}`} flexDirection="column">
-            {section(`src-${by}`, offTerminal(by.replace(/\r\n|\r|\n/g, '⏎')))}
+            {section(`src-${by}`, oneLine(by))}
             {/* one line per value, a revealed one too (its line breaks draw as ⏎): the value shrinks,
                 the placeholder, padded to the widest, and the cursor's actions do not */}
             {xs.map(({ p, v }) => (
@@ -1496,7 +1500,7 @@ export const register: Register = (on, options) => {
                   {/* a named rule gets its name on its own line and the regex dimmed below it:
                       on one line, a long regex buried the name */}
                   <Box justifyContent="space-between" columnGap={1}>
-                    <Box flexShrink={1}>{!desk && <Text>{atRow ? '› ' : '  '}</Text>}{name ? <Box flexShrink={1}><Text wrap="truncate-end">{`${i + 1}. ${offTerminal(name)}`}</Text></Box> : pattern(`${i + 1}. ${src}`)}{label(r)}{skip(f)}</Box>
+                    <Box flexShrink={1}>{!desk && <Text>{atRow ? '› ' : '  '}</Text>}{name ? <Box flexShrink={1}><Text wrap="truncate-end">{offTerminal(`${i + 1}. ${name}`)}</Text></Box> : pattern(`${i + 1}. ${src}`)}{label(r)}{skip(f)}</Box>
                     <Box flexShrink={0} columnGap={1}>
                       {toggle(`turn-${i}`, enabled, enabled ? 'turn off' : 'turn on', () => turnRule(i), f, i === ruleAt)}
                       <Button key={`remove-${i}`} label="remove" plain onPress={() => removeRule(i)}>
@@ -1505,7 +1509,7 @@ export const register: Register = (on, options) => {
                     </Box>
                   </Box>
                   {/* the regex under the cursor's row only, with help shown: a list of regexes hid the names */}
-                  {name && help && (desk || atRow) && <Text dimColor wrap="truncate-middle">{desk ? offTerminal(src) : `     ${offTerminal(src)}`}</Text>}
+                  {name && help && (desk || atRow) && <Text dimColor wrap="truncate-middle">{offTerminal(desk ? src : `     ${src}`)}</Text>}
                 </Box>
               )
             })}
