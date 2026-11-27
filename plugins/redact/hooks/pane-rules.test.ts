@@ -175,9 +175,10 @@ test('a rules file edited between the presses re-arms the ✗ instead of removin
   expect(await m.find({ text: /^✗ remove\?$/ })).toBeDefined()
 })
 
-test('off the terminal the key line\'s buttons and the cursor show, never the click-to-focus hint', async ($, on) => {
+// The desktop lays the pane out without them (pane-desktop.test.ts).
+test('on mobile the key line\'s buttons and the cursor show, never the click-to-focus hint', async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) })
-  const m = await mount($, { surface: 'desktop', isFocused: false })
+  const m = await mount($, { surface: 'mobile', isFocused: false })
   await m.press({ key: 'tab-rules' })
   expect(await m.find({ key: 'rule-turn' })).toBeDefined()
   expect(await m.find({ type: 'Text', text: '› ' })).toBeDefined()

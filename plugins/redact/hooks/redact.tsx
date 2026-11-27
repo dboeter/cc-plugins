@@ -508,6 +508,23 @@ const forgetAll = async ($: EngineInterface, k: Kept) => {
   badge($, k, h)
   return `forgot ${n}. Claude can no longer use ${n === 1 ? 'it' : 'them'}`
 }
+// Text the person picked to mask, as the desktop's right-click menu hands it: trimmed, and only
+// what a rule could have masked (a letter or digit, no placeholder in it). Undefined otherwise.
+const pickable = (s: string | undefined) => {
+  const v = s?.trim()
+  return v && ALNUM.test(v) && !v.includes(OPEN) ? v : undefined
+}
+// Masks `value` from now on under SECRET, as a rule's match is. Only text recorded after this:
+// rows are masked as they are recorded (session.append), so the ones already sent keep it.
+const pin = async ($: EngineInterface, k: Kept, value: string) => {
+  const h = await hold($, k)
+  const had = h.byValue.get(value)
+  if (had) return `already masked as ${had}`
+  const p = mint(h, value, 'SECRET', 'picked in the desktop app')
+  await keep($, k, h)
+  badge($, k, h)
+  return `masked as ${p} from now on. Rows already sent to Claude keep it`
+}
 // What the pane lists: each placeholder, its value, and the rule or pattern that masked it.
 const masked = (h: Held) => Object.entries(h.v.ph).map(([p, v]) => ({ p, v, by: h.v.by?.[p] ?? 'rule unknown' }))
 // Saves the vault when a masking added to it, one save at a time so an older copy never lands
@@ -1006,6 +1023,46 @@ export const register: Register = (on, options) => {
     )
   })
 
+  // The desktop app has no StatusLine: the same light as a chip in the gutter beside the message
+  // box. A cell there draws Box and Text alone, so no press; /redact opens the pane. The terminal
+  // raises BesidePrompt too, and has the line already.
+  on('ui.render', { component: 'BesidePrompt' }, async ($, e, next) => {
+    if (e.surface !== 'desktop') return next(e)
+    await sync($, kept)
+    const l = light(kept)
+    const text = l.on ? 'redact' : kept.broken ? 'redact: rules broken' : kept.skipped.length ? 'redact: pattern skipped' : 'redact off'
+    if (e.props.maxColumns < text.length + 2) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box key="redact-chip">
+        {l.on ? <Text color="green">●</Text> : <Text color="warning">⚠</Text>}<Text color={l.on ? undefined : 'warning'} dimColor={l.on}> {text}</Text>
+      </Box>
+    )
+  })
+
+  // The desktop's right-click menu on selected text: test it against the rules in the pane, or
+  // mask it from now on. Sync and cheap, as the menu may open before a slow answer: the vault is
+  // read in the press. The selection is what the desktop drew, placeholders and all, so a value
+  // there is one Claude has seen; masking it keeps it out of what is recorded next.
+  on('ui.render', { component: 'ContextMenu' }, ($, e, next) => {
+    const sel = e.props.selection?.text
+    if (!sel?.trim()) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const value = pickable(sel)
+    const testIt = async () => {
+      kept.sample = sel; kept.tab = 'rules'; kept.note = ''; kept.arm = undefined
+      await $.ui.open({ id: PANE, title: TITLE, focus: true })
+      $.ui.invalidate('ui.render')
+    }
+    const maskIt = async () => { if (value) told($, `redact: ${await pin($, kept, value)}`) }
+    return (
+      <Box flexDirection="column">
+        <Button key="redact-test" onPress={testIt}>Test in redact <Text dimColor>See what Claude would get</Text></Button>
+        {value !== undefined && <Button key="redact-mask" onPress={maskIt}>Mask with redact <Text dimColor>Hide this exact text from Claude from now on</Text></Button>}
+      </Box>
+    )
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     await sync($, kept)
     const file = await place($, kept)
@@ -1013,11 +1070,35 @@ export const register: Register = (on, options) => {
     const vault = masked(held)
     const { rules, note, tab, sample } = kept
     const { Box, Text, Button } = $.ui.resolve(e)
+    // The desktop's minimized widget: read at a glance, and clicks may not reach it, so no button,
+    // and nothing a value or a rule's text could be in.
+    if (e.props.placement === 'widget') {
+      const l = light(kept)
+      const rulesOn = kept.compiled.length + fromSettings.length
+      return (
+        <Box flexDirection="column">
+          {l.on
+            ? <Text><Text color="green">●</Text> redact</Text>
+            : <Text color="warning">⚠ {l.text}</Text>}
+          <Text dimColor size="footnote">{vault.length} masked · {rulesOn} rule{rulesOn === 1 ? '' : 's'}{kept.envOn !== false ? ' · env files' : ''}</Text>
+        </Box>
+      )
+    }
+    // The desktop draws in a window, not a grid of cells: sections as headings rather than a rule
+    // of ─ counted to the width, no row cursor or key line (each row has its own buttons), and no
+    // key hints, as its hotkeys are not known to answer.
+    const desk = e.surface === 'desktop'
     // the body's last column left free, as the other panes do: drawn to it, a header lost its end
     // and a right-aligned ✗ vanished
     const w = Math.max(1, (e.props.bodyColumns ?? 80) - 1)
     const len = (s: string) => [...s].length
     const section = (k: string, title: string, right?: string) => {
+      if (desk) return (
+        <Box key={k} justifyContent="space-between" columnGap={2}>
+          <Text weight="semibold" size="heading" wrap="truncate-end">{title}</Text>
+          {right ? <Text dimColor>{right}</Text> : null}
+        </Box>
+      )
       const bare = 3 + len(title) + 1
       const r = right && w - bare - (len(right) + 4) >= 2 ? right : undefined
       const fill = Math.max(2, w - bare - (r ? len(r) + 4 : 0))
@@ -1046,7 +1127,7 @@ export const register: Register = (on, options) => {
     const focused = e.surface !== 'terminal' || e.props.isFocused === true
     // a tab's keys as one line at its foot, so no row carries a key prefix that moves its switch
     const arrows = e.surface === 'terminal'
-    const keyLine = (k: string, buttons: unknown[], hint: string, right?: unknown) => (
+    const keyLine = (k: string, buttons: unknown[], hint: string, right?: unknown) => desk ? (right ? <Box key={k} justifyContent="flex-end">{right as any}</Box> : null) : (
       <Box key={k} justifyContent="space-between" paddingLeft={2} columnGap={2}>
         {focused
           ? <Box columnGap={2}>{arrows && <Text dimColor>↑↓ move</Text>}{buttons as any}</Box>
@@ -1106,8 +1187,8 @@ export const register: Register = (on, options) => {
     const envOn = kept.envOn !== false
     const masking = [ruleCount ? count(ruleCount, 'rule') : '', envOn ? 'env files' : ''].filter(Boolean)
     const status = masking.length
-      ? <Text color="green" wrap="wrap">● On: {masking.join(' and ')}{ruleCount ? '' : ' only, no rules (r)'}</Text>
-      : <Text color="warning" wrap="wrap">○ Off: no rules on (r)</Text>
+      ? <Text color="green" wrap="wrap">● On: {masking.join(' and ')}{ruleCount ? '' : desk ? ' only, no rules' : ' only, no rules (r)'}</Text>
+      : <Text color="warning" wrap="wrap">○ Off: no rules on{desk ? '' : ' (r)'}</Text>
     // Help is a toggle on each tab, off by default: the pane shows what is on and what to press,
     // and h adds the why. A Help tab of its own was a page nobody opened at the moment of doubt.
     const help = kept.help === true
@@ -1115,7 +1196,7 @@ export const register: Register = (on, options) => {
     // a term at normal weight in a 16-column field, its meaning dim beside it, wrapping in its column
     const row = (k: string, d: string) => (
       <Box key={k}>
-        <Box flexShrink={0}><Text>{`  ${k.padEnd(14)}`}</Text></Box>
+        {desk ? <Box flexShrink={0} width={16}><Text>{k}</Text></Box> : <Box flexShrink={0}><Text>{`  ${k.padEnd(14)}`}</Text></Box>}
         <Box flexShrink={1}><Text dimColor wrap="wrap">{d}</Text></Box>
       </Box>
     )
@@ -1171,7 +1252,7 @@ export const register: Register = (on, options) => {
           </Box>
         )}
         {/* keyed on no rule, as a fresh install has env files on and may hold values from them */}
-        {!help && ruleCount === 0 && <Box marginBottom={vault.length ? 1 : 0}>{para('No rules on yet. Press r to turn one on, or h for help.', 'ink')}</Box>}
+        {!help && ruleCount === 0 && <Box marginBottom={vault.length ? 1 : 0}>{para(desk ? 'No rules on yet. Turn one on under Rules.' : 'No rules on yet. Press r to turn one on, or h for help.', 'ink')}</Box>}
         {vault.length === 0 && ruleCount > 0 && para('Nothing masked yet.', 'ink')}
         {[...groups].map(([by, xs]) => (
           <Box key={`by-${by}`} flexDirection="column">
@@ -1181,9 +1262,9 @@ export const register: Register = (on, options) => {
             {xs.map(({ p, v }) => (
               <Box key={p} justifyContent="space-between" columnGap={2}>
                 <Box flexShrink={1}>
-                  <Text>{focused && p === cur ? '› ' : '  '}</Text>
+                  {!desk && <Text>{focused && p === cur ? '› ' : '  '}</Text>}
                   <Box flexShrink={0}><Button key={`pick-${p}`} label={p} plain autoFocus={p === cur || undefined} onPress={() => aim(p)} /></Box>
-                  <Box flexShrink={1}><Text wrap="truncate-end">{' '.repeat(pw - len(p) + 2)}{shown(p, v).replace(/\r\n|\r|\n/g, '⏎')}</Text></Box>
+                  <Box flexShrink={1}><Text wrap="truncate-end">{desk ? '  ' : ' '.repeat(pw - len(p) + 2)}{shown(p, v).replace(/\r\n|\r|\n/g, '⏎')}</Text></Box>
                 </Box>
                 {/* on every row, as a rule's ✗ is: the arrows walk the ring in document order, and
                     buttons that came and went with the cursor made each step land somewhere new */}
@@ -1203,6 +1284,7 @@ export const register: Register = (on, options) => {
             {row(notation('LABEL', ESC), `writes the placeholder as plain text`)}
             {row('tools', 'all of them get real values, web and MCP tools too')}
             {row('other apps', 'only the terminal shows real values. Desktop, VS Code and mobile show placeholders.')}
+            {desk && row('right-click', 'selected text in the conversation: test it here, or mask it from now on')}
           </Box>
         )}
       </Box>
@@ -1330,13 +1412,13 @@ export const register: Register = (on, options) => {
             {rules.map((r: any, i) => {
               const src = typeof r?.pattern === 'string' ? r.pattern : JSON.stringify(r)
               const name = typeof r?.name === 'string' && r.name ? r.name : undefined
-              const f = fault(r), enabled = isOn(r), atRow = focused && i === ruleAt, armed = kept.arm === armOf(i)
+              const f = fault(r), enabled = isOn(r), atRow = focused && !desk && i === ruleAt, armed = kept.arm === armOf(i)
               return (
                 <Box key={`rule-${i}`} flexDirection="column">
                   {/* a named rule gets its name on its own line and the regex dimmed below it:
                       on one line, a long regex buried the name */}
                   <Box justifyContent="space-between" columnGap={1}>
-                    <Box flexShrink={1}><Text>{atRow ? '› ' : '  '}</Text>{name ? <Box flexShrink={1}><Text wrap="truncate-end">{`${i + 1}. ${offTerminal(name)}`}</Text></Box> : pattern(`${i + 1}. ${src}`)}{label(r)}{skip(f)}</Box>
+                    <Box flexShrink={1}>{!desk && <Text>{atRow ? '› ' : '  '}</Text>}{name ? <Box flexShrink={1}><Text wrap="truncate-end">{`${i + 1}. ${offTerminal(name)}`}</Text></Box> : pattern(`${i + 1}. ${src}`)}{label(r)}{skip(f)}</Box>
                     <Box flexShrink={0} columnGap={1}>
                       {toggle(`turn-${i}`, enabled, enabled ? 'turn off' : 'turn on', () => turnRule(i), f, i === ruleAt)}
                       <Button key={`remove-${i}`} label="remove" plain onPress={() => removeRule(i)}>
@@ -1345,7 +1427,7 @@ export const register: Register = (on, options) => {
                     </Box>
                   </Box>
                   {/* the regex under the cursor's row only, with help shown: a list of regexes hid the names */}
-                  {name && atRow && help && <Text dimColor wrap="truncate-middle">{`     ${offTerminal(src)}`}</Text>}
+                  {name && help && (desk || atRow) && <Text dimColor wrap="truncate-middle">{desk ? offTerminal(src) : `     ${offTerminal(src)}`}</Text>}
                 </Box>
               )
             })}

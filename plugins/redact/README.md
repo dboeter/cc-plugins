@@ -76,6 +76,12 @@ Claude never reads the pane. Text read off the screen (`tmux capture-pane`) come
 
 Other apps show rule text masked like any other text. The mobile app has no input fields, so add and test from the prompt there.
 
+**In the desktop app** the pane shows what the terminal's does, laid out for a window: sections as headings, a ✗ and a switch on every row, and no row cursor, key line or key hints. Like every app other than the terminal, it shows placeholders and value lengths, never a value.
+
+- **Widget**: minimized, the pane shows a glance: whether redact is on, how many values are masked, and how many rules are on. It has no buttons and shows no value or rule text.
+- **Beside the message box**: a chip reads `● redact` in green while something masks, and `⚠ redact off` (or what is broken) as a warning. It is the terminal's status line for the desktop app, which has none. It takes no clicks, so open the pane with `/redact`.
+- **Right-click on selected text**: `Test in redact` opens the pane on Rules with the selection as the Test sample. `Mask with redact` masks that exact text as `⟦SECRET_n⟧` from now on, as if a rule had matched it. Rows already sent to Claude keep it, as rows are masked when they are recorded. It is not offered for a selection with a placeholder in it, or with no letter or digit.
+
 From the prompt, `/redact test <text>`, `/redact add <rule>`, `/redact remove <n|name>`, `/redact on <n|name>`, `/redact off <n|name>` and `/redact env on|off` answer in a toast. Name a rule by its number, its `name` or its pattern. If a `/redact` line reaches the conversation anyway, redact empties its arguments in every row sent to Claude.
 
 Your rules live in `~/.claude/redact-rules.json` (in `$CLAUDE_CONFIG_DIR` when that is set), one file for every project, on your machine only. redact creates it on first use holding the two examples, both off; it ships no other rules, and a later version's change to the examples does not reach a file already made. Edit the file by hand, or with `/redact add`, `remove`, `on` and `off`, which keep any other keys you put in it. It is checked before every masking and read again when its time or size changed, so an edit masks whatever is recorded after it, in every open session, a turn already running included; text already sent is not masked again. `/redact` runs at once, mid-turn too.
