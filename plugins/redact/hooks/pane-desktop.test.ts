@@ -265,3 +265,39 @@ test('a control character inside a held value is drawn as a mark, never joining 
   expect(field ?? '').not.toContain(V)
   expect(all).toContain('demo�-4242x')
 })
+
+// ---- Round 4: every drawing off the terminal hides held values, and no cleanup step forms one
+
+test('desktop: a rule written around a held value (\\bV\\b) shows its placeholder on Rules and in the Session heading', async ($, on) => {
+  const src = `\\b${PASS}\\b`
+  world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: PASS }, by: { [ph('SECRET')]: `rule: ${src}` } } },
+    { [RULES]: file([{ pattern: src, enabled: true }]) })
+  const m = await mount($, { surface: 'desktop' })
+  expect((await texts(m)).join('\n')).not.toContain(PASS)
+  await m.press({ key: 'help' })
+  await m.press({ key: 'tab-rules' })
+  expect((await texts(m)).join('\n')).not.toContain(PASS)
+})
+
+test('the /redact test toast hides a held value inside a word and says Claude gets it as is', async ($, on) => {
+  world(on, TWO, { [RULES]: file(ON) })
+  on('ui.open', () => ({ value: { isPlaced: true } }) as any)
+  const toasts = toasted(on)
+  await $.command.run({ command: 'redact', args: `test tok_${PASS} and ${GH}` } as any)
+  expect(toasts.at(-1)).not.toContain(PASS)
+  expect(toasts.at(-1)).toMatch(/Claude gets it as it is/)
+})
+
+test('a held value holding � is not formed by drawing a control character as �', async ($, on) => {
+  const V = 'demo' + '�-4242x'
+  const held = { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: V } } }
+  const { all, field } = await testOn($, on, 'demo\u0000-4242x', held)
+  expect(all).not.toContain(V)
+  expect(field ?? '').not.toContain(V)
+})
+
+test('line ends: a CRLF sample draws as lines, not as �', async ($, on) => {
+  const { all } = await testOn($, on, 'one\r\ntwo', {})
+  expect(all).toContain('Claude gets: one\ntwo')
+  expect(all).not.toContain('�')
+})

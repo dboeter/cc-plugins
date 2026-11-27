@@ -429,15 +429,16 @@ const answer = async ($: EngineInterface, k: Kept, fromSettings: Pattern[], args
   if (verb === 'env' && (rest === 'on' || rest === 'off')) return envTurn($, k, rest === 'on')
   if (verb === 'test' && rest) {
     await sync($, k)
+    // read first: unread, nothing is changed and the pane is not opened
+    let h: Held
+    try { h = await hold($, k) } catch (err) { return `not tested, the vault could not be read (${(err as Error)?.message ?? err})` }
     k.tab = 'rules'; k.note = ''; k.sample = rest
     await $.ui.open({ id: PANE, title: TITLE, focus: true }); k.opened = true
     $.ui.invalidate('ui.render')
-    // a toast reaches every surface: the source masked as the sample is, no value in it
-    let h: Held
-    try { h = await hold($, k) } catch (err) { return `not tested, the vault could not be read (${(err as Error)?.message ?? err})` }
+    // a toast reaches every surface: the sample and the source drawn with no held value in them
     const { trial, out, hits } = tryOn(rest, h, [...k.compiled, ...fromSettings])
     const warn = inside(out, trial) ? `. ${INSIDE}` : ''
-    return (hits.length ? `→ ${clean(hide(out, trial))} (${hits.map(x => `${x.p} by ${clean(hide(x.by, trial))}`).join(', ')})` : k.compiled.length + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on') + warn
+    return (hits.length ? `→ ${seen(out, trial)} (${hits.map(x => `${x.p} by ${seen(x.by, trial)}`).join(', ')})` : k.compiled.length + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on') + warn
   }
   const tab = !rest ? TABS[verb] : undefined
   if (tab) { k.tab = tab; k.note = ''; if (verb === 'help' || verb === 'guide') k.help = true; await $.ui.open({ id: PANE, title: TITLE, focus: true }); k.opened = true; return undefined }
@@ -522,15 +523,20 @@ const pickable = (s: string | undefined) => {
   const v = s?.trim()
   return v && v.length >= 4 && v.length <= 16384 && ALNUM.test(v) && !/[⟦⟧]/.test(v) && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(v) ? v : undefined
 }
-// Text as a Text takes it: each control character but tab and line feed drawn as �. Replaced,
-// never removed or joined (\r\n to \n), so cleaning cannot put a value the vault holds back
-// together. For drawing only: what is masked or matched is the text as given.
+// Text as a Text takes it: line ends as \n (lf), then each other control character but tab drawn
+// as � (clean). For drawing only: what is masked or matched is the text as given. Either step
+// can form a value the vault holds (`a\r\nb` to `a\nb`): where none may show, seen() hides them
+// around each step.
+const lf = (s: string) => s.replace(/\r\n?/g, '\n')
 const clean = (s: string) => s.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '�')
 // Every value the vault holds swapped for its placeholder wherever it stands, inside a word too,
 // for drawing a sample off the terminal or in a toast: whole-word masking (mask) leaves `tok_` and
 // a value as they are, and that is what Claude gets, but no value the vault holds is drawn there.
 const hide = (s: string, h: Held) => [...h.byValue].sort((a, b) => b[0].length - a[0].length)
   .reduce((acc, [v, p]) => between(acc, part => part.split(v).join(p)), s)
+// `s` drawn as a Text takes it with no value the vault holds in it: hidden before and after each
+// step that changes the text, so no step forms one
+const seen = (s: string, h: Held) => hide(clean(hide(lf(hide(s, h)), h)), h)
 // whether `s` still carries a value the vault holds, inside a word, where masking leaves it
 const inside = (s: string, h: Held) => s.split(PH_SPLIT).some((part, i) => i % 2 === 0 && [...h.byValue.keys()].some(v => part.includes(v)))
 const INSIDE = 'A value already masked stands inside a word here, so Claude gets it as it is'
@@ -565,7 +571,15 @@ const pin = async ($: EngineInterface, k: Kept, value: string) => {
     // it): what was saved is it with the pick. Else it stays dirty, and the next save writes it.
     const untouched = !h.dirty
     const p = mint(h, value, 'SECRET', PICKED)
-    if (untouched) { h.v.at = t.v.at; h.dirty = false }
+    if (untouched) h.v.at = t.v.at, h.dirty = false
+    else {
+      // Changed meanwhile (another value may hold the saved number, so the pick has another):
+      // the vault as it is now saved here, clean only if nothing changed it during this save.
+      // Failing, it stays dirty, and the next masking saves it before it sends anything.
+      const was = JSON.stringify(h.v.ph)
+      try { h.v.at = await $.clock.now(); await $.store.set(VAULT + h.id, h.v); if (JSON.stringify(h.v.ph) === was) h.dirty = false }
+      catch { return { h, said: `masked as ${p} for now, but not saved yet: it is saved before anything more is sent to Claude` } }
+    }
     return { h, said: `masked as ${p}: this exact text, as a whole word, from now on. Rows already sent to Claude keep it` }
   })
   k.saving = run.catch(() => {})
@@ -1208,7 +1222,7 @@ export const register: Register = (on, options) => {
     }
     // A rule with no name is drawn by its regex, and a literal regex is the value itself: off the
     // terminal, rule text is masked by the vault like any other text.
-    const offTerminal = (s: string) => e.surface === 'terminal' ? s : mask(s, held, [])
+    const offTerminal = (s: string) => e.surface === 'terminal' ? s : hide(s, held)
     const reveal = (p: string) => { kept.revealed.has(p) ? kept.revealed.delete(p) : kept.revealed.add(p); $.ui.invalidate('ui.render') }
     // a long pattern is cut in the middle, so its row keeps the remove button on a narrow terminal
     const pattern = (text: string) => <Box flexShrink={1}><Text wrap="truncate-middle">{offTerminal(text)}</Text></Box>
@@ -1224,7 +1238,8 @@ export const register: Register = (on, options) => {
     // Off the terminal the field never holds a value the vault does: empty then, the masked sample
     // shown in the line under it. Masked in the field, an edit next to a placeholder (x⟦…⟧) tested
     // as still masked where the real text (x and the value) would not be.
-    const fieldValue = e.surface === 'terminal' || ![...held.byValue.keys()].some(v => sample.includes(v)) ? clean(sample) : ''
+    const drawn = clean(lf(sample))
+    const fieldValue = e.surface === 'terminal' || ![...held.byValue.keys()].some(v => sample.includes(v) || lf(sample).includes(v) || drawn.includes(v)) ? drawn : ''
     let testField = <Text dimColor>{'  try a sample with /redact test <text>'}</Text>
     const hasInput = e.surface !== 'mobile' // mobile has no Input
     const Input = hasInput ? $.ui.resolve(e).Input : undefined
@@ -1500,11 +1515,11 @@ export const register: Register = (on, options) => {
             {tip('Shows what Claude gets from your sample with the rules that are on and the values already masked this session. Nothing is saved.')}
             {sample && (
               <Box flexDirection="column">
-                {para(`Claude gets: ${clean(e.surface === 'terminal' ? preview : hide(preview, tried!.trial))}`, 'ink')}
+                {para(`Claude gets: ${e.surface === 'terminal' ? clean(lf(preview)) : seen(preview, tried!.trial)}`, 'ink')}
                 {inside(preview, tried!.trial) && para(INSIDE, 'warning')}
                 {hits.length === 0
                   ? <Text dimColor>    {lit + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on'}</Text>
-                  : hits.map(x => <Text key={x.p} dimColor>    {x.p}  {clean(shown(x.p, x.v).replace(/\r\n|\r|\n/g, '⏎'))} · by {clean(e.surface === 'terminal' ? x.by : hide(x.by, tried!.trial))}</Text>)}
+                  : hits.map(x => <Text key={x.p} dimColor>    {x.p}  {clean(shown(x.p, x.v).replace(/\r\n|\r|\n/g, '⏎'))} · by {e.surface === 'terminal' ? clean(lf(x.by)) : seen(x.by, tried!.trial)}</Text>)}
               </Box>
             )}
           </Box>
