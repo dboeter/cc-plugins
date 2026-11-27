@@ -103,20 +103,27 @@ test('a value with no recorded rule sits under rule unknown', async ($, on) => {
   expect(await (await mount($)).find({ text: /^rule unknown$/ })).toBeDefined()
 })
 
-test('empty, the tab says what the model will see', async ($, on) => {
+test('empty, the tab says what Claude sees and what commands get', async ($, on) => {
   world(on)
-  expect(await (await mount($)).find({ text: /^the model will see ⟦LABEL_n⟧ · your tools get the real value/ })).toBeDefined()
+  expect(await (await mount($)).find({ text: /^Claude sees the placeholder \(⟦LABEL_n⟧\); commands Claude runs get the real value\.$/ })).toBeDefined()
 })
 
-test('empty, with no file rule, no settings pattern and env files off: no rule is on', async ($, on) => {
+test('empty, with no file rule, no settings pattern and env files off: what redact is, then the steps to start', async ($, on) => {
   world(on, {}, { [RULES]: file([], { envFiles: false }) })
-  expect(await (await mount($)).find({ text: /nothing masked: no rule is on \(r\)/ })).toBeDefined()
+  const m = await mount($)
+  expect(await m.find({ text: /^redact swaps secrets for placeholders like ⟦API_KEY_n⟧ before Claude sees them/ })).toBeDefined()
+  const steps = (await m.findAll({ type: 'Text', text: /^[123]\. / })).map((x: any) => x.text)
+  expect(steps).toEqual([
+    '1. Press r for Rules, then turn on an example or add a rule of your own.',
+    '2. Paste sample text under Test there to see what gets masked.',
+    '3. Values masked in this session then show up here.',
+  ])
 })
 
 // empty with one thing that masks: nothing masked yet
 const yet = async ($: any) => {
   const m = await mount($)
-  return [!!(await m.find({ text: /nothing masked yet/ })), !!(await m.find({ text: /no rule is on/ }))]
+  return [!!(await m.find({ text: /^Nothing masked yet\./ })), !!(await m.find({ text: /To start/ }))]
 }
 
 test('empty, with a settings pattern: nothing masked yet', { options: { patterns: ['zz_[0-9]+'] } }, async ($, on) => {

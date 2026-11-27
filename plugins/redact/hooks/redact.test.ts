@@ -315,7 +315,7 @@ test('a new rules file holds the two examples, off: nothing is masked, and the s
   const m = await mount($)
   await m.press({ key: 'tab-rules' })
   expect(await m.find({ text: /0 of 2 on/ })).toBeDefined()
-  expect(await m.find({ text: /^1\. Example: vendor tokens/ })).toBeDefined()
+  expect(await m.find({ text: /^1\. Example: API keys and tokens/ })).toBeDefined()
   expect(await m.find({ text: /^2\. Example: email addresses$/ })).toBeDefined()
   expect(await m.find({ text: / → ⟦EMAIL_n⟧/ })).toBeDefined()
   expect(await m.find({ text: /○ off/ })).toBeDefined()
@@ -492,7 +492,7 @@ test('the pane names the rule that masked each value; the model reads it masked 
   const session = mock.session(on)
   await entered($, `GITHUB_TOKEN=${GH} id ${ACME}`)
   expect((store.get('vault:s1') as any).by).toEqual({
-    [ph('API_KEY')]: expect.stringMatching(/^rule: Example: vendor tokens/), [ph('SECRET')]: 'rule: acme_[a-z0-9]{8}' })
+    [ph('API_KEY')]: expect.stringMatching(/^rule: Example: API keys and tokens/), [ph('SECRET')]: 'rule: acme_[a-z0-9]{8}' })
   const m = await mount($)
   expect(await m.find({ text: new RegExp(`^ +${ACME}$`) })).toBeDefined()
   expect(await m.find({ text: /^rule: acme_/ })).toBeDefined()
@@ -640,7 +640,7 @@ test('the pane opens on Session, a long value cut to its ends until revealed, an
   expect(await m.find({ text: /forgot 2/ })).toBeDefined()
 })
 
-test('tabs switch between Session, Rules and Guide, and test previews masking on submit or /redact test without saving', async ($, on) => {
+test('tabs switch between Session, Rules and Help, and test previews masking on submit or /redact test without saving', async ($, on) => {
   const { store } = world(on, {}, { [RULES]: file([...ON, { pattern: 'acme_[a-z0-9]{8}', replacement: 'SECRET' }]) })
   on('ui.open', () => ({ value: { isPlaced: true } }) as any)
   const toasts = toasted(on)
@@ -649,18 +649,18 @@ test('tabs switch between Session, Rules and Guide, and test previews masking on
   const m = await mount($)
   expect(await m.find({ text: /^Test$/ })).toBeDefined()
   expect(await m.find({ text: /^Rules$/ })).toBeDefined()
-  expect(await m.find({ text: new RegExp(`→ id ${ph('SECRET')} ok`) })).toBeDefined()
-  expect(await m.find({ text: /masked by rule: acme_/ })).toBeDefined()
+  expect(await m.find({ text: new RegExp(`^Claude would get: id ${ph('SECRET')} ok$`) })).toBeDefined()
+  expect(await m.find({ text: /· by rule: acme_/ })).toBeDefined()
   await m.press({ key: 'clear-test' })
-  expect(await m.find({ text: new RegExp(`→ id ${ph('SECRET')} ok`) })).toBeUndefined()
+  expect(await m.find({ text: /^Claude would get/ })).toBeUndefined()
   await m.input({ key: 'test', text: `key ${GH}`, kind: 'submit' })
-  expect(await m.find({ text: new RegExp(`→ key ${ph('API_KEY')}`) })).toBeDefined()
+  expect(await m.find({ text: new RegExp(`^Claude would get: key ${ph('API_KEY')}`) })).toBeDefined()
   expect(store.get('vault:s1')).toBeUndefined()
   await m.press({ key: 'tab-help' })
-  expect(await m.find({ text: /^Rule format$/ })).toBeDefined()
-  expect(await m.find({ text: /^Where real values go$/ })).toBeDefined()
+  expect(await m.find({ text: /^Writing a rule$/ })).toBeDefined()
+  expect(await m.find({ text: /^Good to know$/ })).toBeDefined()
   await m.press({ key: 'tab-session' })
-  expect(await m.find({ text: /nothing masked yet/ })).toBeDefined()
+  expect(await m.find({ text: /^Nothing masked yet\./ })).toBeDefined()
 })
 
 test('desktop keeps the placeholders: the pane shows lengths and has no draw toggle', async ($, on) => {
@@ -724,7 +724,7 @@ test('a session starts with the secret-shaped values of the env files where it s
   const vault = store.get('vault:s1') as any
   expect(vault.ph).toEqual({ [ph('GITHUB_TOKEN')]: GH, [ph('DB_PASS' + 'WORD')]: ACME })
   expect(vault.by[ph('GITHUB_TOKEN')]).toBe('.env: GITHUB_TOKEN')
-  expect(toasts).toEqual(['redact: 2 values from the env files here masked (/redact show)'])
+  expect(toasts).toEqual(['redact: masked 2 values from the env files here (/redact to see them)'])
   expect(await entered($, `use ${GH} on port 3000, debug true`)).toBe(`use ${ph('GITHUB_TOKEN')} on port 3000, debug true`)
   // a second start (a --resume) keeps the placeholders and says nothing
   await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })

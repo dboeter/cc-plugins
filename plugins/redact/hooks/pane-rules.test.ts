@@ -12,11 +12,29 @@ const rulesTab = async ($: any) => {
   return m
 }
 
-test('the rules tab reads Rules, Env files, From settings, then Test', async ($, on) => {
+const titles = async (m: any) => (await m.findAll({ type: 'Text', text: /^(?:Rules|Env files|From settings|Test)$/ })).filter((x: any) => x.props.weight === 'semibold').map((x: any) => x.text)
+
+test('the rules tab reads Rules, Test, then Env files; From settings only once the option is set', async ($, on) => {
+  world(on, {}, { [RULES]: file(EXAMPLES) })
+  expect(await titles(await rulesTab($))).toEqual(['Rules', 'Test', 'Env files'])
+})
+
+test('with the patterns option set, From settings follows Env files', { options: { patterns: ['zz_[0-9]+'] } }, async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) })
   const m = await rulesTab($)
-  const titles = (await m.findAll({ type: 'Text', text: /^(?:Rules|Env files|From settings|Test)$/ })).filter((x: any) => x.props.weight === 'semibold').map((x: any) => x.text)
-  expect(titles).toEqual(['Rules', 'Env files', 'From settings', 'Test'])
+  expect(await titles(m)).toEqual(['Rules', 'Test', 'Env files', 'From settings'])
+  expect(await m.find({ type: 'Text', text: /^Always on: the patterns option in settings\.json\.$/ })).toBeDefined()
+})
+
+test("a named rule's regex shows under the cursor's row only", async ($, on) => {
+  world(on, {}, { [RULES]: file([{ name: 'One', pattern: 'aa_[0-9]+', replacement: 'A' }, { name: 'Two', pattern: 'bb_[0-9]+', replacement: 'B' }]) })
+  const m = await rulesTab($)
+  const regexes = async () => (await m.findAll({ type: 'Text', text: /^ +(aa|bb)_\[0-9\]\+$/ })).map((x: any) => x.text.trim())
+  expect(await regexes()).toEqual(['aa_[0-9]+'])
+  await m.press({ key: 'rdown' })
+  expect(await regexes()).toEqual(['bb_[0-9]+'])
+  await m.unmount()
+  expect(await (await mount($, { isFocused: false })).findAll({ type: 'Text', text: /^ +(aa|bb)_/ })).toEqual([])
 })
 
 test("a rule shows the placeholder it writes, its number as n", async ($, on) => {
@@ -51,18 +69,18 @@ test('red marks only errors: the remove and clear ✗ are dim, a skipped rule an
 
 test('the env files line names the folder the session started in, ~ for the home folder', async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) }, '/h/app')
-  expect(await (await rulesTab($)).find({ text: /^secret-looking values from \.env files in ~\/app$/ })).toBeDefined()
+  expect(await (await rulesTab($)).find({ text: /^Mask secret-looking values from \.env files in ~\/app, with no rule needed\.$/ })).toBeDefined()
 })
 
 test('a folder outside the home folder shows whole, and one that only starts like it is not shortened', async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) }, '/hx/app')
-  expect(await (await rulesTab($)).find({ text: /^secret-looking values from \.env files in \/hx\/app$/ })).toBeDefined()
+  expect(await (await rulesTab($)).find({ text: /^Mask secret-looking values from \.env files in \/hx\/app, with no rule needed\.$/ })).toBeDefined()
 })
 
 test('the rules file shows ~ for the home folder, indented by padding so a wrapped line keeps its indent', async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) })
   const m = await rulesTab($)
-  const line = await m.find({ type: 'Text', text: /^in ~\/\.claude\/redact-rules\.json, for every project/ })
+  const line = await m.find({ type: 'Text', text: /^Text a rule matches is masked while the rule is on\. Saved in ~\/\.claude\/redact-rules\.json, for every project\.$/ })
   expect(line?.props.wrap).toBe('wrap')
   expect(await m.find({ type: 'Text', text: /\/h\/\.claude/ })).toBeUndefined()
 })
@@ -103,7 +121,7 @@ test('unfocused, the pane draws no cursor and swaps the key line for a hint to c
   await m.press({ key: 'tab-rules' })
   expect(await m.find({ type: 'Text', text: '› ' })).toBeUndefined()
   expect(await m.find({ key: 'rdown' })).toBeUndefined()
-  expect(await m.find({ text: /^click to focus for keys: j\/k move, t on\/off, x remove$/ })).toBeDefined()
+  expect(await m.find({ text: /^click the pane to use keys: j\/k move, t on\/off, x remove$/ })).toBeDefined()
 })
 
 test('the open tab is bold and underlined, the others dim', async ($, on) => {
@@ -113,12 +131,11 @@ test('the open tab is bold and underlined, the others dim', async ($, on) => {
   expect((await m.find({ key: 'tab-session' }))?.props.dimColor).toBe(true)
 })
 
-test('the Env files header carries no state, the switch does; an empty From settings says how to fill it, once', async ($, on) => {
+test('the Env files header carries no state, the switch does; an unset patterns option draws no section', async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) })
   const m = await rulesTab($)
   expect(await m.find({ type: 'Text', text: /^── Env files ─+$/ })).toBeDefined()
-  expect(await m.find({ type: 'Text', text: /^── From settings ─+$/ })).toBeDefined()
-  expect(await m.find({ type: 'Text', text: /^none; the patterns option in settings\.json adds always-on rules$/ })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: /From settings|patterns option/ })).toBeUndefined()
   expect(await m.find({ type: 'Text', text: /^── Test ─+$/ })).toBeDefined() // nothing at its end until a sample matches
   expect(await m.find({ type: 'Text', text: /^ *none$/ })).toBeUndefined()
 })
