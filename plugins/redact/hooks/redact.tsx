@@ -94,6 +94,29 @@ const read = (line: string): Rule => {
   spec(r)
   return r
 }
+// The pane's new rule form: the one-line form's parts, one control each. `min` as typed.
+type Draft = { pattern: string; name: string; min: string; i?: boolean; strong?: boolean; prose?: boolean }
+const DRAFT: Draft = { pattern: '', name: '', min: '' }
+// a name as a label (Employee ID → EMPLOYEE_ID), SECRET when none can start with a letter
+const toLabel = (name: string) => {
+  const l = name.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  return LABEL.test(l) ? l : 'SECRET'
+}
+// The draft as a rule. The pattern field still takes a pasted one-line rule (read), so a README
+// example is not saved as a regex for its own text; a typed name and the switches win over it.
+// Throws why it does not read, as read does.
+const fromDraft = (d: Draft): Rule => {
+  const r = read(d.pattern.trim())
+  const name = d.name.trim(), min = d.min.trim()
+  if (name) { r.name = name; r.replacement = toLabel(name) }
+  if (d.i) r.ignoreCase = true
+  if (d.strong) r.strong = true
+  if (d.prose) r.prose = true
+  if (min && !/^\d+$/.test(min)) throw new Error('min length is not a whole number')
+  if (min) r.min = Number(min)
+  spec(r)
+  return r
+}
 
 // A session's vault: the next number per label and each placeholder's value, as the store keeps
 // it, and which rule or pattern masked each (`by`, absent from a vault saved before it was
@@ -283,7 +306,7 @@ type Tab = 'session' | 'rules'
 // help and guide open Session with its help shown: the Help tab became a toggle on each tab
 const TABS: Record<string, Tab> = { '': 'session', show: 'session', session: 'session', rules: 'rules', patterns: 'rules', test: 'rules', guide: 'session', help: 'session' }
 type Kept = { rules: unknown[]; compiled: Pattern[]; broken?: string; last?: string; sig?: string; file?: Promise<string>; seeded?: boolean; note: string; extra: number
-  vault?: { id: string; held: Promise<Held> }; env?: { id: string; seen: Seen }; envOn?: boolean; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; cursor?: string; ruleAt?: number; arm?: string; opened?: boolean; tab: Tab; sample: string; help?: boolean }
+  vault?: { id: string; held: Promise<Held> }; env?: { id: string; seen: Seen }; envOn?: boolean; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; cursor?: string; ruleAt?: number; arm?: string; opened?: boolean; tab: Tab; sample: string; help?: boolean; draft?: Draft }
 // CLAUDE_CONFIG_DIR, else ~/.claude; USERPROFILE is Windows' HOME
 const place = ($: EngineInterface, k: Kept) => k.file ??= (async () => {
   const dir = await $.env.get('CLAUDE_CONFIG_DIR') || `${await $.env.get('HOME') || await $.env.get('USERPROFILE') || '~'}/.claude`
@@ -364,10 +387,13 @@ const turn = async ($: EngineInterface, k: Kept, ref: string, on: boolean) => {
     ?? `rule ${i + 1} ${on ? 'on' : 'off'}`
 }
 const add = async ($: EngineInterface, k: Kept, typed: string) => {
-  await sync($, k)
   if (!typed) return 'nothing added: give a regex'
   let rule: Rule
   try { rule = read(typed) } catch (err) { return `not added: ${(err as Error).message}` }
+  return addRule($, k, rule)
+}
+const addRule = async ($: EngineInterface, k: Kept, rule: Rule) => {
+  await sync($, k)
   const at = k.rules.findIndex((r: any) => r?.pattern === rule.pattern && (r?.replacement ?? 'SECRET') === rule.replacement)
   if (at >= 0) return `already there, as rule ${at + 1}`
   return await save($, k, rules => [...rules, rule]) ?? `added as rule ${k.rules.length}`
@@ -953,12 +979,9 @@ export const register: Register = (on, options) => {
     const preview = sample ? mask(sample, trial, [...kept.compiled, ...fromSettings]) : ''
     const hits = sample ? masked(trial) : []
     let testField = <Text dimColor>{'  try a sample with /redact test <text>'}</Text>
-    let addField = <Text dimColor>{'  add one with /redact add LABEL: regex'}</Text> // mobile has no Input
-    if (e.surface !== 'mobile') {
-      const { Input } = $.ui.resolve(e)
-      testField = <Box paddingLeft={2}><Input key="test" value={sample} label="test" placeholder="paste text to see what Claude gets" submitLabel="test" onSubmit={v => { disarm(); kept.sample = v; $.ui.invalidate('ui.render') }} /></Box>
-      addField = <Box paddingLeft={2}><Input key="add" label="add" placeholder="LABEL: regex" submitLabel="add" onSubmit={async v => redraw(await add($, kept, v.trim()))} /></Box>
-    }
+    const hasInput = e.surface !== 'mobile' // mobile has no Input
+    const Input = hasInput ? $.ui.resolve(e).Input : undefined
+    if (Input) testField = <Box paddingLeft={2}><Input key="test" value={sample} label="test" placeholder="paste text to see what Claude gets" submitLabel="test" onSubmit={v => { disarm(); kept.sample = v; $.ui.invalidate('ui.render') }} /></Box>
     // a rule's or the env files' on/off button: green when on, dim when off or the rule is skipped
     // `active`, not `on`: the hook loader refuses a name that shadows on()
     const toggle = (key: string, active: boolean, label: string, onPress: () => void, faulty?: string, autoFocus?: boolean) => (
@@ -1095,6 +1118,69 @@ export const register: Register = (on, options) => {
       <Button key="rule-remove" label={kept.arm === armOf(ruleAt) ? 'remove?' : 'remove'} hotkey="x" plain dimColor onPress={() => removeRule(ruleAt)} />,
     ], 't on/off, x remove')
 
+    // The new rule form, behind one button so the tab stays short and the arrows walk past it.
+    // Typing redraws it (onInput), so the placeholder and the check follow what is typed.
+    const draft = kept.draft
+    const setDraft = (d: Draft | undefined) => { kept.draft = d; $.ui.invalidate('ui.render') }
+    // The button pressed goes as the form opens or closes, and the keyboard would go back to the
+    // prompt with it: the focus moves to what replaces it. Refused when the pane does not hold it.
+    const focusOn = (key: string) => { void $.ui.focus({ requestId: PANE, key }).catch(() => {}) }
+    const edit = (patch: Partial<Draft>) => setDraft({ ...DRAFT, ...kept.draft, ...patch })
+    const submitDraft = async () => {
+      const d = kept.draft ?? DRAFT
+      if (!d.pattern.trim()) return redraw('nothing added: give a pattern')
+      let rule: Rule
+      try { rule = fromDraft(d) } catch (err) { return redraw(`not added: ${(err as Error).message}`) }
+      const said = await addRule($, kept, rule)
+      if (!REFUSED.test(said)) { kept.draft = undefined; focusOn('new-rule') }
+      redraw(said)
+    }
+    // what the draft would mask as, and a line on the pattern: why it does not read, or what it
+    // matches in the test sample
+    const check = (d: Draft) => {
+      let r: Rule | undefined, why = ''
+      try { r = d.pattern.trim() ? fromDraft(d) : undefined } catch (err) { why = err instanceof SyntaxError ? `not a valid regex: ${err.message.replace(/^Invalid regular expression: \/.*\/[a-z]*: /, '')}` : (err as Error).message }
+      const as = r?.replacement ?? (d.name.trim() ? toLabel(d.name) : 'SECRET')
+      if (why || !r || !sample) return { as, why, found: '' }
+      const n = [...sample.matchAll(new RegExp(spec(r).src, spec(r).flags))].length
+      return { as, why, found: n ? `${count(n, 'match').replace('matchs', 'matches')} in your test sample` : 'no match in your test sample' }
+    }
+    const opt = (key: string, set: boolean | undefined, text: string, flip: () => void) => (
+      <Button key={key} label={text} plain onPress={flip}><Text color={set ? "green" : undefined} dimColor={!set}>{set ? "●" : "○"}</Text> {text}</Button>
+    )
+    const field = (label: string, input: unknown) => (
+      <Box columnGap={1}><Box width={9} flexShrink={0}><Text dimColor>{label}</Text></Box><Box flexGrow={1} flexShrink={1}>{input as any}</Box></Box>
+    )
+    const addForm = () => {
+      if (!Input) return <Text dimColor>{'  add one with /redact add LABEL: regex'}</Text>
+      if (!draft) return <Box paddingLeft={2}><Button key="new-rule" label="new rule" hotkey="a" plain dimColor onPress={() => { disarm(); setDraft({ ...DRAFT }); focusOn('add') }} /></Box>
+      const c = check(draft)
+      return (
+        <Box flexDirection="column" paddingLeft={2} marginTop={1}>
+          {field('pattern', <Input key="add" value={draft.pattern} placeholder={String.raw`a regex, like \be\d{6}\b`} submitLabel="add" autoFocus onInput={v => edit({ pattern: v })} onSubmit={v => { edit({ pattern: v }); return submitDraft() }} />)}
+          {c.why ? <Box paddingLeft={10}><Text color="warning" wrap="wrap">{c.why}</Text></Box> : c.found ? <Box paddingLeft={10}><Text dimColor>{c.found}</Text></Box> : null}
+          {field('name', <Input key="new-name" value={draft.name} placeholder="like Employee ID (optional)" submitLabel="add" onInput={v => edit({ name: v })} onSubmit={v => { edit({ name: v }); return submitDraft() }} />)}
+          <Box paddingLeft={10}><Text dimColor>masks as {notation(c.as)}</Text></Box>
+          <Box paddingLeft={10} columnGap={2} flexWrap="wrap">
+            {opt('new-i', draft.i, 'ignore case', () => edit({ i: !draft.i }))}
+            {opt('new-strong', draft.strong, 'mixed characters only', () => edit({ strong: !draft.strong }))}
+            {opt('new-prose', draft.prose, 'skip prose', () => edit({ prose: !draft.prose }))}
+          </Box>
+          {field('min', <Input key="new-min" value={draft.min} placeholder="shortest length to mask (optional)" submitLabel="add" onInput={v => edit({ min: v })} onSubmit={v => { edit({ min: v }); return submitDraft() }} />)}
+          {help && <Box flexDirection="column" marginTop={1}>
+            {row('ignore case', 'matches upper and lower case alike')}
+            {row('mixed only', 'masks only values of 8+ characters that mix letters, digits or symbols')}
+            {row('skip prose', 'leaves "key: some words" alone, so headings and notes stay readable')}
+            {row('min', 'masks only values this long or longer that are not all lowercase')}
+          </Box>}
+          <Box columnGap={2} marginTop={1}>
+            <Button key="new-add" label="add rule" variant="primary" onPress={submitDraft} />
+            <Button key="new-cancel" label="cancel" plain dimColor onPress={() => { disarm(); kept.note = ''; setDraft(undefined); focusOn('new-rule') }} />
+          </Box>
+        </Box>
+      )
+    }
+
     // Awaited here, as the return below calls it sync: the folder the env files are read in
     // (seedHere's fallback), ~ for the home folder; a failed read drops it from the Env files line.
     const rulesTab = await (async () => {
@@ -1108,7 +1194,6 @@ export const register: Register = (on, options) => {
             {section('sec-rules', 'Rules', `${lit} of ${rules.length} on`)}
             {tip(`A rule masks what it matches while it's on. Saved in ${tilde(file)}, for all projects.`)}
             {kept.broken && para(`${FILE} ${kept.broken}. Using the last rules that read until you fix it.`, 'red')}
-            {addField}
             {rules.length === 0 && <Text dimColor>  none yet</Text>}
             {rules.map((r: any, i) => {
               const src = typeof r?.pattern === 'string' ? r.pattern : JSON.stringify(r)
@@ -1132,6 +1217,7 @@ export const register: Register = (on, options) => {
                 </Box>
               )
             })}
+            {addForm()}
           </Box>
           <Box flexDirection="column">
             <Box gap={1}>
@@ -1166,11 +1252,10 @@ export const register: Register = (on, options) => {
           {help && (
             <Box flexDirection="column">
               {section('sec-format', 'Writing a rule')}
-              {row('LABEL: regex', `masks matches as ${notation('LABEL')}`)}
-              {row('bare regex', `masks matches as ${notation('SECRET')}`)}
-              {row('options', 'go before the colon. i ignores case, min=N sets a minimum length, strong needs 8+ mixed characters, prose skips "key: some words".')}
+              {row('pattern', String.raw`a JavaScript regex. \b marks a word edge, \d a digit, {6} six of them.`)}
               {row('(?<v>...)', String.raw`masks only group v. (?<pre>KEY=)(?<v>\S+) keeps KEY= visible.`)}
-              {row('example', String.raw`EMPLOYEE_ID i: \be\d{6}\b`)}
+              {row('name', `names the rule and its placeholder. Employee ID masks as ${notation('EMPLOYEE_ID')}, no name as ${notation('SECRET')}.`)}
+              {row('one line', String.raw`/redact add and the pattern field also take EMPLOYEE_ID i min=6: \be\d{6}\b`)}
               {row('by hand', `edit ${FILE}. Each rule has pattern, replacement, enabled and name.`)}
             </Box>
           )}

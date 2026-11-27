@@ -482,6 +482,7 @@ test('the pane lists every rule by its replacement, and adds and removes one', a
   await m.press({ key: 'tab-rules' })
   expect(await m.find({ text: /1\. first_/ })).toBeDefined()
   expect(await m.find({ text: / → ⟦FIRST_n⟧/ })).toBeDefined()
+  await m.press({ key: 'new-rule' })
   await m.input({ key: 'add', text: 'acme_[a-z0-9]{8}', kind: 'submit' })
   expect(rulesOf(files)).toEqual([{ pattern: 'first_[0-9]+', replacement: 'FIRST', enabled: true }, { pattern: 'acme_[a-z0-9]{8}', replacement: 'SECRET', enabled: true }])
   expect(await m.find({ text: /added as rule 2/ })).toBeDefined()
@@ -560,6 +561,7 @@ test('/redact show clears the last note', async ($, on) => {
   on('ui.open', () => ({ value: { isPlaced: true } }) as any)
   const m = await mount($)
   await m.press({ key: 'tab-rules' })
+  await m.press({ key: 'new-rule' })
   await m.input({ key: 'add', text: 'acme_[a-z0-9]{8}', kind: 'submit' })
   expect(await m.find({ text: /added as rule 3/ })).toBeDefined()
   await $.command.run({ command: 'redact', args: 'show' } as any)
@@ -573,6 +575,7 @@ test('a settings pattern that does not compile is marked; mobile, with no field,
   expect(await m.find({ text: /⚠ 1 rule invalid/ })).toBeDefined()
   await m.press({ key: 'tab-rules' })
   expect(await m.find({ key: 'add' })).toBeUndefined()
+  expect(await m.find({ key: 'new-rule' })).toBeUndefined()
   expect(await m.find({ text: /\/redact add/ })).toBeDefined()
 })
 

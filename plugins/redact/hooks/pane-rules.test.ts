@@ -102,7 +102,7 @@ test('the cursor follows the focus ring onto a rule\'s switch or ✗; t and x on
   const { files } = world(on, {}, { [RULES]: file(EXAMPLES) })
   const m = await rulesTab($)
   const hotkeys = async () => Object.fromEntries((await m.findAll({ type: 'Button' })).filter((x: any) => x.props.hotkey && !/^tab-|^raw$|^help$/.test(x.props.key)).map((x: any) => [x.props.hotkey, x.props.key]))
-  expect(await hotkeys()).toEqual({ t: 'rule-turn', x: 'rule-remove' })
+  expect(await hotkeys()).toEqual({ a: 'new-rule', t: 'rule-turn', x: 'rule-remove' })
   expect((await m.find({ key: 'turn-0' }))?.props.autoFocus).toBe(true)
   const marked = async () => (await m.findAll({ type: 'Text', text: '› ' })).length
   expect(await marked()).toBe(1)
@@ -182,4 +182,86 @@ test('off the terminal the key line\'s buttons and the cursor show, never the cl
   expect(await m.find({ key: 'rule-turn' })).toBeDefined()
   expect(await m.find({ type: 'Text', text: '› ' })).toBeDefined()
   expect(await m.find({ text: /click to focus/ })).toBeUndefined()
+})
+
+// The new rule form: what the one-line form packed into `LABEL options: regex`, one control each.
+const rulesOfFile = (files: Map<string, string>) => JSON.parse(files.get(RULES)!).rules
+const BARE = [{ pattern: 'first_[0-9]+', replacement: 'FIRST', enabled: true }]
+
+test('new rule opens a form: the name shows the placeholder as you type, the switches set the options', async ($, on) => {
+  const { files } = world(on, {}, { [RULES]: file(BARE) })
+  const m = await rulesTab($)
+  expect(await m.find({ key: 'add' })).toBeUndefined()
+  expect((await m.find({ key: 'new-rule' }))?.props.hotkey).toBe('a')
+  await m.press({ key: 'new-rule' })
+  expect(await m.find({ text: /⟦SECRET_n⟧/ })).toBeDefined()
+  await m.input({ key: 'new-name', text: 'Employee ID', kind: 'change' })
+  expect(await m.find({ text: /⟦EMPLOYEE_ID_n⟧/ })).toBeDefined()
+  await m.press({ key: 'new-i' })
+  await m.input({ key: 'add', text: String.raw`\be\d{6}\b`, kind: 'submit' })
+  expect(rulesOfFile(files).at(-1)).toEqual({ name: 'Employee ID', pattern: String.raw`\be\d{6}\b`, replacement: 'EMPLOYEE_ID', enabled: true, ignoreCase: true })
+  expect(await m.find({ text: /^added as rule 2$/ })).toBeDefined()
+  expect(await m.find({ key: 'add' })).toBeUndefined() // closed, and empty when opened again
+  await m.press({ key: 'new-rule' })
+  expect((await m.find({ key: 'add' }))?.props.value ?? '').toBe('')
+  expect((await m.find({ key: 'new-name' }))?.props.value ?? '').toBe('')
+})
+
+test('min length, mixed characters only and skip prose each set their option; add rule submits', async ($, on) => {
+  const { files } = world(on, {}, { [RULES]: file(BARE) })
+  const m = await rulesTab($)
+  await m.press({ key: 'new-rule' })
+  await m.input({ key: 'add', text: String.raw`x_\w+`, kind: 'change' })
+  await m.input({ key: 'new-min', text: '6', kind: 'change' })
+  await m.press({ key: 'new-strong' })
+  await m.press({ key: 'new-prose' })
+  await m.press({ key: 'new-add' })
+  expect(rulesOfFile(files).at(-1)).toEqual({ pattern: String.raw`x_\w+`, replacement: 'SECRET', enabled: true, min: 6, strong: true, prose: true })
+})
+
+test('a regex that does not compile keeps the form and its text, and says why as you type', async ($, on) => {
+  const { files } = world(on, {}, { [RULES]: file(BARE) })
+  const m = await rulesTab($)
+  await m.press({ key: 'new-rule' })
+  await m.input({ key: 'add', text: '(', kind: 'change' })
+  expect(await m.find({ text: /^ *not a valid regex/ })).toBeDefined()
+  await m.input({ key: 'add', text: '(', kind: 'submit' })
+  expect(rulesOfFile(files)).toHaveLength(1)
+  expect(await m.find({ text: /^not added/ })).toBeDefined()
+  expect((await m.find({ key: 'add' }))?.props.value).toBe('(')
+})
+
+test('a pasted one-line rule still reads; a typed name and switches win over it', async ($, on) => {
+  const { files } = world(on, {}, { [RULES]: file(BARE) })
+  const m = await rulesTab($)
+  await m.press({ key: 'new-rule' })
+  await m.input({ key: 'add', text: 'ACME min=4: acme_[0-9]+', kind: 'submit' })
+  expect(rulesOfFile(files).at(-1)).toEqual({ pattern: 'acme_[0-9]+', replacement: 'ACME', enabled: true, min: 4 })
+  await m.press({ key: 'new-rule' })
+  await m.input({ key: 'new-name', text: 'Mine', kind: 'change' })
+  await m.press({ key: 'new-i' })
+  await m.input({ key: 'add', text: 'ACME: zz_[0-9]+', kind: 'submit' })
+  expect(rulesOfFile(files).at(-1)).toEqual({ name: 'Mine', pattern: 'zz_[0-9]+', replacement: 'MINE', enabled: true, ignoreCase: true })
+})
+
+test('the form counts what the pattern matches in the test sample', async ($, on) => {
+  world(on, {}, { [RULES]: file(BARE) })
+  const m = await rulesTab($)
+  await m.input({ key: 'test', text: 'ids e123456 and e654321', kind: 'submit' })
+  await m.press({ key: 'new-rule' })
+  await m.input({ key: 'add', text: String.raw`\be\d{6}\b`, kind: 'change' })
+  expect(await m.find({ text: /^ *2 matches in your test sample$/ })).toBeDefined()
+})
+
+test('a name with no letter to start a label masks as SECRET; cancel closes the form and drops the draft', async ($, on) => {
+  world(on, {}, { [RULES]: file(BARE) })
+  const m = await rulesTab($)
+  await m.press({ key: 'new-rule' })
+  await m.input({ key: 'new-name', text: '123', kind: 'change' })
+  expect(await m.find({ text: /⟦SECRET_n⟧/ })).toBeDefined()
+  await m.input({ key: 'add', text: 'zz', kind: 'change' })
+  await m.press({ key: 'new-cancel' })
+  expect(await m.find({ key: 'add' })).toBeUndefined()
+  await m.press({ key: 'new-rule' })
+  expect((await m.find({ key: 'add' }))?.props.value ?? '').toBe('')
 })
