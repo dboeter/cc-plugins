@@ -56,7 +56,7 @@ test('the cursor starts on the first row, the only one with actions; j and k mov
   expect(Object.keys((store.get('vault:s1') as any).ph)).toEqual([ph('EMAIL'), ph('API_KEY')])
   // the cursor goes on to the next row
   expect(await actions(m)).toEqual([`forget-${ph('API_KEY')}`])
-  expect(await m.find({ text: /forgot .*refused/ })).toBeDefined()
+  expect(await m.find({ text: /forgot .*no longer use/ })).toBeDefined()
 })
 
 test('clicking a placeholder puts the cursor on its row', async ($, on) => {
@@ -104,27 +104,29 @@ test('a value with no recorded rule sits under rule unknown', async ($, on) => {
   expect(await (await mount($)).find({ text: /^rule unknown$/ })).toBeDefined()
 })
 
-test('empty with a rule on, the tab says what Claude sees and what its tools get', async ($, on) => {
-  world(on, {}, { [RULES]: file([{ pattern: 'zz_[0-9]+', replacement: 'ZZ' }]) })
-  expect(await (await mount($)).find({ text: /^Claude sees the placeholder \(⟦LABEL_n⟧\); Claude's tools get the real value\.$/ })).toBeDefined()
-})
-
-test('empty, with no file rule, no settings pattern and env files off: what redact is, then the steps to start', async ($, on) => {
+test('empty with no rule, help off: one line that says what to press', async ($, on) => {
   world(on, {}, { [RULES]: file([], { envFiles: false }) })
   const m = await mount($)
-  expect(await m.find({ text: /^redact swaps secrets for placeholders like ⟦API_KEY_n⟧ before Claude sees them/ })).toBeDefined()
-  const steps = (await m.findAll({ type: 'Text', text: /^[123]\. / })).map((x: any) => x.text)
-  expect(steps).toEqual([
-    '1. Open Rules (r) and turn on an example, or add a rule of your own.',
-    '2. Paste sample text under Test, on that tab, to see what gets masked.',
-    '3. Values masked in this session then show up here.',
-  ])
+  expect(await m.find({ text: 'No rules on yet. Press r to turn one on, or h for help.' })).toBeDefined()
+  expect(await m.find({ text: /^How redact works$/ })).toBeUndefined()
+})
+
+test('h shows what redact does and how to start, and Good to know, on the Session tab', async ($, on) => {
+  world(on, {}, { [RULES]: file([], { envFiles: false }) })
+  const m = await mount($)
+  await m.press({ key: 'help' })
+  expect((await m.find({ key: 'help' }))?.props.label).toBe('hide help')
+  expect(await m.find({ text: /^How redact works$/ })).toBeDefined()
+  expect(await m.find({ text: /^redact swaps what your rules match for placeholders like ⟦API_KEY_n⟧ before Claude sees it\. Claude's tools still get the real value\./ })).toBeDefined()
+  expect(await m.find({ text: /^To start, turn on a rule in Rules \(r\)/ })).toBeDefined()
+  expect(await m.find({ text: /^Good to know$/ })).toBeDefined()
+  expect(await m.find({ text: /No rules on yet/ })).toBeUndefined()
 })
 
 // empty with one thing that masks: nothing masked yet
 const yet = async ($: any) => {
   const m = await mount($)
-  return [!!(await m.find({ text: /^Nothing masked yet\./ })), !!(await m.find({ text: /To start/ }))]
+  return [!!(await m.find({ text: /^Nothing masked yet\.$/ })), !!(await m.find({ text: /No rules on yet/ }))]
 }
 
 test('empty, with a settings pattern: nothing masked yet', { options: { patterns: ['zz_[0-9]+'] } }, async ($, on) => {
@@ -137,7 +139,7 @@ test('empty, with a file rule on: nothing masked yet', async ($, on) => {
   expect(await yet($)).toEqual([true, false])
 })
 
-test('empty, with env files on but no rule: the steps to start, not nothing masked yet', async ($, on) => {
+test('empty, with env files on but no rule: what to press, not nothing masked yet', async ($, on) => {
   world(on, {}, { [RULES]: file([]) })
   expect(await yet($)).toEqual([false, true])
 })
@@ -170,24 +172,24 @@ test('the terminal shows a rule\'s text as written', async ($, on) => {
 })
 
 // A fresh install: the two examples off, env files on (no envFiles key), as a new user meets it.
-test('fresh install, nothing masked yet: what redact is and the steps to start, the status saying no rule is on', async ($, on) => {
+test('fresh install: the status says env files alone mask, and the tab says what to press', async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) })
   const m = await mount($)
-  expect(await m.find({ text: /^To start:$/ })).toBeDefined()
-  expect(await m.find({ text: /^1\. Open Rules \(r\) and turn on an example, or add a rule of your own\.$/ })).toBeDefined()
-  expect((await m.findAll({ type: 'Text' })).find((t: any) => /^[●○] /.test(t.text))?.text).toBe('● On: masking env file values only. No rule is on yet (r).')
+  expect(await m.find({ text: /^No rules on yet\./ })).toBeDefined()
+  expect((await m.findAll({ type: 'Text' })).find((t: any) => /^[●○] /.test(t.text))?.text).toBe('● On: env files only, no rules (r)')
 })
 
-test('fresh install with env values seeded: the values, and the steps to start still above them', async ($, on) => {
+test('fresh install with env values seeded: the values, with what to press above them', async ($, on) => {
   world(on, TWO, { [RULES]: file(EXAMPLES) })
   const m = await mount($)
-  expect(await m.find({ text: /^To start:$/ })).toBeDefined()
+  expect(await m.find({ text: /^No rules on yet\./ })).toBeDefined()
   expect(await m.find({ type: 'Button', props: { label: ph('API_KEY') } })).toBeDefined()
 })
 
-test('the lines that say where real values go name tools, not commands', async ($, on) => {
+test('the help lines that say where real values go name tools, not commands', async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) })
   const m = await mount($)
-  expect(await m.find({ text: /^redact swaps secrets for placeholders like ⟦API_KEY_n⟧ before Claude sees them\. Claude's tools still get the real value\.$/ })).toBeDefined()
+  await m.press({ key: 'help' })
+  expect(await m.find({ text: /Claude's tools still get the real value/ })).toBeDefined()
   expect(await m.find({ text: /commands Claude runs/i })).toBeUndefined()
 })

@@ -1,13 +1,25 @@
 import { test, expect } from 'claude-code/testing'
 import { mount, world } from './pane-helpers'
 
-test('Help opens with what redact does, then how to start, how to write a rule, and what is good to know', async ($, on) => {
+// Help is a toggle on each tab (h), off by default; /redact help opens Session with it on.
+test('help is off by default; h shows it on Rules too, with how to write a rule', async ($, on) => {
   world(on)
   const m = await mount($)
-  await m.press({ key: 'tab-help' })
-  expect((await m.find({ key: 'tab-help' }))?.props.label).toBe('Help')
-  const titles = await m.findAll({ type: 'Text', text: /^(What redact does|Getting started|Writing a rule|Good to know)$/ })
-  expect(titles.map((t: any) => t.text)).toEqual(['What redact does', 'Getting started', 'Writing a rule', 'Good to know'])
-  expect(await m.find({ type: 'Text', text: /^ {2}forget {13}$/ })).toBeDefined()
-  expect(await m.find({ type: 'Text', text: /^drops a value: Claude can no longer use its placeholder/ })).toBeDefined()
+  expect((await m.find({ key: 'help' }))?.props).toMatchObject({ label: 'help', hotkey: 'h' })
+  await m.press({ key: 'tab-rules' })
+  expect(await m.find({ text: /^Writing a rule$/ })).toBeUndefined()
+  await m.press({ key: 'help' })
+  expect(await m.find({ text: /^Writing a rule$/ })).toBeDefined()
+})
+
+test('/redact help opens Session with help on; /redact guide too', async ($, on) => {
+  world(on)
+  on('ui.open', () => ({ value: { isPlaced: true } }) as any)
+  for (const word of ['help', 'guide']) {
+    await $.command.run({ command: 'redact', args: word } as any)
+    const m = await mount($)
+    expect(await m.find({ text: /^How redact works$/ })).toBeDefined()
+    await m.press({ key: 'help' })
+    await m.unmount()
+  }
 })

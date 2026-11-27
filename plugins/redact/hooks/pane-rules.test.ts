@@ -23,13 +23,17 @@ test('with the patterns option set, From settings follows Env files', { options:
   world(on, {}, { [RULES]: file(EXAMPLES) })
   const m = await rulesTab($)
   expect(await titles(m)).toEqual(['Rules', 'Test', 'Env files', 'From settings'])
-  expect(await m.find({ type: 'Text', text: /^Always on: the patterns option in settings\.json\.$/ })).toBeDefined()
+  expect(await m.find({ type: 'Text', text: /^Always on\./ })).toBeUndefined()
+  await m.press({ key: 'help' })
+  expect(await m.find({ type: 'Text', text: /^Always on\. Set by the patterns option in settings\.json\.$/ })).toBeDefined()
 })
 
-test("a named rule's regex shows under the cursor's row only", async ($, on) => {
+test("a named rule's regex shows under the cursor's row only, with help on", async ($, on) => {
   world(on, {}, { [RULES]: file([{ name: 'One', pattern: 'aa_[0-9]+', replacement: 'A' }, { name: 'Two', pattern: 'bb_[0-9]+', replacement: 'B' }]) })
   const m = await rulesTab($)
   const regexes = async () => (await m.findAll({ type: 'Text', text: /^ +(aa|bb)_\[0-9\]\+$/ })).map((x: any) => x.text.trim())
+  expect(await regexes()).toEqual([])
+  await m.press({ key: 'help' })
   expect(await regexes()).toEqual(['aa_[0-9]+'])
   await m.press({ key: 'rdown' })
   expect(await regexes()).toEqual(['bb_[0-9]+'])
@@ -64,23 +68,24 @@ test('red marks only errors: the remove and clear ✗ are dim, a skipped rule an
   expect((await m.find({ type: 'Text', text: /^ skipped: replacement is not capitals/ }))?.props.color).toBe('red')
   files.set(RULES, '{ broken')
   await m.press({ key: 'tab-rules' }) // redrawn, it reads the file again
-  expect((await m.find({ type: 'Text', text: /^redact-rules\.json .*masking with the last rules read until it is fixed by hand$/ }))?.props.color).toBe('red')
+  expect((await m.find({ type: 'Text', text: /^redact-rules\.json .*\. Using the last rules that read until you fix it\.$/ }))?.props.color).toBe('red')
 })
 
 test('the env files line names the folder the session started in, ~ for the home folder', async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) }, '/h/app')
-  expect(await (await rulesTab($)).find({ text: /^Mask secret-looking values from \.env files in ~\/app, with no rule needed\.$/ })).toBeDefined()
+  expect(await (await rulesTab($)).find({ text: /^\.env files in ~\/app$/ })).toBeDefined()
 })
 
 test('a folder outside the home folder shows whole, and one that only starts like it is not shortened', async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) }, '/hx/app')
-  expect(await (await rulesTab($)).find({ text: /^Mask secret-looking values from \.env files in \/hx\/app, with no rule needed\.$/ })).toBeDefined()
+  expect(await (await rulesTab($)).find({ text: /^\.env files in \/hx\/app$/ })).toBeDefined()
 })
 
 test('the rules file shows ~ for the home folder, indented by padding so a wrapped line keeps its indent', async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) })
   const m = await rulesTab($)
-  const line = await m.find({ type: 'Text', text: /^Text a rule matches is masked while the rule is on\. Saved in ~\/\.claude\/redact-rules\.json, for every project\.$/ })
+  await m.press({ key: 'help' })
+  const line = await m.find({ type: 'Text', text: /Saved in ~\/\.claude\/redact-rules\.json, for all projects\.$/ })
   expect(line?.props.wrap).toBe('wrap')
   expect(await m.find({ type: 'Text', text: /\/h\/\.claude/ })).toBeUndefined()
 })
@@ -96,7 +101,7 @@ test('the pane leaves the last column free: a header ends there, and the right-a
 test('j and k walk a cursor over the rules; t and x on the key line act on its row, x twice; no row has a key', async ($, on) => {
   const { files } = world(on, {}, { [RULES]: file(EXAMPLES) })
   const m = await rulesTab($)
-  const hotkeys = async () => Object.fromEntries((await m.findAll({ type: 'Button' })).filter((x: any) => x.props.hotkey && !/^tab-|^raw$/.test(x.props.key)).map((x: any) => [x.props.hotkey, x.props.key]))
+  const hotkeys = async () => Object.fromEntries((await m.findAll({ type: 'Button' })).filter((x: any) => x.props.hotkey && !/^tab-|^raw$|^help$/.test(x.props.key)).map((x: any) => [x.props.hotkey, x.props.key]))
   expect(await hotkeys()).toEqual({ j: 'rdown', k: 'rup', t: 'rule-turn', x: 'rule-remove' })
   const marked = async () => (await m.findAll({ type: 'Text', text: '› ' })).length
   expect(await marked()).toBe(1)

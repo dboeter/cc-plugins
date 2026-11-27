@@ -279,10 +279,11 @@ export const migrate = (t: string) => {
 // its saves wait in; whether the terminal draws placeholders (`raw`), the settings patterns that
 // did not compile and how many did (`extra`), and the status line last set. These helpers sit at
 // the top of the file because the engine only follows `$` into such functions.
-type Tab = 'session' | 'rules' | 'help'
-const TABS: Record<string, Tab> = { '': 'session', show: 'session', session: 'session', rules: 'rules', patterns: 'rules', test: 'rules', guide: 'help', help: 'help' }
+type Tab = 'session' | 'rules'
+// help and guide open Session with its help shown: the Help tab became a toggle on each tab
+const TABS: Record<string, Tab> = { '': 'session', show: 'session', session: 'session', rules: 'rules', patterns: 'rules', test: 'rules', guide: 'session', help: 'session' }
 type Kept = { rules: unknown[]; compiled: Pattern[]; broken?: string; last?: string; sig?: string; file?: Promise<string>; seeded?: boolean; note: string; extra: number
-  vault?: { id: string; held: Promise<Held> }; env?: { id: string; seen: Seen }; envOn?: boolean; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; cursor?: string; ruleAt?: number; arm?: string; opened?: boolean; tab: Tab; sample: string }
+  vault?: { id: string; held: Promise<Held> }; env?: { id: string; seen: Seen }; envOn?: boolean; saving: Promise<unknown>; raw: boolean; skipped: string[]; shown?: string; revealed: Set<string>; cursor?: string; ruleAt?: number; arm?: string; opened?: boolean; tab: Tab; sample: string; help?: boolean }
 // CLAUDE_CONFIG_DIR, else ~/.claude; USERPROFILE is Windows' HOME
 const place = ($: EngineInterface, k: Kept) => k.file ??= (async () => {
   const dir = await $.env.get('CLAUDE_CONFIG_DIR') || `${await $.env.get('HOME') || await $.env.get('USERPROFILE') || '~'}/.claude`
@@ -352,15 +353,15 @@ const save = async ($: EngineInterface, k: Kept, f: (rules: unknown[]) => unknow
 const pick = (k: Kept, ref: string) => /^\d+$/.test(ref) && k.rules[Number(ref) - 1] !== undefined ? Number(ref) - 1
   : ref ? k.rules.findIndex((r: any) => r?.name === ref || r?.pattern === ref) : -1
 // No reply names a rule by more than its number: a reply to a typed command can reach the model.
-const NONE = 'no such rule: give its number or name (/redact rules lists them)'
+const NONE = 'no such rule. Use its number or name, as /redact rules lists them'
 // turns a rule on or off
 const turn = async ($: EngineInterface, k: Kept, ref: string, on: boolean) => {
   await sync($, k)
   const i = pick(k, ref)
   if (i < 0) return NONE
-  if (isOn(k.rules[i]) === on) return `already ${on ? 'on' : 'off'}: #${i + 1}`
+  if (isOn(k.rules[i]) === on) return `already ${on ? 'on' : 'off'}: rule ${i + 1}`
   return await save($, k, rules => rules.map((r, j) => j === i ? { ...r as object, enabled: on } : r))
-    ?? `#${i + 1} ${on ? 'on' : 'off'}: from now on, mid-turn too`
+    ?? `rule ${i + 1} ${on ? 'on' : 'off'}`
 }
 const add = async ($: EngineInterface, k: Kept, typed: string) => {
   await sync($, k)
@@ -368,8 +369,8 @@ const add = async ($: EngineInterface, k: Kept, typed: string) => {
   let rule: Rule
   try { rule = read(typed) } catch (err) { return `not added: ${(err as Error).message}` }
   const at = k.rules.findIndex((r: any) => r?.pattern === rule.pattern && (r?.replacement ?? 'SECRET') === rule.replacement)
-  if (at >= 0) return `already there, as #${at + 1}`
-  return await save($, k, rules => [...rules, rule]) ?? `added as #${k.rules.length}: it masks from now on, mid-turn too`
+  if (at >= 0) return `already there, as rule ${at + 1}`
+  return await save($, k, rules => [...rules, rule]) ?? `added as rule ${k.rules.length}`
 }
 // Turns seeding from env files on or off: `envFiles` in the rules file, on when absent. Off keeps
 // what it already put in the vault; on reads the files before the next prompt.
@@ -377,13 +378,13 @@ const envTurn = async ($: EngineInterface, k: Kept, on: boolean) => {
   await sync($, k)
   if ((k.envOn !== false) === on) return `env files already ${on ? 'on' : 'off'}`
   return await save($, k, rules => rules, { envFiles: on })
-    ?? (on ? 'env files on: read from the next prompt on' : 'env files off: what they put in stays masked this session (forget it in /redact show)')
+    ?? (on ? 'env files on, from the next prompt' : 'env files off. Values already masked stay masked')
 }
 const remove = async ($: EngineInterface, k: Kept, ref: string) => {
   await sync($, k)
   const i = pick(k, ref)
   if (i < 0) return NONE
-  return await save($, k, rules => rules.filter((_, j) => j !== i)) ?? `removed #${i + 1}`
+  return await save($, k, rules => rules.filter((_, j) => j !== i)) ?? `removed rule ${i + 1}`
 }
 // the refusal prefixes of turn, add, remove and save's replies, which the pane's note draws as a warning
 const REFUSED = /^(not added|not saved|nothing added|already|no such)/
@@ -409,7 +410,7 @@ const answer = async ($: EngineInterface, k: Kept, fromSettings: Pattern[], args
     return hits.length ? `→ ${out} (${hits.map(x => `${x.p} by ${x.by}`).join(', ')})` : k.compiled.length + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on'
   }
   const tab = !rest ? TABS[verb] : undefined
-  if (tab) { k.tab = tab; k.note = ''; await $.ui.open({ id: PANE, title: TITLE, focus: true }); k.opened = true; return undefined }
+  if (tab) { k.tab = tab; k.note = ''; if (verb === 'help' || verb === 'guide') k.help = true; await $.ui.open({ id: PANE, title: TITLE, focus: true }); k.opened = true; return undefined }
   return `usage: /redact ${USAGE}`
 }
 
@@ -467,7 +468,7 @@ const forget = async ($: EngineInterface, k: Kept, p: string) => {
   if (!drop(h, p)) return 'already forgotten'
   await keep($, k, h)
   badge($, k, h)
-  return `forgot ${p}: a call naming it is refused from now on, and the value, matched again, masks under a new number`
+  return `forgot ${p}. Claude can no longer use it`
 }
 // every placeholder at once, in one save
 const forgetAll = async ($: EngineInterface, k: Kept) => {
@@ -475,7 +476,7 @@ const forgetAll = async ($: EngineInterface, k: Kept) => {
   const n = Object.keys(h.v.ph).filter(p => drop(h, p)).length
   await keep($, k, h)
   badge($, k, h)
-  return `forgot ${n}: a call naming one is refused from now on, and each value, matched again, masks under a new number`
+  return `forgot ${n}. Claude can no longer use ${n === 1 ? 'it' : 'them'}`
 }
 // What the pane lists: each placeholder, its value, and the rule or pattern that masked it.
 const masked = (h: Held) => Object.entries(h.v.ph).map(([p, v]) => ({ p, v, by: h.v.by?.[p] ?? 'rule unknown' }))
@@ -601,7 +602,7 @@ const seedHere = async ($: EngineInterface, k: Kept, dir?: string) => {
     const n = await seed($, h, dir ?? await $.session.cwd(), k.env.seen)
     await keep($, k, h)
     badge($, k, h)
-    if (n) told($, `redact: masked ${n} value${n > 1 ? 's' : ''} from the env files here (/redact to see them)`)
+    if (n) told($, `redact: masked ${n} value${n > 1 ? 's' : ''} from .env files (/redact)`)
   } catch (err) { $.ui.log(`redact: env files not read: ${(err as Error)?.message ?? err}`, { to: 'debug' }) }
 }
 
@@ -675,7 +676,7 @@ export const register: Register = (on, options) => {
   const failed = (where: string, kind: string) => `redact could not mask ${where} (${kind})`
 
   on('session.start', async ($, e, next) => {
-    try { await $.command.register({ name: 'redact', description: 'Open the redact pane: see what is masked from Claude, turn rules on or off, and test a sample.', argumentHint: USAGE, immediate: true }) }
+    try { await $.command.register({ name: 'redact', description: 'See what redact hides from Claude and manage its rules.', argumentHint: USAGE, immediate: true }) }
     catch (err) { $.ui.log(`redact: /redact not registered: ${(err as Error)?.message ?? err}`, { to: 'debug' }) } // throws on hot reload (no session bound yet)
     try { await prune($) } catch (err) { $.ui.log(`redact: old vaults not pruned: ${(err as Error)?.message ?? err}`, { to: 'debug' }) }
     try { await sync($, kept); badge($, kept, await hold($, kept)) } // a --resume starts with a vault
@@ -916,11 +917,11 @@ export const register: Register = (on, options) => {
     const preview = sample ? mask(sample, trial, [...kept.compiled, ...fromSettings]) : ''
     const hits = sample ? masked(trial) : []
     let testField = <Text dimColor>{'  try a sample with /redact test <text>'}</Text>
-    let addField = <Text dimColor>{'  add one with /redact add LABEL: <regex>'}</Text> // mobile has no Input
+    let addField = <Text dimColor>{'  add one with /redact add LABEL: regex'}</Text> // mobile has no Input
     if (e.surface !== 'mobile') {
       const { Input } = $.ui.resolve(e)
-      testField = <Box paddingLeft={2}><Input key="test" value={sample} label="test" placeholder="paste text with a secret in it; Enter shows what Claude would get" submitLabel="test" onSubmit={v => { disarm(); kept.sample = v; $.ui.invalidate('ui.render') }} /></Box>
-      addField = <Box paddingLeft={2}><Input key="add" label="add" placeholder={String.raw`LABEL: regex, e.g. EMPLOYEE_ID: \be\d{6}\b`} submitLabel="add" onSubmit={async v => redraw(await add($, kept, v.trim()))} /></Box>
+      testField = <Box paddingLeft={2}><Input key="test" value={sample} label="test" placeholder="paste text to see what Claude gets" submitLabel="test" onSubmit={v => { disarm(); kept.sample = v; $.ui.invalidate('ui.render') }} /></Box>
+      addField = <Box paddingLeft={2}><Input key="add" label="add" placeholder="LABEL: regex" submitLabel="add" onSubmit={async v => redraw(await add($, kept, v.trim()))} /></Box>
     }
     // a rule's or the env files' on/off button: green when on, dim when off or the rule is skipped
     // `active`, not `on`: the hook loader refuses a name that shadows on()
@@ -932,16 +933,25 @@ export const register: Register = (on, options) => {
     // dim by default; 'ink' sets it in the full text colour, any other colour names itself
     const para = (text: string, color?: string) => <Box paddingLeft={2}><Text dimColor={!color} color={color === 'ink' ? undefined : color} wrap="wrap">{text}</Text></Box>
     const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
-    // What masks from now on, in words a first-time user reads without the Guide: the rules on
-    // (file and settings) and the env files. Off names the one step that turns it on.
+    // What masks from now on. A fresh install has env files on and no rule: said, so the green
+    // line does not read as everything covered.
     const ruleCount = lit + fromSettings.length
     const envOn = kept.envOn !== false
-    const masking = [ruleCount ? `what ${count(ruleCount, 'rule')} ${ruleCount === 1 ? 'matches' : 'match'}` : '', envOn ? 'env file values' : ''].filter(Boolean)
-    // A fresh install has env files on and no rule: say so, so the green line does not read as
-    // everything covered.
+    const masking = [ruleCount ? count(ruleCount, 'rule') : '', envOn ? 'env files' : ''].filter(Boolean)
     const status = masking.length
-      ? <Text color="green" wrap="wrap">● On: masking {masking.join(', and ')}{ruleCount ? '' : ' only. No rule is on yet (r).'}</Text>
-      : <Text color="warning" wrap="wrap">○ Off: no rule is on. Turn one on in Rules (r).</Text>
+      ? <Text color="green" wrap="wrap">● On: {masking.join(' and ')}{ruleCount ? '' : ' only, no rules (r)'}</Text>
+      : <Text color="warning" wrap="wrap">○ Off: no rules on (r)</Text>
+    // Help is a toggle on each tab, off by default: the pane shows what is on and what to press,
+    // and h adds the why. A Help tab of its own was a page nobody opened at the moment of doubt.
+    const help = kept.help === true
+    const tip = (text: string) => help && para(text)
+    // a term at normal weight in a 16-column field, its meaning dim beside it, wrapping in its column
+    const row = (k: string, d: string) => (
+      <Box key={k}>
+        <Box flexShrink={0}><Text>{`  ${k.padEnd(14)}`}</Text></Box>
+        <Box flexShrink={1}><Text dimColor wrap="wrap">{d}</Text></Box>
+      </Box>
+    )
     // The draw switch's two states, the one drawn now bracketed and bold, the other dim and padded to
     // the same width, so a flip moves nothing. It switches the transcript, not this pane: named so.
     const drawState = (title: string, active: boolean) => <Text dimColor={!active} weight={active ? 'bold' : undefined}>{active ? `[${title}]` : ` ${title} `}</Text>
@@ -951,13 +961,13 @@ export const register: Register = (on, options) => {
         <Box flexWrap="wrap" columnGap={2}>
           {tabBtn('session', `Session (${vault.length})`, 's')}
           {tabBtn('rules', 'Rules', 'r')}
-          {tabBtn('help', 'Help', 'h')}
           {broken > 0 && <Text color="red">⚠ {count(broken, 'rule')} invalid</Text>}
+          <Button key="help" label={help ? 'hide help' : 'help'} hotkey="h" plain dimColor onPress={() => { disarm(); kept.help = !help; $.ui.invalidate('ui.render') }} />
         </Box>
         {status}
         {e.surface === 'terminal' && (
           <Box gap={1}>
-            <Text dimColor>Transcript shows:</Text>
+            <Text dimColor>Transcript:</Text>
             <Button key="raw" label={kept.raw ? 'show real values' : "show Claude's view"} hotkey="d" plain onPress={async () => { disarm(); kept.raw = !kept.raw; badge($, kept, await hold($, kept)); $.ui.invalidate('ui.render') }}>
               <Text>{drawState('real values', !kept.raw)}{drawState("Claude's view", kept.raw)}</Text>
             </Button>
@@ -986,32 +996,18 @@ export const register: Register = (on, options) => {
       <Button key="cur-forget" label="forget" hotkey="x" plain dimColor onPress={() => cur && forgetCur(cur)} />,
     ].filter(Boolean), 'j/k move, x forget',
     vault.length > 1 && <Button key="forget-all" label="forget all" plain dimColor onPress={async () => redraw(await forgetAll($, kept))} />)
-    // what the left and right columns mean, said once above them and in the empty states
-    // "tools", not "commands": WebFetch, WebSearch and MCP tools get the real value too (README)
-    const contract = `Claude sees the placeholder (${notation('LABEL')}); Claude's tools get the real value.`
     const sessionTab = () => (
       <Box flexDirection="column">
-        {ruleCount === 0 && (
-          // First run, keyed on no rule (a fresh install has env files on, and may have values from
-          // them): what redact is, then the steps to turn a rule on, as Help's Getting started has them.
-          <Box flexDirection="column" gap={1} marginBottom={vault.length ? 1 : 0}>
-            {para(`redact swaps secrets for placeholders like ${notation('API_KEY')} before Claude sees them. Claude's tools still get the real value.`, 'ink')}
-            <Box flexDirection="column">
-              {para('To start:', 'ink')}
-              {para('1. Open Rules (r) and turn on an example, or add a rule of your own.')}
-              {para('2. Paste sample text under Test, on that tab, to see what gets masked.')}
-              {para('3. Values masked in this session then show up here.')}
-            </Box>
+        {help && (
+          <Box flexDirection="column" marginBottom={1}>
+            {section('sec-how', 'How redact works')}
+            {para(`redact swaps what your rules match for placeholders like ${notation('API_KEY')} before Claude sees it. Claude's tools still get the real value. Real values stay in a file on this machine.`, 'ink')}
+            {para('To start, turn on a rule in Rules (r) and paste a sample under Test to check it. Values show up here once something matches.', 'ink')}
           </Box>
         )}
-        {vault.length === 0 && ruleCount > 0 && (
-          <Box flexDirection="column">
-            {para('Nothing masked yet. Values your rules match show up here once Claude would have seen them.', 'ink')}
-            {para(contract)}
-          </Box>
-        )}
-        {/* the intro above already says it while no rule is on */}
-        {vault.length > 0 && ruleCount > 0 && <Box marginBottom={1}>{para(contract)}</Box>}
+        {/* keyed on no rule, as a fresh install has env files on and may hold values from them */}
+        {!help && ruleCount === 0 && <Box marginBottom={vault.length ? 1 : 0}>{para('No rules on yet. Press r to turn one on, or h for help.', 'ink')}</Box>}
+        {vault.length === 0 && ruleCount > 0 && para('Nothing masked yet.', 'ink')}
         {[...groups].map(([by, xs]) => (
           <Box key={`by-${by}`} flexDirection="column">
             {section(`src-${by}`, offTerminal(by).replace(/\r\n|\r|\n/g, '⏎'))}
@@ -1034,6 +1030,17 @@ export const register: Register = (on, options) => {
             ))}
           </Box>
         ))}
+        {help && (
+          <Box flexDirection="column" marginTop={1}>
+            {section('sec-know', 'Good to know')}
+            {row('once masked', 'a value keeps its placeholder for the whole session')}
+            {row('forget', 'Claude can no longer use the placeholder. If the value shows up again, it gets a new number.')}
+            {row('unknown', "a tool call with a placeholder this session doesn't hold is refused")}
+            {row(notation('LABEL', ESC), `writes the placeholder as plain text`)}
+            {row('tools', 'all of them get real values, web and MCP tools too')}
+            {row('other apps', 'only the terminal shows real values. Desktop, VS Code and mobile show placeholders.')}
+          </Box>
+        )}
       </Box>
     )
 
@@ -1069,10 +1076,10 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" gap={1}>
           <Box flexDirection="column">
             {section('sec-rules', 'Rules', `${lit} of ${rules.length} on`)}
-            {para(`Text a rule matches is masked while the rule is on. Saved in ${tilde(file)}, for every project.`)}
-            {kept.broken && para(`${FILE} ${kept.broken}: masking with the last rules read until it is fixed by hand`, 'red')}
+            {tip(`A rule masks what it matches while it's on. Saved in ${tilde(file)}, for all projects.`)}
+            {kept.broken && para(`${FILE} ${kept.broken}. Using the last rules that read until you fix it.`, 'red')}
             {addField}
-            {rules.length === 0 && <Text dimColor>  none yet: add one above</Text>}
+            {rules.length === 0 && <Text dimColor>  none yet</Text>}
             {rules.map((r: any, i) => {
               const src = typeof r?.pattern === 'string' ? r.pattern : JSON.stringify(r)
               const name = typeof r?.name === 'string' && r.name ? r.name : undefined
@@ -1090,8 +1097,8 @@ export const register: Register = (on, options) => {
                       </Button>
                     </Box>
                   </Box>
-                  {/* the regex under the cursor's row only: a list of regexes hid the names */}
-                  {name && atRow && <Text dimColor wrap="truncate-middle">{`     ${offTerminal(src)}`}</Text>}
+                  {/* the regex under the cursor's row only, with help shown: a list of regexes hid the names */}
+                  {name && atRow && help && <Text dimColor wrap="truncate-middle">{`     ${offTerminal(src)}`}</Text>}
                 </Box>
               )
             })}
@@ -1102,9 +1109,10 @@ export const register: Register = (on, options) => {
               {sample && <Box flexShrink={0}><Button key="clear-test" label="clear" plain onPress={() => { disarm(); kept.sample = ''; $.ui.invalidate('ui.render') }}><Text dimColor>✗</Text></Button></Box>}
             </Box>
             {testField}
+            {tip('Shows what Claude gets from your sample with the rules that are on. Nothing is saved.')}
             {sample && (
               <Box flexDirection="column">
-                {para(`Claude would get: ${preview}`, 'ink')}
+                {para(`Claude gets: ${preview}`, 'ink')}
                 {hits.length === 0
                   ? <Text dimColor>    {lit + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on'}</Text>
                   : hits.map(x => <Text key={x.p} dimColor>    {x.p}  {shown(x.p, x.v)} · by {offTerminal(x.by)}</Text>)}
@@ -1114,67 +1122,35 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column">
             {section('sec-env', 'Env files') /* no state at its end: the switch below reads it */}
             <Box justifyContent="space-between" columnGap={1}>
-              <Box flexShrink={1}>{para(`Mask secret-looking values from .env files${here ? ` in ${here}` : ''}, with no rule needed.`)}</Box>
+              <Box flexShrink={1}>{para(`.env files${here ? ` in ${here}` : ''}`)}</Box>
               <Box flexShrink={0}>{toggle('env', kept.envOn !== false, kept.envOn === false ? 'turn on' : 'turn off', async () => redraw(await envTurn($, kept, kept.envOn === false)))}</Box>
             </Box>
+            {tip('Masks values that look like secrets, with no rule. Values already masked stay masked when you turn it off.')}
           </Box>
           {/* only when the option is set: an empty section of an advanced option was noise to a new user (Help names it) */}
           {settings.length > 0 && <Box flexDirection="column">
             {section('sec-settings', 'From settings', `${settings.length} on`)}
-            {para('Always on: the patterns option in settings.json.')}
+            {tip('Always on. Set by the patterns option in settings.json.')}
             {settings.map((src, i) => <Box key={`set-${i}`}>{pattern(`  ${src}`)}{lineFault(src) ? null : label(read(src))}{skip(lineFault(src))}</Box>)}
           </Box>}
+          {help && (
+            <Box flexDirection="column">
+              {section('sec-format', 'Writing a rule')}
+              {row('LABEL: regex', `masks matches as ${notation('LABEL')}`)}
+              {row('bare regex', `masks matches as ${notation('SECRET')}`)}
+              {row('options', 'go before the colon. i ignores case, min=N sets a minimum length, strong needs 8+ mixed characters, prose skips "key: some words".')}
+              {row('(?<v>...)', String.raw`masks only group v. (?<pre>KEY=)(?<v>\S+) keeps KEY= visible.`)}
+              {row('example', String.raw`EMPLOYEE_ID i: \be\d{6}\b`)}
+              {row('by hand', `edit ${FILE}. Each rule has pattern, replacement, enabled and name.`)}
+            </Box>
+          )}
         </Box>
       )
     })()
 
-    const guideTab = () => {
-      // A term at normal weight in a 21-column field, its meaning dim beside it. Ordered as a new
-      // user needs it: what it is, how to start, how to write a rule, then the edges.
-      const row = (k: string, d: string) => (
-        <Box key={k}>
-          <Box flexShrink={0}><Text>{`  ${k.padEnd(19)}`}</Text></Box>
-          <Box flexShrink={1}><Text dimColor wrap="wrap">{d}</Text></Box>
-        </Box>
-      )
-      return (
-        <Box flexDirection="column" gap={1}>
-          <Box flexDirection="column">
-            {section('sec-how', 'What redact does')}
-            {para(`Before anything reaches Claude, redact swaps each value your rules match for a placeholder like ${notation('API_KEY')}. When Claude uses a tool, the real value goes back in, so commands, edits and web calls still work. Real values are stored on this machine.`, 'ink')}
-          </Box>
-          <Box flexDirection="column">
-            {section('sec-start', 'Getting started')}
-            {para('1. Rules (r): turn on an example, or add a rule of your own.', 'ink')}
-            {para('2. Test, on the same tab: paste sample text to see what Claude would get.', 'ink')}
-            {para('3. Session (s): see what this session has masked, and forget a value.', 'ink')}
-          </Box>
-          <Box flexDirection="column">
-            {section('sec-format', 'Writing a rule', 'add field or /redact add')}
-            {row('LABEL: regex', `masks each match as ${notation('LABEL')}: EMPLOYEE_ID: \\be\\d{6}\\b`)}
-            {row('a bare regex', `masks each match as ${notation('SECRET')}`)}
-            {row('LABEL i: regex', 'options go before the colon: i ignores case, min=N needs N characters, strong needs 8+ mixed characters, prose skips "key: some words"')}
-            {row('(?<v>...)', 'masks only the part in group v and leaves the rest: (?<pre>KEY=)(?<v>\\S+)')}
-            {row('by hand', `${FILE} holds pattern, replacement (the label), enabled and name for each rule`)}
-          </Box>
-          <Box flexDirection="column">
-            {section('sec-escape', 'Good to know')}
-            {row('once masked', 'a value keeps its placeholder all session, wherever it shows up again')}
-            {row('env files', 'secret-looking values from .env files where the session starts are masked with no rule (/redact env off)')}
-            {row('forget', 'drops a value: Claude can no longer use its placeholder, and the value, matched again, gets a new number')}
-            {row('unknown', 'a tool call naming a placeholder this session does not hold is refused')}
-            {row(notation('LABEL', ESC), `! after ${OPEN} writes the placeholder as text, without the real value`)}
-            {row('tools', 'every tool gets the real value, web and MCP tools too')}
-            {row('other apps', 'only the terminal shows real values; desktop, VS Code and mobile show placeholders')}
-            {row('From settings', 'the patterns option in settings.json adds rules that are always on')}
-          </Box>
-        </Box>
-      )
-    }
-
     return (
       <Box flexDirection="column" gap={1} width={w}>
-        {topBar()}{tab === 'session' && sessionTab()}{tab === 'rules' && rulesTab()}{tab === 'help' && guideTab()}
+        {topBar()}{tab === 'session' && sessionTab()}{tab === 'rules' && rulesTab()}
         {tab === 'session' && sessionKeys()}{tab === 'rules' && rulesKeys()}
       </Box>
     )
