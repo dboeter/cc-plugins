@@ -1126,27 +1126,44 @@ export const register: Register = (on, options) => {
     // prompt with it: the focus moves to what replaces it. Refused when the pane does not hold it.
     const focusOn = (key: string) => { void $.ui.focus({ requestId: PANE, key }).catch(() => {}) }
     const edit = (patch: Partial<Draft>) => setDraft({ ...DRAFT, ...kept.draft, ...patch })
-    const submitDraft = async () => {
+    // why a draft does not read, a regex error in the words the check line uses
+    const why = (err: unknown) => err instanceof SyntaxError
+      ? `not a valid regex: ${err.message.replace(/^Invalid regular expression: (?:\/.*\/[a-z]*: )?/, '')}`
+      : (err as Error).message
+    // Enter empties the terminal's field, and a redraw with the text it already drew does not put
+    // it back: a refused draft is drawn empty once, then with its text again.
+    const restore = async (key: keyof Draft) => {
+      const d = kept.draft
+      if (!d || typeof d[key] !== 'string' || !d[key]) return
+      setDraft({ ...d, [key]: '' })
+      await $.clock.sleep(30).catch(() => {})
+      if (kept.draft) setDraft({ ...kept.draft, [key]: d[key] })
+    }
+    const submitDraft = async (from?: keyof Draft) => {
       const d = kept.draft ?? DRAFT
-      if (!d.pattern.trim()) return redraw('nothing added: give a pattern')
-      let rule: Rule
-      try { rule = fromDraft(d) } catch (err) { return redraw(`not added: ${(err as Error).message}`) }
-      const said = await addRule($, kept, rule)
+      let said: string
+      if (!d.pattern.trim()) said = 'nothing added: give a pattern'
+      else {
+        let rule: Rule | undefined
+        try { rule = fromDraft(d) } catch (err) { said = `not added: ${why(err)}` }
+        said = rule ? await addRule($, kept, rule) : said!
+      }
       if (!REFUSED.test(said)) { kept.draft = undefined; focusOn('new-rule') }
       redraw(said)
+      if (from && kept.draft) void restore(from)
     }
     // what the draft would mask as, and a line on the pattern: why it does not read, or what it
     // matches in the test sample
     const check = (d: Draft) => {
-      let r: Rule | undefined, why = ''
-      try { r = d.pattern.trim() ? fromDraft(d) : undefined } catch (err) { why = err instanceof SyntaxError ? `not a valid regex: ${err.message.replace(/^Invalid regular expression: \/.*\/[a-z]*: /, '')}` : (err as Error).message }
+      let r: Rule | undefined, no = ''
+      try { r = d.pattern.trim() ? fromDraft(d) : undefined } catch (err) { no = why(err) }
       const as = r?.replacement ?? (d.name.trim() ? toLabel(d.name) : 'SECRET')
-      if (why || !r || !sample) return { as, why, found: '' }
+      if (no || !r || !sample) return { as, why: no, found: '' }
       // masked as the Test section masks, so min, mixed only, skip prose and a v group count
       const tried = fresh()
       mask(sample, tried, compile([r], 'rule'))
       const n = masked(tried).length
-      return { as, why, found: n ? `masks ${count(n, 'value')} in your test sample` : 'masks nothing in your test sample' }
+      return { as, why: no, found: n ? `masks ${count(n, 'value')} in your test sample` : 'masks nothing in your test sample' }
     }
     const opt = (key: string, set: boolean | undefined, text: string, flip: () => void) => (
       <Button key={key} label={text} plain onPress={flip}><Text color={set ? "green" : undefined} dimColor={!set}>{set ? "●" : "○"}</Text> {text}</Button>
@@ -1160,16 +1177,16 @@ export const register: Register = (on, options) => {
       const c = check(draft)
       return (
         <Box flexDirection="column" paddingLeft={2} marginTop={1}>
-          {field('pattern', <Input key="add" value={draft.pattern} placeholder={String.raw`a regex, like \be\d{6}\b`} submitLabel="add" autoFocus onInput={v => edit({ pattern: v })} onSubmit={v => { edit({ pattern: v }); return submitDraft() }} />)}
+          {field('pattern', <Input key="add" value={draft.pattern} placeholder={String.raw`a regex, like \be\d{6}\b`} submitLabel="add" autoFocus onInput={v => edit({ pattern: v })} onSubmit={v => { edit({ pattern: v }); return submitDraft('pattern') }} />)}
           {c.why ? <Box paddingLeft={10}><Text color="warning" wrap="wrap">{c.why}</Text></Box> : c.found ? <Box paddingLeft={10}><Text dimColor>{c.found}</Text></Box> : null}
-          {field('name', <Input key="new-name" value={draft.name} placeholder="like Employee ID (optional)" submitLabel="add" onInput={v => edit({ name: v })} onSubmit={v => { edit({ name: v }); return submitDraft() }} />)}
+          {field('name', <Input key="new-name" value={draft.name} placeholder="like Employee ID (optional)" submitLabel="add" onInput={v => edit({ name: v })} onSubmit={v => { edit({ name: v }); return submitDraft('name') }} />)}
           <Box paddingLeft={10}><Text dimColor>masks as {notation(c.as)}</Text></Box>
           <Box paddingLeft={10} columnGap={2} flexWrap="wrap">
             {opt('new-i', draft.i, 'ignore case', () => edit({ i: !draft.i }))}
             {opt('new-strong', draft.strong, 'mixed characters only', () => edit({ strong: !draft.strong }))}
             {opt('new-prose', draft.prose, 'skip prose', () => edit({ prose: !draft.prose }))}
           </Box>
-          {field('min', <Input key="new-min" value={draft.min} placeholder="shortest length to mask (optional)" submitLabel="add" onInput={v => edit({ min: v })} onSubmit={v => { edit({ min: v }); return submitDraft() }} />)}
+          {field('min', <Input key="new-min" value={draft.min} placeholder="shortest length to mask (optional)" submitLabel="add" onInput={v => edit({ min: v })} onSubmit={v => { edit({ min: v }); return submitDraft('min') }} />)}
           {help && <Box flexDirection="column" marginTop={1}>
             {row('ignore case', 'matches upper and lower case alike')}
             {row('mixed characters only', 'masks only values of 8+ characters that mix letters, digits or symbols')}
@@ -1177,7 +1194,7 @@ export const register: Register = (on, options) => {
             {row('min', 'masks only values this long or longer that are not all lowercase')}
           </Box>}
           <Box columnGap={2} marginTop={1}>
-            <Button key="new-add" label="add rule" variant="primary" onPress={submitDraft} />
+            <Button key="new-add" label="add rule" variant="primary" onPress={() => submitDraft()} />
             <Button key="new-cancel" label="cancel" plain dimColor onPress={() => { disarm(); kept.note = ''; setDraft(undefined); focusOn('new-rule') }} />
           </Box>
         </Box>

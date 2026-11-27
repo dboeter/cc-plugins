@@ -220,7 +220,7 @@ test('min length, mixed characters only and skip prose each set their option; ad
 })
 
 test('a regex that does not compile keeps the form and its text, and says why as you type', async ($, on) => {
-  const { files } = world(on, {}, { [RULES]: file(BARE) })
+  const { files, clock } = world(on, {}, { [RULES]: file(BARE) })
   const m = await rulesTab($)
   await m.press({ key: 'new-rule' })
   await m.input({ key: 'add', text: '(', kind: 'change' })
@@ -228,6 +228,9 @@ test('a regex that does not compile keeps the form and its text, and says why as
   await m.input({ key: 'add', text: '(', kind: 'submit' })
   expect(rulesOfFile(files)).toHaveLength(1)
   expect(await m.find({ text: /^not added/ })).toBeDefined()
+  // drawn empty, as Enter left the terminal's field, then with the text again
+  expect((await m.find({ key: 'add' }))?.props.value).toBe('')
+  await clock.advance(50)
   expect((await m.find({ key: 'add' }))?.props.value).toBe('(')
 })
 
@@ -265,12 +268,13 @@ test('the count follows the switches: it counts what the rule would mask, not wh
 })
 
 test('a duplicate rule or a min length that is no number keeps the form open with its text', async ($, on) => {
-  const { files } = world(on, {}, { [RULES]: file(BARE) })
+  const { files, clock } = world(on, {}, { [RULES]: file(BARE) })
   const m = await rulesTab($)
   await m.press({ key: 'new-rule' })
   await m.input({ key: 'new-name', text: 'First', kind: 'change' }) // its label FIRST, as rule 1 has
   await m.input({ key: 'add', text: 'first_[0-9]+', kind: 'submit' })
   expect(await m.find({ text: /^already there, as rule 1$/ })).toBeDefined()
+  await clock.advance(50)
   expect((await m.find({ key: 'add' }))?.props.value).toBe('first_[0-9]+')
   await m.input({ key: 'new-min', text: 'six', kind: 'change' })
   await m.input({ key: 'add', text: 'zz_[0-9]+', kind: 'submit' })
