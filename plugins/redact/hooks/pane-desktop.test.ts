@@ -108,7 +108,8 @@ test('menu: test the selection opens the pane on Rules with it as the sample', a
   await m.press({ key: 'redact-test' })
   expect(opened).toHaveLength(1)
   const pane = await mount($, { surface: 'desktop' })
-  expect((await pane.find({ key: 'test' }))?.props.value).toBe(`token ${GH} here`)
+  // off the terminal the field is never filled; the line under it shows the sample
+  expect((await pane.find({ key: 'test' }))?.props.value).toBe('')
   expect((await texts(pane)).join('\n')).toContain(`Claude gets: token ${ph('API_KEY')} here`)
 })
 
@@ -300,4 +301,31 @@ test('line ends: a CRLF sample draws as lines, not as �', async ($, on) => {
   const { all } = await testOn($, on, 'one\r\ntwo', {})
   expect(all).toContain('Claude gets: one\ntwo')
   expect(all).not.toContain('�')
+})
+
+// ---- Round 5: formatted first, hidden last; the desktop field never filled
+
+test('desktop: a settings pattern\'s skip reason hides a held value too', { options: { patterns: [`ACME ${'hunter2' + 'isgood'}: x`] } }, async ($, on) => {
+  world(on, TWO, { [RULES]: file(EXAMPLES) })
+  const m = await mount($, { surface: 'desktop' })
+  await m.press({ key: 'tab-rules' })
+  const all = (await texts(m)).join('\n')
+  expect(all).toMatch(/skipped: unknown option/)
+  expect(all).not.toContain(PASS)
+})
+
+test('desktop: a Session heading whose line break draws as ⏎ forms no held value', async ($, on) => {
+  const V = 'tok' + '⏎1234x'
+  world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: V }, by: { [ph('SECRET')]: 'rule: tok\n1234x' } } })
+  expect((await texts(await mount($, { surface: 'desktop' }))).join('\n')).not.toContain(V)
+})
+
+test('/redact test with a vault that cannot be read: a toast, the sample kept, no pane opened', async ($, on) => {
+  world(on, {}, { [RULES]: file(EXAMPLES) }, '/p', undefined, 'unreadable')
+  const opened: any[] = []
+  on('ui.open', (_$: any, e: any) => { opened.push(e); return { value: { isPlaced: true } } as any })
+  const toasts = toasted(on)
+  await $.command.run({ command: 'redact', args: 'test some text' } as any)
+  expect(toasts.at(-1)).toMatch(/^redact: not tested, the vault could not be read/)
+  expect(opened).toHaveLength(0)
 })

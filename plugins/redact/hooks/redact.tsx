@@ -438,7 +438,8 @@ const answer = async ($: EngineInterface, k: Kept, fromSettings: Pattern[], args
     // a toast reaches every surface: the sample and the source drawn with no held value in them
     const { trial, out, hits } = tryOn(rest, h, [...k.compiled, ...fromSettings])
     const warn = inside(out, trial) ? `. ${INSIDE}` : ''
-    return (hits.length ? `→ ${seen(out, trial)} (${hits.map(x => `${x.p} by ${seen(x.by, trial)}`).join(', ')})` : k.compiled.length + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on') + warn
+    // composed whole, then hidden: no text joined after hiding can complete a held value
+    return seen((hits.length ? `→ ${out} (${hits.map(x => `${x.p} by ${x.by}`).join(', ')})` : k.compiled.length + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on') + warn, trial)
   }
   const tab = !rest ? TABS[verb] : undefined
   if (tab) { k.tab = tab; k.note = ''; if (verb === 'help' || verb === 'guide') k.help = true; await $.ui.open({ id: PANE, title: TITLE, focus: true }); k.opened = true; return undefined }
@@ -576,8 +577,10 @@ const pin = async ($: EngineInterface, k: Kept, value: string) => {
       // Changed meanwhile (another value may hold the saved number, so the pick has another):
       // the vault as it is now saved here, clean only if nothing changed it during this save.
       // Failing, it stays dirty, and the next masking saves it before it sends anything.
-      const was = JSON.stringify(h.v.ph)
-      try { h.v.at = await $.clock.now(); await $.store.set(VAULT + h.id, h.v); if (JSON.stringify(h.v.ph) === was) h.dirty = false }
+      // a mint always moves `n`, so a mint and a forget during the save still read as a change
+      const state = () => JSON.stringify([h.v.n, h.v.ph])
+      const was = state()
+      try { h.v.at = await $.clock.now(); await $.store.set(VAULT + h.id, h.v); if (state() === was) h.dirty = false }
       catch { return { h, said: `masked as ${p} for now, but not saved yet: it is saved before anything more is sent to Claude` } }
     }
     return { h, said: `masked as ${p}: this exact text, as a whole word, from now on. Rows already sent to Claude keep it` }
@@ -1222,11 +1225,13 @@ export const register: Register = (on, options) => {
     }
     // A rule with no name is drawn by its regex, and a literal regex is the value itself: off the
     // terminal, rule text is masked by the vault like any other text.
-    const offTerminal = (s: string) => e.surface === 'terminal' ? s : hide(s, held)
+    // Every text the pane draws from rules, sources or samples goes through here as the last step,
+    // after any formatting: off the terminal, no held value is drawn, whatever joined it.
+    const offTerminal = (s: string) => e.surface === 'terminal' ? clean(lf(s)) : seen(s, held)
     const reveal = (p: string) => { kept.revealed.has(p) ? kept.revealed.delete(p) : kept.revealed.add(p); $.ui.invalidate('ui.render') }
     // a long pattern is cut in the middle, so its row keeps the remove button on a narrow terminal
     const pattern = (text: string) => <Box flexShrink={1}><Text wrap="truncate-middle">{offTerminal(text)}</Text></Box>
-    const skip = (f: string | undefined) => f ? <Text color="red"> skipped: {f}</Text> : null
+    const skip = (f: string | undefined) => f ? <Text color="red"> skipped: {offTerminal(f)}</Text> : null
     const broken = rules.filter(fault).length + settings.filter(lineFault).length + (kept.broken ? 1 : 0)
     // a placeholder as the pane writes it, `_n` for its number: no digits, so no restore reads it as
     // one; `open` ESC writes the escaped form
@@ -1235,11 +1240,11 @@ export const register: Register = (on, options) => {
     const lit = kept.compiled.length
     const tried = sample ? tryOn(sample, held, [...kept.compiled, ...fromSettings]) : undefined
     const preview = tried?.out ?? '', hits = tried?.hits ?? []
-    // Off the terminal the field never holds a value the vault does: empty then, the masked sample
-    // shown in the line under it. Masked in the field, an edit next to a placeholder (x⟦…⟧) tested
-    // as still masked where the real text (x and the value) would not be.
-    const drawn = clean(lf(sample))
-    const fieldValue = e.surface === 'terminal' || ![...held.byValue.keys()].some(v => sample.includes(v) || lf(sample).includes(v) || drawn.includes(v)) ? drawn : ''
+    // Off the terminal the field is never filled: the sample shows, hidden, in the line under it.
+    // Filled, the surface draws it its own way (a one-line field joins lines, which can form a held
+    // value), and a placeholder in it, edited beside (x⟦…⟧), tests as masked where the real text
+    // would not be.
+    const fieldValue = e.surface === 'terminal' ? clean(lf(sample)) : ''
     let testField = <Text dimColor>{'  try a sample with /redact test <text>'}</Text>
     const hasInput = e.surface !== 'mobile' // mobile has no Input
     const Input = hasInput ? $.ui.resolve(e).Input : undefined
@@ -1329,7 +1334,7 @@ export const register: Register = (on, options) => {
         {vault.length === 0 && ruleCount > 0 && para('Nothing masked yet.', 'ink')}
         {[...groups].map(([by, xs]) => (
           <Box key={`by-${by}`} flexDirection="column">
-            {section(`src-${by}`, offTerminal(by).replace(/\r\n|\r|\n/g, '⏎'))}
+            {section(`src-${by}`, offTerminal(by.replace(/\r\n|\r|\n/g, '⏎')))}
             {/* one line per value, a revealed one too (its line breaks draw as ⏎): the value shrinks,
                 the placeholder, padded to the widest, and the cursor's actions do not */}
             {xs.map(({ p, v }) => (
@@ -1515,11 +1520,11 @@ export const register: Register = (on, options) => {
             {tip('Shows what Claude gets from your sample with the rules that are on and the values already masked this session. Nothing is saved.')}
             {sample && (
               <Box flexDirection="column">
-                {para(`Claude gets: ${e.surface === 'terminal' ? clean(lf(preview)) : seen(preview, tried!.trial)}`, 'ink')}
+                {para(e.surface === 'terminal' ? clean(lf(`Claude gets: ${preview}`)) : seen(`Claude gets: ${preview}`, tried!.trial), 'ink')}
                 {inside(preview, tried!.trial) && para(INSIDE, 'warning')}
                 {hits.length === 0
                   ? <Text dimColor>    {lit + fromSettings.length ? 'no rule matched' : 'no rule matched: none is on'}</Text>
-                  : hits.map(x => <Text key={x.p} dimColor>    {x.p}  {clean(shown(x.p, x.v).replace(/\r\n|\r|\n/g, '⏎'))} · by {e.surface === 'terminal' ? clean(lf(x.by)) : seen(x.by, tried!.trial)}</Text>)}
+                  : hits.map(x => { const line = `    ${x.p}  ${shown(x.p, x.v).replace(/\r\n|\r|\n/g, '⏎')} · by ${x.by}`; return <Text key={x.p} dimColor>{e.surface === 'terminal' ? clean(lf(line)) : seen(line, tried!.trial)}</Text> })}
               </Box>
             )}
           </Box>
