@@ -61,15 +61,15 @@ On the terminal, `Transcript: [real values] Claude's view` switches what the tra
 
 Press `s` and `r` to switch tabs and `h` to show or hide help. Help adds a line or two of explanation to each section and a reference at the bottom. It is off by default.
 
-A placeholder in the pane ends in `_n`, as in `⟦API_KEY_n⟧`, because the pane shows the label, not a number. Each tab has a cursor (`›`) moved with `j` and `k`, and a key line at the bottom for the row under it. On the terminal, keys work once the pane has focus (click it, or ctrl+x tab). Until then the key line reads `click the pane to use keys`.
+A placeholder in the pane ends in `_n`, as in `⟦API_KEY_n⟧`, because the pane shows the label, not a number. Up and down arrows (or Tab) move through the pane's buttons, and Enter presses one. The `›` marks the row you're on, and the key line at the bottom acts on that row. On the terminal, keys work once the pane has focus (click it, or ctrl+x tab). Until then the key line reads `click the pane to use keys`.
 
-**Session** lists the values masked this session, grouped by the rule or env file that matched them. Each line shows the placeholder, then the value. Other apps show only its length. A value over 40 characters, or with a line break, shows its first 6 and last 4 characters until you press `v`. `x` forgets the value under the cursor, and `forget all` forgets them all. After that, Claude can't use the placeholder. If the value shows up again, it gets a new number. With no rule on, the tab says to press `r` to turn one on. With help on, it explains redact in two sentences and lists what's good to know.
+**Session** lists the values masked this session, grouped by the rule or env file that matched them. Each line shows the placeholder, then the value. Other apps show only its length. A value over 40 characters, or with a line break, shows its first 6 and last 4 characters until you press `v`. `x` or the row's ✗ forgets a value, and `forget all` forgets them all. After that, Claude can't use the placeholder. If the value shows up again, it gets a new number. With no rule on, the tab says to press `r` to turn one on. With help on, it explains redact in two sentences and lists what's good to know.
 
 Claude never reads the pane. Text read off the screen (`tmux capture-pane`) comes back masked, because the vault holds every value the pane shows. A screenshot does not, because images aren't masked.
 
 **Rules** shows four sections:
 
-- Rules (`2 of 3 on`): an `add` field, then your rules by number and name, each with its placeholder and an on/off switch. Press `t` to switch the rule under the cursor. Press `x` (or click its ✗) twice to remove it. With help on, the cursor's row also shows its regex, and the section names your rules file. A rule that doesn't read is marked skipped, with the reason.
+- Rules (`2 of 3 on`): an `add` field, then your rules by number and name, each with its placeholder and an on/off switch. Press `t` or Enter on the switch to turn a rule on or off. Press `x` or its ✗ twice to remove it. With help on, the cursor's row also shows its regex, and the section names your rules file. A rule that doesn't read is marked skipped, with the reason.
 - Test: paste sample text and press Enter to see what Claude gets, with each match and the rule that made it. Nothing is saved. `/redact test <text>` does the same.
 - Env files: the folder whose `.env` files are read, with their switch.
 - From settings: the rules from the `patterns` option. It only shows when that option is set.

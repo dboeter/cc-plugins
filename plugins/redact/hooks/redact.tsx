@@ -839,6 +839,19 @@ export const register: Register = (on, options) => {
   // the engine's guess at the next prompt, in the box: submitted, it is masked again
   on('prompt.suggest', async ($, e, next) => drawn(e.text) ? next({ ...e, text: restore(e.text, await hold($, kept)) }) : next(e))
 
+  // The pane's one cursor is the engine's focus ring, which the arrows and Tab walk: the row cursor
+  // (›) and the key line follow it onto a row's buttons, and stay put on any other stop (a tab).
+  on('ui.focus', { component: 'Pane', requestId: PANE }, ($, e, next) => {
+    const k = e.element ?? ''
+    const p = /^(?:pick|forget)-(.+)$/.exec(k)?.[1]
+    const i = /^(?:turn|remove)-(\d+)$/.exec(k)?.[1]
+    if (p !== undefined && p !== kept.cursor) kept.cursor = p
+    else if (i !== undefined && +i !== kept.ruleAt) { kept.ruleAt = +i; if (kept.arm !== undefined && !kept.arm.startsWith(`${i}:`)) { kept.arm = undefined; kept.note = '' } }
+    else return next(e)
+    $.ui.invalidate('ui.render')
+    return next(e)
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     await sync($, kept)
     const file = await place($, kept)
@@ -878,9 +891,12 @@ export const register: Register = (on, options) => {
     // key line show then, a hint to click otherwise. Elsewhere the key line's buttons are pressed.
     const focused = e.surface !== 'terminal' || e.props.isFocused === true
     // a tab's keys as one line at its foot, so no row carries a key prefix that moves its switch
+    const arrows = e.surface === 'terminal'
     const keyLine = (k: string, buttons: unknown[], hint: string, right?: unknown) => (
       <Box key={k} justifyContent="space-between" paddingLeft={2} columnGap={2}>
-        {focused ? <Box columnGap={2}>{buttons as any}</Box> : <Text dimColor>click the pane to use keys: {hint}</Text>}
+        {focused
+          ? <Box columnGap={2}>{arrows && <Text dimColor>↑↓ move</Text>}{buttons as any}</Box>
+          : <Text dimColor>click the pane to use keys: ↑↓ move, {hint}</Text>}
         {right ? <Box flexShrink={0}>{right as any}</Box> : null}
       </Box>
     )
@@ -925,8 +941,8 @@ export const register: Register = (on, options) => {
     }
     // a rule's or the env files' on/off button: green when on, dim when off or the rule is skipped
     // `active`, not `on`: the hook loader refuses a name that shadows on()
-    const toggle = (key: string, active: boolean, label: string, onPress: () => void, faulty?: string) => (
-      <Button key={key} label={label} plain onPress={onPress}><Text color={active && !faulty ? 'green' : undefined} dimColor={!active || !!faulty}>{active ? '● on' : '○ off'}</Text></Button>
+    const toggle = (key: string, active: boolean, label: string, onPress: () => void, faulty?: string, autoFocus?: boolean) => (
+      <Button key={key} label={label} plain autoFocus={autoFocus || undefined} onPress={onPress}><Text color={active && !faulty ? 'green' : undefined} dimColor={!active || !!faulty}>{active ? '● on' : '○ off'}</Text></Button>
     )
 
     // indented by padding, not leading spaces, so a line that wraps keeps its indent
@@ -977,24 +993,22 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    // The values under the rule or file that masked each, in the vault's order, which the row cursor
-    // walks. Only the cursor's row draws its actions, so no row carries a column of ✗.
+    // The values under the rule or file that masked each, in the vault's order: the order the row
+    // cursor (›) follows the focus ring through.
     const groups = new Map<string, typeof vault>()
     for (const x of vault) groups.set(x.by, [...groups.get(x.by) ?? [], x])
     const order = [...groups.values()].flat()
     const at = Math.max(0, order.findIndex(x => x.p === kept.cursor))
     const cur = order[at]?.p
     const aim = (p: string | undefined) => { kept.cursor = p; $.ui.invalidate('ui.render') }
-    const step = (d: 1 | -1) => aim(order[Math.min(order.length - 1, Math.max(0, at + d))]?.p)
     const pw = Math.max(0, ...vault.map(x => len(x.p)))
-    const forgetCur = async (p: string) => { kept.cursor = (order[at + 1] ?? order[at - 1])?.p; redraw(await forget($, kept, p)) }
+    // the cursor goes on to the row after the forgotten one, wherever the cursor was
+    const forgetCur = async (p: string) => { const i = order.findIndex(x => x.p === p); kept.cursor = (order[i + 1] ?? order[i - 1])?.p; redraw(await forget($, kept, p)) }
     const curValue = order[at]?.v
     const sessionKeys = () => vault.length > 0 && keyLine('session-keys', [
-      <Button key="cdown" label="↓" hotkey="j" plain dimColor onPress={() => step(1)} />,
-      <Button key="cup" label="↑" hotkey="k" plain dimColor onPress={() => step(-1)} />,
       curValue !== undefined && long(curValue) && <Button key="cur-reveal" label={kept.revealed.has(cur!) ? 'hide' : 'reveal'} hotkey="v" plain dimColor onPress={() => reveal(cur!)} />,
       <Button key="cur-forget" label="forget" hotkey="x" plain dimColor onPress={() => cur && forgetCur(cur)} />,
-    ].filter(Boolean), 'j/k move, x forget',
+    ].filter(Boolean), 'x forget',
     vault.length > 1 && <Button key="forget-all" label="forget all" plain dimColor onPress={async () => redraw(await forgetAll($, kept))} />)
     const sessionTab = () => (
       <Box flexDirection="column">
@@ -1017,15 +1031,14 @@ export const register: Register = (on, options) => {
               <Box key={p} justifyContent="space-between" columnGap={2}>
                 <Box flexShrink={1}>
                   <Text>{focused && p === cur ? '› ' : '  '}</Text>
-                  <Box flexShrink={0}><Button key={`pick-${p}`} label={p} plain onPress={() => aim(p)} /></Box>
+                  <Box flexShrink={0}><Button key={`pick-${p}`} label={p} plain autoFocus={p === cur || undefined} onPress={() => aim(p)} /></Box>
                   <Box flexShrink={1}><Text wrap="truncate-end">{' '.repeat(pw - len(p) + 2)}{shown(p, v).replace(/\r\n|\r|\n/g, '⏎')}</Text></Box>
                 </Box>
-                {p === cur && (
-                  <Box flexShrink={0} columnGap={2}>
-                    {long(v) && <Button key={`reveal-${p}`} label={kept.revealed.has(p) ? 'hide' : 'reveal'} plain dimColor onPress={() => reveal(p)} />}
-                    <Button key={`forget-${p}`} label="forget" plain dimColor onPress={() => forgetCur(p)} />
-                  </Box>
-                )}
+                {/* on every row, as a rule's ✗ is: the arrows walk the ring in document order, and
+                    buttons that came and went with the cursor made each step land somewhere new */}
+                <Box flexShrink={0}>
+                  <Button key={`forget-${p}`} label="forget" plain onPress={() => forgetCur(p)}><Text dimColor>✗</Text></Button>
+                </Box>
               </Box>
             ))}
           </Box>
@@ -1058,12 +1071,9 @@ export const register: Register = (on, options) => {
       redraw(await remove($, kept, `${i + 1}`))
     }
     const rulesKeys = () => rules.length > 0 && keyLine('rules-keys', [
-      <Button key="rdown" label="↓" hotkey="j" plain dimColor onPress={() => aimRule(ruleAt + 1)} />,
-      <Button key="rup" label="↑" hotkey="k" plain dimColor onPress={() => aimRule(ruleAt - 1)} />,
       <Button key="rule-turn" label="on/off" hotkey="t" plain dimColor onPress={() => turnRule(ruleAt)} />,
       <Button key="rule-remove" label={kept.arm === armOf(ruleAt) ? 'remove?' : 'remove'} hotkey="x" plain dimColor onPress={() => removeRule(ruleAt)} />,
-    ], 'j/k move, t on/off, x remove')
-    const aimRule = (i: number) => { kept.ruleAt = Math.min(Math.max(0, i), rules.length - 1); disarm(); $.ui.invalidate('ui.render') }
+    ], 't on/off, x remove')
 
     // Awaited here, as the return below calls it sync: the folder the env files are read in
     // (seedHere's fallback), ~ for the home folder; a failed read drops it from the Env files line.
@@ -1091,7 +1101,7 @@ export const register: Register = (on, options) => {
                   <Box justifyContent="space-between" columnGap={1}>
                     <Box flexShrink={1}><Text>{atRow ? '› ' : '  '}</Text>{name ? <Box flexShrink={1}><Text wrap="truncate-end">{`${i + 1}. ${offTerminal(name)}`}</Text></Box> : pattern(`${i + 1}. ${src}`)}{label(r)}{skip(f)}</Box>
                     <Box flexShrink={0} columnGap={1}>
-                      {toggle(`turn-${i}`, enabled, enabled ? 'turn off' : 'turn on', () => turnRule(i), f)}
+                      {toggle(`turn-${i}`, enabled, enabled ? 'turn off' : 'turn on', () => turnRule(i), f, i === ruleAt)}
                       <Button key={`remove-${i}`} label="remove" plain onPress={() => removeRule(i)}>
                         {armed ? <Text color="warning">✗ remove?</Text> : <Text dimColor>✗</Text>}
                       </Button>

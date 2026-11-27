@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import { EXAMPLES } from './redact'
-import { RULES, file, mount, world } from './pane-helpers'
+import { RULES, file, mount, ring, world } from './pane-helpers'
 
 // The rules tab: what is on comes first, a rule shows the placeholder it writes, and the env
 // files line names the folder they are read in.
@@ -35,7 +35,7 @@ test("a named rule's regex shows under the cursor's row only, with help on", asy
   expect(await regexes()).toEqual([])
   await m.press({ key: 'help' })
   expect(await regexes()).toEqual(['aa_[0-9]+'])
-  await m.press({ key: 'rdown' })
+  await ring($, 'turn-1')
   expect(await regexes()).toEqual(['bb_[0-9]+'])
   await m.unmount()
   expect(await (await mount($, { isFocused: false })).findAll({ type: 'Text', text: /^ +(aa|bb)_/ })).toEqual([])
@@ -98,26 +98,28 @@ test('the pane leaves the last column free: a header ends there, and the right-a
   expect((await m.findAll({ type: 'Box' }))[0]?.props.width).toBe(79)
 })
 
-test('j and k walk a cursor over the rules; t and x on the key line act on its row, x twice; no row has a key', async ($, on) => {
+test('the cursor follows the focus ring onto a rule\'s switch or ✗; t and x on the key line act on its row, x twice; no j or k', async ($, on) => {
   const { files } = world(on, {}, { [RULES]: file(EXAMPLES) })
   const m = await rulesTab($)
   const hotkeys = async () => Object.fromEntries((await m.findAll({ type: 'Button' })).filter((x: any) => x.props.hotkey && !/^tab-|^raw$|^help$/.test(x.props.key)).map((x: any) => [x.props.hotkey, x.props.key]))
-  expect(await hotkeys()).toEqual({ j: 'rdown', k: 'rup', t: 'rule-turn', x: 'rule-remove' })
+  expect(await hotkeys()).toEqual({ t: 'rule-turn', x: 'rule-remove' })
+  expect((await m.find({ key: 'turn-0' }))?.props.autoFocus).toBe(true)
   const marked = async () => (await m.findAll({ type: 'Text', text: '› ' })).length
   expect(await marked()).toBe(1)
-  await m.press({ key: 'rdown' })
-  await m.press({ key: 'rdown' }) // stops at the last
+  await ring($, 'remove-1')
+  await ring($, 'help') // a stop that is no row leaves the cursor where it was
   await m.press({ key: 'rule-turn' })
   expect(JSON.parse(files.get(RULES)!).rules.map((r: any) => r.enabled)).toEqual([false, true])
   await m.press({ key: 'rule-remove' })
   expect(await m.find({ text: /^✗ remove\?$/ })).toBeDefined()
   expect((await m.find({ key: 'rule-remove' }))?.props.label).toBe('remove?')
-  await m.press({ key: 'rup' }) // moving disarms it
+  await ring($, 'turn-0') // moving disarms it
   expect(await m.find({ text: /^✗ remove\?$/ })).toBeUndefined()
   expect(await m.find({ text: /press ✗ again/ })).toBeUndefined()
   await m.press({ key: 'remove-1' }) // a click arms that row and puts the cursor on it
   await m.press({ key: 'rule-remove' })
   expect(JSON.parse(files.get(RULES)!).rules.map((r: any) => r.name)).toEqual([EXAMPLES[0]!.name])
+  expect(await marked()).toBe(1)
 })
 
 test('unfocused, the pane draws no cursor and swaps the key line for a hint to click', async ($, on) => {
@@ -125,8 +127,8 @@ test('unfocused, the pane draws no cursor and swaps the key line for a hint to c
   const m = await mount($, { isFocused: false })
   await m.press({ key: 'tab-rules' })
   expect(await m.find({ type: 'Text', text: '› ' })).toBeUndefined()
-  expect(await m.find({ key: 'rdown' })).toBeUndefined()
-  expect(await m.find({ text: /^click the pane to use keys: j\/k move, t on\/off, x remove$/ })).toBeDefined()
+  expect(await m.find({ key: 'rule-turn' })).toBeUndefined()
+  expect(await m.find({ text: /^click the pane to use keys: ↑↓ move, t on\/off, x remove$/ })).toBeDefined()
 })
 
 test('the open tab is bold and underlined, the others dim', async ($, on) => {
@@ -177,7 +179,7 @@ test('off the terminal the key line\'s buttons and the cursor show, never the cl
   world(on, {}, { [RULES]: file(EXAMPLES) })
   const m = await mount($, { surface: 'desktop', isFocused: false })
   await m.press({ key: 'tab-rules' })
-  expect(await m.find({ key: 'rdown' })).toBeDefined()
+  expect(await m.find({ key: 'rule-turn' })).toBeDefined()
   expect(await m.find({ type: 'Text', text: '› ' })).toBeDefined()
   expect(await m.find({ text: /click to focus/ })).toBeUndefined()
 })
