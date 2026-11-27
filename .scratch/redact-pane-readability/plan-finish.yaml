@@ -1,0 +1,37 @@
+# Finishes run 20261029-165909 of plan.yaml: its region branches are merged on branch redact-pane-readability, with the
+# session-review findings fixed by hand (f024726). Run from that branch's worktree.
+name: redact-pane-readability-finish
+max_parallel: 1
+test: tsc -p plugins && claude plugin test plugins/redact
+nodes:
+  - id: integrate
+    agent: claude
+    timeout: 2400
+    prompt: |
+      Four branches each reworked one region of the /redact pane in plugins/redact/hooks/redact.tsx (topBar,
+      sessionTab, rulesTab, guideTab) and added plugins/redact/hooks/pane-*.test.ts. Merge leftovers to check:
+      helpers duplicated across the new test files (move shared ones into one plugins/redact/hooks/pane-helpers.ts
+      if three or more files copy the same helper), the placeholder notation `⟦LABEL_n⟧` built the same way in
+      every region, the same wording for "on"/"masked" across the status line, tab labels and section headers, and
+      red used only for errors anywhere in the pane. Remove imports or variables the branches orphaned.
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Done when `tsc -p plugins && claude plugin test plugins/redact` passes.
+
+  - id: docs
+    agent: claude
+    timeout: 1200
+    depends_on: [integrate]
+    test: ""
+    prompt: |
+      Update plugins/redact/README.md, section `## Use` (the paragraph starting "No `/redact` command enters the
+      conversation" and the three pane bullets after it), to describe the pane as it is now in
+      plugins/redact/hooks/redact.tsx's Pane render handler: the title, the status line, the core-model line, tab
+      labels, the `show:` draw toggle, the one-line session rows, the rules tab order (Rules, Env files, From
+      settings, Test), the `→ ⟦LABEL_n⟧` notation and the Guide's How it works section. Read the code; describe
+      current state only, no changelog wording. Write placeholders in the README with a letter for the number
+      (`⟦API_KEY_n⟧`), as the rest of the file does. Change nothing outside that section.
+
+  - id: check
+    agent: shell
+    depends_on: [docs]
+    prompt: tsc -p plugins && claude plugin test plugins/redact

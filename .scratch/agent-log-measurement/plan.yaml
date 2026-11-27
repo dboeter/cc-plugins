@@ -1,0 +1,179 @@
+# All 8 tickets edit plugins/agent-log/hooks/agent-log.tsx, so parallel branches are grouped by the code region
+# they touch and every node writes its tests to its own new test file. Chains:
+#   store:  01 eviction -> 02 session totals -> 03 unusual median   (evictOne, the store, turn.complete ~l.1539-1544, setup page)
+#   split:  05 subagent waits -> 06 AskUserQuestion/ExitPlanMode     (splitOf body only)
+#   call:   07 who decided -> 04 tool row time                       (tool.call handler ~l.1140, the inspector)
+#   then integrate, review, then 08 (touches splitOf and turn.complete, both chains' regions), then the shell check.
+name: agent-log-measurement
+max_parallel: 3
+nodes:
+  - id: t01-split-survives-full-log
+    agent: claude
+    timeout: 3600
+    prompt: |
+      Implement the ticket in .scratch/agent-log-measurement/issues/01-turn-split-survives-a-full-log.md (read it first; its
+      checklist is the done-condition).
+      Code: plugins/agent-log/hooks/agent-log.tsx. The split is computed by splitOf (~line 641) and stored on main's turn row
+      in the turn.complete handler (~line 1539, `y.split = splitOf(...)`). Rows are evicted by evictOne (~line 967) and the
+      byte-budget loop (~line 861). The bug: a running turn's debug-ranked rows (text-less model requests, hooks that changed
+      nothing) are evicted by their own push before turn.complete computes the split, so their time lands in "other".
+      Fix it at the root (e.g. accumulate the running turn's spans as rows are pushed, or never evict the running turn's rows
+      before its split is taken); keep turns stored before this change drawing.
+      Constraints: do not change splitOf's body or the median/prior list passed to unusualOf on the line after the split;
+      other tasks edit those. Put your tests in a NEW file plugins/agent-log/hooks/split-evict.test.ts, modelled on the
+      imports and helpers in hooks/agent-log.test.ts; do not edit agent-log.test.ts except to fix a test your change
+      legitimately breaks. Match the file's terse style and comment density.
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Check: `tsc -p plugins && claude plugin test plugins/agent-log` passes. Tick the ticket's checkboxes you satisfied.
+
+  - id: t02-session-totals
+    agent: claude
+    timeout: 3600
+    depends_on: [t01-split-survives-full-log]
+    prompt: |
+      Implement the ticket in .scratch/agent-log-measurement/issues/02-setup-totals-cover-the-whole-session.md (read it first;
+      its checklist is the done-condition).
+      Code: plugins/agent-log/hooks/agent-log.tsx. Setup page "Model use this session" (~line 2171) and the problems list
+      (~line 2162, collected near line 989) recount from surviving rows on every draw; the turn.complete handler (~line 1544)
+      builds unusualOf's `prior` from surviving turn rows. Keep running totals and the kept turn times with the session's
+      store entry (see `key`, ~line 314, and the save/load code), so hot reload and resume keep them. Decide whether
+      `/agentlog clear` resets them and say which in plugins/agent-log/README.md. Stores written before this change fall
+      back to counting rows.
+      Constraints: do not change splitOf or unusualOf's body. Tests in a NEW file
+      plugins/agent-log/hooks/session-totals.test.ts, modelled on hooks/agent-log.test.ts.
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Check: `tsc -p plugins && claude plugin test plugins/agent-log` passes. Tick the ticket's checkboxes you satisfied.
+
+  - id: t03-you-never-unusual
+    agent: claude
+    timeout: 2400
+    depends_on: [t02-session-totals]
+    prompt: |
+      Implement the ticket in .scratch/agent-log-measurement/issues/03-your-time-never-makes-a-turn-unusual.md (read it first;
+      its checklist is the done-condition).
+      Code: unusualOf in plugins/agent-log/hooks/agent-log.tsx (~line 662) and its caller in the turn.complete handler
+      (~line 1544), whose `prior` now comes from the session's kept turn times. Compare the turn's time minus its "you" part
+      (SPLIT index 0) against the median of earlier turns' times minus their "you" parts from their stored splits; a turn
+      with no stored split counts whole; the 10 s floor applies to the time without "you". If the kept turn times lack the
+      split, keep what is needed to subtract "you".
+      Constraints: do not change splitOf. Tests in a NEW file plugins/agent-log/hooks/unusual-you.test.ts (the ticket's
+      repro must be one); existing unusual-turn tests in hooks/agent-log.test.ts must still pass.
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Check: `tsc -p plugins && claude plugin test plugins/agent-log` passes. Tick the ticket's checkboxes you satisfied.
+
+  - id: t05-subagent-waits
+    agent: claude
+    timeout: 2400
+    prompt: |
+      Implement the ticket in .scratch/agent-log-measurement/issues/05-subagent-waits-count-as-you-permission-hooks.md (read
+      it first; its checklist is the done-condition).
+      Code: splitOf in plugins/agent-log/hooks/agent-log.tsx (~line 641). Today `if (x.agent) continue` drops every subagent
+      row, so a foreground Agent call's whole span counts as agents. Inside a foreground Agent call's span, a subagent's
+      permission waits (you / permission) and hook runs (hooks) must outrank agents, as main's own do. Background agents
+      (their Agent call returns at once) add nothing. Work out from the code how a subagent row links to its Agent call
+      (see `child`, `started`, loopOf) before choosing the test.
+      Constraints: edit only splitOf and, if needed, a small helper next to it. Do not change splitOf's signature or its
+      callers (other tasks edit the turn.complete handler and the setup page). Tests in a NEW file
+      plugins/agent-log/hooks/split-subagent.test.ts, modelled on hooks/agent-log.test.ts.
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Check: `tsc -p plugins && claude plugin test plugins/agent-log` passes. Tick the ticket's checkboxes you satisfied.
+
+  - id: t06-question-plan-wait
+    agent: claude
+    timeout: 2400
+    depends_on: [t05-subagent-waits]
+    prompt: |
+      Work the ticket in .scratch/agent-log-measurement/issues/06-answering-a-question-or-approving-a-plan-counts-as-you.md
+      (read it first). Its premise is unverified: first find, in the raw event log the event-log plugin writes (see
+      plugins/event-log/README.md for where), an AskUserQuestion and an ExitPlanMode call and record in the ticket where the
+      person's answer time sits relative to the call's span (quote timestamps). If it is not inside the call's run, write
+      that evidence into the ticket, set its Status to closed, and change no code.
+      If it is inside: in splitOf (plugins/agent-log/hooks/agent-log.tsx, ~line 641) count that span as "you" (SPLIT index
+      0), for main and for a foreground subagent the same way splitOf already handles subagent permission waits. Edit only
+      splitOf and helpers next to it. Tests in a NEW file plugins/agent-log/hooks/split-asked.test.ts, including the
+      ticket's 5 s model + 60 s AskUserQuestion turn not noted unusual (unusualOf).
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Check: `tsc -p plugins && claude plugin test plugins/agent-log` passes.
+
+  - id: t07-who-decided
+    agent: claude
+    timeout: 2400
+    prompt: |
+      Implement the ticket in .scratch/agent-log-measurement/issues/07-who-decided-agrees-with-the-wait-in-auto-mode.md (read
+      it first; its checklist is the done-condition).
+      Code: plugins/agent-log/hooks/agent-log.tsx. The wait's name is set in the tool.call handler (~line 1144, `waitFor`,
+      STREAMING vs 'the auto-mode classifier'); the inspector's decided-by line reads VIA (~line 399) at ~line 1643. Make
+      both use one reading: a wait explained by main's message ending is not the classifier's; a refusal matching
+      CLASSIFIED (~line 401) stays the classifier's. If the collector's records show whether a classifier side request ran,
+      use that; else the inspector says the decider is unknown.
+      Constraints: do not touch splitOf, unusualOf or the turn.complete handler. Tests in a NEW file
+      plugins/agent-log/hooks/decided-by.test.ts, modelled on hooks/agent-log.test.ts.
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Check: `tsc -p plugins && claude plugin test plugins/agent-log` passes. Tick the ticket's checkboxes you satisfied.
+
+  - id: t04-tool-row-time
+    agent: claude
+    timeout: 2400
+    depends_on: [t07-who-decided]
+    prompt: |
+      Implement the ticket in .scratch/agent-log-measurement/issues/04-a-tool-rows-time-is-the-call-alone.md (read it first;
+      its checklist is the done-condition).
+      Code: plugins/agent-log/hooks/agent-log.tsx, the tool.call handler (~line 1100-1200) where a call's `ms` and `wait` are
+      set, and the inspector's "took" line. PreToolUse and PostToolUse hook runs happen inside the call's span; leave their
+      chain time out of the tool row's `ms`, as the permission wait already is, and make the inspector say what "took"
+      covers or show the hooks' time beside it. The turn split must stay the same: splitOf (~line 641) ranks hooks above
+      tools; check that a shorter tool `ms` does not open a gap that falls to "other" (hooks still cover it).
+      Constraints: do not edit splitOf, unusualOf or the turn.complete handler. Check the README example (an Edit beside a
+      slower lint-feedback) in plugins/agent-log/README.md still holds; fix the README if needed. Tests in a NEW file
+      plugins/agent-log/hooks/tool-time.test.ts.
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Check: `tsc -p plugins && claude plugin test plugins/agent-log` passes. Tick the ticket's checkboxes you satisfied.
+
+  - id: integrate
+    agent: claude
+    timeout: 2400
+    depends_on: [t03-you-never-unusual, t06-question-plan-wait, t04-tool-row-time]
+    prompt: |
+      Three branches of work on plugins/agent-log were merged here: eviction-safe turn splits and session totals (tickets
+      01-03), subagent and question waits in splitOf (05-06), and decided-by plus tool row time (07, 04). Tickets are in
+      .scratch/agent-log-measurement/issues/. Run `tsc -p plugins && claude plugin test plugins/agent-log`, fix any
+      mismatch between the branches (e.g. a test that assumed the other branch's old behaviour), and make sure
+      plugins/agent-log/README.md describes the current behaviour once, without contradictions. Fix only real mismatches;
+      do not refactor. Done when both commands pass.
+
+  - id: review
+    agent: claude
+    timeout: 2400
+    depends_on: [integrate]
+    prompt: |
+      Review the changes on this branch since it left main: `git diff $(git merge-base HEAD main)` (plugins/agent-log only;
+      ignore .scratch/ except the tickets). The intent is in .scratch/agent-log-measurement/issues/01-07*.md: read each
+      ticket's checklist and check the diff meets it. Look for: a checklist item claimed but not done; wrong time
+      accounting in splitOf, unusualOf or the stored split (double counting, gaps falling to "other", subagent or
+      background-agent time counted wrongly); old stored sessions/turns that no longer load or draw; tests that pass
+      without checking the ticket's behaviour; README statements the code contradicts.
+      Fix every real defect you find, with a test where it is behaviour, and keep fixes minimal: no refactors or style
+      churn. Write your findings and what you fixed to .scratch/agent-log-measurement/review.md, one line per finding
+      (file:line, defect, fixed or not and why). Batch independent Read/Bash calls into one response.
+      Check: `tsc -p plugins && claude plugin test plugins/agent-log` passes.
+
+  - id: t08-time-before-submit
+    agent: claude
+    timeout: 2400
+    depends_on: [review]
+    prompt: |
+      Implement the ticket in .scratch/agent-log-measurement/issues/08-name-the-time-before-the-prompt-was-submitted.md (read
+      it first; its checklist is the done-condition).
+      Code: plugins/agent-log/hooks/agent-log.tsx: SPLIT (~line 638), splitOf, the turn.complete handler that stores the
+      split, the keys page's description of "other", and plugins/agent-log/README.md. Measure the time from the engine's
+      turn start to the prompt submit agent-log sees (do not infer it), then either show it as its own split part or make
+      "other"'s description cover it; keys page and README must agree. Prefer the description change unless measuring it
+      makes a separate part cheap. Turns stored before this change must still draw.
+      Tests in a NEW file plugins/agent-log/hooks/pre-submit.test.ts (a turn whose duration starts 2 s before its submit).
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Check: `tsc -p plugins && claude plugin test plugins/agent-log` passes. Tick the ticket's checkboxes you satisfied.
+
+  - id: check
+    agent: shell
+    depends_on: [t08-time-before-submit]
+    prompt: tsc -p plugins && claude plugin test plugins/agent-log && claude plugin validate plugins/agent-log

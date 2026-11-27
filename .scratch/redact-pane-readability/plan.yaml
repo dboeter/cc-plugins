@@ -1,0 +1,202 @@
+# Readability fixes for the /redact pane (the 17 findings of the 2026-10-29 review). Everything lives in the Pane
+# ui.render handler of plugins/redact/hooks/redact.tsx, so `split` first cuts it into one function per region; the four
+# region nodes then edit disjoint functions in parallel. Each region node may fix only the existing pane tests in
+# redact.test.ts that assert on its own region and puts new tests in its own new file, to keep merges clean.
+# The README's pane docs are rewritten once, after integrate, from the merged code.
+name: redact-pane-readability
+max_parallel: 4
+test: tsc -p plugins && claude plugin test plugins/redact
+nodes:
+  - id: split
+    agent: claude
+    timeout: 2400
+    prompt: |
+      Refactor only, no visible change except the pane title. File: plugins/redact/hooks/redact.tsx, the
+      `on('ui.render', { component: 'Pane', requestId: PANE }, ...)` handler (~line 832 to the end of the file).
+      1. Cut the returned JSX into four local functions defined inside the handler, each returning the JSX it replaces,
+         separated by a blank line and in this order: `topBar()` (tab buttons, the draw switch and the note line),
+         `sessionTab()`, `rulesTab()`, `guideTab()`. The return becomes
+         `<Box flexDirection="column" gap={1}>{topBar()}{tab === 'session' && sessionTab()}...</Box>`.
+         Keep the shared helpers (section, redraw, shown, long, reveal, pattern, skip, label, counts) above them.
+      2. Extract a `toggle(key, on, label, onPress, faulty?)` helper for the on/off button that is written out twice
+         (a rule's `turn-${i}` button and the `env` button), drawing `● on` green / `○ off` dim exactly as today.
+         Keep every Button `key` and `label` unchanged: tests find buttons by them.
+      3. The note's colour is decided by the regex `/^(not added|not saved|nothing added|already|no such)/`, written
+         twice in topBar. Define it once as a named constant next to the action helpers (`turn`, `add`, `remove`,
+         ~line 351) that produce those messages, with a one-line comment saying it lists their refusal prefixes. Do
+         not change the helpers' return types.
+      4. Rename the pane title: `const TITLE = 'Redact rules'` (~line 244) becomes `'redact'`, as the pane opens on
+         the session tab. Update `PROPS.title` in plugins/redact/hooks/redact.test.ts to match.
+      Match the file's terse style and comment density.
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Done when `tsc -p plugins && claude plugin test plugins/redact` passes with no other test edited.
+
+  - id: split-review
+    agent: codex
+    reviews: split
+    max_rounds: 2
+    prompt: |
+      Assume this refactor changed behaviour until you have shown otherwise. Compare the old and new Pane render
+      line by line: every Button key, label, hotkey, colour and dimColor; every conditional (vault.length > 1,
+      e.surface checks, sample, kept.broken, mobile without Input); the order of rows. The toggle helper must keep the
+      skipped-rule case dim and uncoloured. Only redact.tsx and PROPS.title in redact.test.ts may change.
+
+  - id: top
+    agent: claude
+    timeout: 2400
+    depends_on: [split]
+    prompt: |
+      File: plugins/redact/hooks/redact.tsx, Pane render handler. Edit only the `topBar()` function and helpers it
+      alone uses. Goal: a reader knows within seconds whether masking is on and what the pane shows.
+      1. Status line, first line of the pane on every tab. When something masks (rules from the file that are on,
+         `kept.compiled.length`, plus settings patterns, `fromSettings.length`, plus env files when
+         `kept.envOn !== false`): green `● masking: <n> rules + env files · <m> values hidden from the model`
+         (drop the parts that are zero/off; m is the vault size). When nothing masks: warning colour
+         `○ nothing is masked: turn on a rule (r)`. Ensure text fits narrow panes (wrap or truncate-end).
+      2. Below the tabs, one dim line with the core model: `the model sees ⟦LABEL_n⟧ · your tools get the real value`
+         (build the brackets from the file's OPEN/CLOSE constants, not literals, if such constants exist).
+      3. Tab labels: keep `This session (<n>)`; change `Rules (<n> on)` to plain `Rules` since the status line now
+         carries the count (one number for "on", not two different ones).
+      4. The error marker `✗ <n> skipped` becomes `⚠ <n> rules invalid` (red). Red is for errors only.
+      5. Draw switch (terminal only): replace `terminal draws: ... [switch]` with a two-state toggle reading
+         `show: real values · placeholders` where the active state is bold/undimmed and the other dim, hotkey `d`
+         unchanged, Button key `raw` unchanged.
+      Fix existing tests in plugins/redact/hooks/redact.test.ts only where they assert on the top bar's old text
+      (e.g. `/1 skipped/`); change nothing else there. Add tests for 1, 3, 4 and 5 in a NEW file
+      plugins/redact/hooks/pane-top.test.ts, modelled on redact.test.ts's imports and its `mount`/`world` helpers
+      (copy the helpers you need; do not export from redact.test.ts).
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Done when `tsc -p plugins && claude plugin test plugins/redact` passes.
+
+  - id: top-review
+    agent: codex
+    reviews: top
+    max_rounds: 2
+    prompt: |
+      Assume the status line lies until shown otherwise. Try: no rules on and env files off (must warn); no rules on
+      but env files on (must not warn); only a settings pattern on; a broken rules file (kept.broken); rules on but
+      every one faulty; mobile and desktop surfaces (no draw switch, no values); a 30-column pane. Check the tests
+      would fail if the warn/ok branch were inverted. Only topBar() and its own helpers in redact.tsx, the top-bar
+      assertions in redact.test.ts, and the new pane-top.test.ts may change.
+
+  - id: session
+    agent: claude
+    timeout: 2400
+    depends_on: [split]
+    prompt: |
+      File: plugins/redact/hooks/redact.tsx. Edit only `sessionTab()` in the Pane render handler and the `masked`
+      helper (~line 472). Goal: each vault entry reads as a mapping on one line.
+      1. Row layout: `<placeholder>  →  <shown value>   <source>   ✗` on one line; the source (the rule name or env
+         file, today's second line `masked by <by>`) moves into a dim column on the same line and the second line
+         goes. The reveal ▸/▾ button stays. On a narrow pane the value truncates before the source and ✗ do.
+      2. Remove the always-on sentence "forget drops one from the vault: a call naming it is refused, and the value
+         masks under a new number" (another node moves it to the Guide). Above the rows show only a dim hint
+         `✗ forgets a value`.
+      3. Remove the `This session ... <n> masked` section header (the tab label already carries the count); keep the
+         `✗ all` button (key `forget-all`), on the hint line, right-aligned.
+      4. Red only for errors: the per-row forget ✗ and `✗ all` become dim, not red. Keys `forget-${p}` unchanged.
+      5. In `masked`, the fallback `'not recorded (masked before redact kept it)'` becomes `'rule unknown'`.
+      6. Empty state: when nothing masks (no file rule on, no settings pattern, env files off) show
+         `nothing masked: no rule is on (r)`; otherwise keep `nothing masked yet`.
+      Fix existing tests in plugins/redact/hooks/redact.test.ts only where they assert on the session tab's old text;
+      change nothing else there. Add tests for 1, 3, 5 and 6 in a NEW file plugins/redact/hooks/pane-session.test.ts,
+      modelled on redact.test.ts's imports and helpers (copy what you need).
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Done when `tsc -p plugins && claude plugin test plugins/redact` passes.
+
+  - id: session-review
+    agent: codex
+    reviews: session
+    max_rounds: 2
+    prompt: |
+      Assume the new session row breaks on some input until shown otherwise. Try: a multi-line private key
+      (revealed and not), a value over 40 chars, a 30-column pane, a mobile/desktop surface (length only, never the
+      value), an entry with no recorded rule, one vault entry (no ✗ all) and many. A value must never show on a
+      non-terminal surface. Check tests assert the one-line layout, not just that text exists somewhere. Only
+      sessionTab(), masked, the session assertions in redact.test.ts and pane-session.test.ts may change.
+
+  - id: rules
+    agent: claude
+    timeout: 2400
+    depends_on: [split]
+    prompt: |
+      File: plugins/redact/hooks/redact.tsx. Edit only `rulesTab()` in the Pane render handler and the `label`
+      helper it uses. Goal: a reader landing on the tab sees what is on first.
+      1. Order: Rules (file rules with the add field), Env files, From settings, then Test last.
+      2. A rule's replacement shows in placeholder notation: `1. Vendor tokens → ⟦API_KEY_n⟧` instead of
+         `as API_KEY` (build brackets from the file's OPEN/CLOSE constants if present). Same for settings rows.
+      3. Env files description becomes `secret-looking values from .env files in <cwd>`, with <cwd> the folder the
+         session started in (find where the env seeding reads it; shorten with ~ for the home folder).
+      4. Section counts name their source so they can't be mistaken for one total: Rules `<a> of <b> on`,
+         From settings `<n> set` / `none`, Env files `on` / `off` (keep as is where already so).
+      5. Red only for errors: the remove ✗ (key `remove-${i}`) and the Test clear ✗ (key `clear-test`) become dim;
+         `skipped: <reason>` and the broken-file line stay red.
+      Keep every Button key and label. Fix existing tests in plugins/redact/hooks/redact.test.ts only where they
+      assert on the rules tab's old text (e.g. ` as ` labels, section order); change nothing else there. Add tests
+      for 1, 2 and 3 in a NEW file plugins/redact/hooks/pane-rules.test.ts, modelled on redact.test.ts's imports and
+      helpers (copy what you need).
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Done when `tsc -p plugins && claude plugin test plugins/redact` passes.
+
+  - id: rules-review
+    agent: codex
+    reviews: rules
+    max_rounds: 2
+    prompt: |
+      Assume the rules tab misreports a rule until shown otherwise. Try: a faulty rule (no `→` label, red reason), a
+      rule without name, a rule with a 200-char regex on a 30-column pane (✗ and toggle must stay visible), zero
+      rules, a broken rules file, mobile (no Input fields), a cwd under and outside the home folder. Check the order
+      test would fail if Test moved back to the top. Only rulesTab(), label, the rules assertions in redact.test.ts
+      and pane-rules.test.ts may change.
+
+  - id: guide
+    agent: claude
+    timeout: 1800
+    depends_on: [split]
+    prompt: |
+      File: plugins/redact/hooks/redact.tsx. Edit only `guideTab()` in the Pane render handler.
+      1. Open with a `How it works` section of three lines: your text → placeholders (⟦LABEL_n⟧) before the model
+         sees it; tool calls get the real values back before they run; the vault (real values) stays on this
+         machine. Build brackets from the file's OPEN/CLOSE constants if present.
+      2. Contrast: in every key/description row, the key column (`pattern`, `replacement`, `once matched`, ...) is
+         normal weight and undimmed; only the description is dim. Keep the column alignment.
+      3. Add a `forget` row under `Placeholders & escaping`: forgetting drops a value from the vault; a call naming
+         its placeholder is refused, and the value, matched again, masks under a new number.
+      Fix existing tests in plugins/redact/hooks/redact.test.ts only if they assert on the guide's text. Add one test
+      in a NEW file plugins/redact/hooks/pane-guide.test.ts checking the How it works section comes first and the
+      forget row is present, modelled on redact.test.ts's imports and helpers.
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Done when `tsc -p plugins && claude plugin test plugins/redact` passes.
+
+  - id: integrate
+    agent: claude
+    timeout: 2400
+    depends_on: [top, session, rules, guide]
+    prompt: |
+      Four branches each reworked one region of the /redact pane in plugins/redact/hooks/redact.tsx (topBar,
+      sessionTab, rulesTab, guideTab) and added plugins/redact/hooks/pane-*.test.ts. Merge leftovers to check:
+      helpers duplicated across the new test files (move shared ones into one plugins/redact/hooks/pane-helpers.ts
+      if three or more files copy the same helper), the placeholder notation `⟦LABEL_n⟧` built the same way in
+      every region, the same wording for "on"/"masked" across the status line, tab labels and section headers, and
+      red used only for errors anywhere in the pane. Remove imports or variables the branches orphaned.
+      Do exactly what is asked, existing helper/stdlib first, no unrequested deps, no speculative abstraction.
+      Done when `tsc -p plugins && claude plugin test plugins/redact` passes.
+
+  - id: docs
+    agent: claude
+    timeout: 1200
+    depends_on: [integrate]
+    test: ""
+    prompt: |
+      Update plugins/redact/README.md, section `## Use` (the paragraph starting "No `/redact` command enters the
+      conversation" and the three pane bullets after it), to describe the pane as it is now in
+      plugins/redact/hooks/redact.tsx's Pane render handler: the title, the status line, the core-model line, tab
+      labels, the `show:` draw toggle, the one-line session rows, the rules tab order (Rules, Env files, From
+      settings, Test), the `→ ⟦LABEL_n⟧` notation and the Guide's How it works section. Read the code; describe
+      current state only, no changelog wording. Write placeholders in the README with a letter for the number
+      (`⟦API_KEY_n⟧`), as the rest of the file does. Change nothing outside that section.
+
+  - id: check
+    agent: shell
+    depends_on: [docs]
+    prompt: tsc -p plugins && claude plugin test plugins/redact
