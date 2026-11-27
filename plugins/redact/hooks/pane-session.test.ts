@@ -56,6 +56,8 @@ test('the cursor follows the focus ring as the arrows move it; x on the key line
   expect(await at(m)).toBe(ph('API_KEY'))
   await ring($, `forget-${ph('EMAIL', 2)}`) // a row's ✗ is on its row too
   expect(await at(m)).toBe(ph('EMAIL', 2))
+  await ring($, 'forget-all') // the key line's forget all is no row: x still forgets the row you were on
+  expect(await at(m)).toBe(ph('EMAIL', 2))
   await m.press({ key: 'cur-forget' })
   expect(Object.keys((store.get('vault:s1') as any).ph)).toEqual([ph('EMAIL'), ph('API_KEY')])
   expect(await at(m)).toBe(ph('API_KEY')) // the cursor goes on to the next row

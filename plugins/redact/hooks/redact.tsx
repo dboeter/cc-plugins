@@ -871,7 +871,7 @@ export const register: Register = (on, options) => {
   // (›) and the key line follow it onto a row's buttons, and stay put on any other stop (a tab).
   on('ui.focus', { component: 'Pane', requestId: PANE }, ($, e, next) => {
     const k = e.element ?? ''
-    const p = /^(?:pick|forget)-(.+)$/.exec(k)?.[1]
+    const p = /^(?:pick|forget)-(⟦.+)$/.exec(k)?.[1]
     const i = /^(?:turn|remove)-(\d+)$/.exec(k)?.[1]
     if (p !== undefined && p !== kept.cursor) kept.cursor = p
     else if (i !== undefined && +i !== kept.ruleAt) { kept.ruleAt = +i; if (kept.arm !== undefined && !kept.arm.startsWith(`${i}:`)) { kept.arm = undefined; kept.note = '' } }
