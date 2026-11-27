@@ -435,7 +435,8 @@ const answer = async ($: EngineInterface, k: Kept, fromSettings: Pattern[], args
     await sync($, k)
     // read first: unread, nothing is changed and the pane is not opened
     let h: Held
-    try { h = await hold($, k) } catch (err) { return { text: `not tested, the vault could not be read (${(err as Error)?.message ?? err})`, vault: fresh() } }
+    // fixed words: the store's error could carry anything, and there is no vault to hide it with
+    try { h = await hold($, k) } catch { return { text: 'not tested, the vault could not be read', vault: fresh() } }
     k.tab = 'rules'; k.note = ''; k.sample = rest
     await $.ui.open({ id: PANE, title: TITLE, focus: true }); k.opened = true
     $.ui.invalidate('ui.render')
@@ -884,9 +885,13 @@ export const register: Register = (on, options) => {
     if (!reply) return {}
     // A toast reaches every surface: the whole line composed, its prefix too, then hidden once.
     // With no vault to hide it with, the reply is not shown: it can echo rule text (a regex error).
+    // The test's trial with the live vault as it is now: a value added since the preview is hidden too.
     const text = `redact: ${typeof reply === 'string' ? reply : reply.text}`
-    const vault = typeof reply === 'string' ? await hold($, kept).catch(() => undefined) : reply.vault
-    told($, vault ? seen(text, vault) : 'redact: done, but its reply is not shown, as the vault could not be read to hide values in it')
+    const live = await hold($, kept).catch(() => undefined)
+    const vault = typeof reply === 'string' ? live : live ? { ...reply.vault, byValue: new Map([...reply.vault.byValue, ...live.byValue]) } : reply.vault
+    // whether it took effect is known from the reply's fixed opening, which names no value
+    const lead = typeof reply === 'string' && (REFUSED.test(reply) || reply.startsWith('usage:')) ? 'not done' : 'done'
+    told($, vault ? seen(text, vault) : `redact: ${lead}, but its reply is not shown, as the vault could not be read to hide values in it`)
     return {}
   })
 

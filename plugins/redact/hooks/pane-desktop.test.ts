@@ -376,5 +376,13 @@ test('with a vault that cannot be read, a /redact reply that could echo rule tex
   const toasts = toasted(on)
   await $.command.run({ command: 'redact', args: `add ${PASS}(` } as any)
   expect(toasts.at(-1)).not.toContain(PASS)
-  expect(toasts.at(-1)).toMatch(/reply is not shown/)
+  // refused (the regex does not compile), so not done: the fixed opening says it, no rule text
+  expect(toasts.at(-1)).toMatch(/^redact: not done, but its reply is not shown/)
+})
+
+test('/redact test with an unreadable vault names no part of the store\'s error', async ($, on) => {
+  world(on, {}, { [RULES]: file(EXAMPLES) }, '/p', undefined, `read failed near ${'hunter2' + 'isgood'}`)
+  const toasts = toasted(on)
+  await $.command.run({ command: 'redact', args: 'test some text' } as any)
+  expect(toasts.at(-1)).toBe('redact: not tested, the vault could not be read')
 })
