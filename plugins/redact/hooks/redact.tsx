@@ -509,10 +509,12 @@ const forgetAll = async ($: EngineInterface, k: Kept) => {
   return `forgot ${n}. Claude can no longer use ${n === 1 ? 'it' : 'them'}`
 }
 // Text the person picked to mask, as the desktop's right-click menu hands it: trimmed, and only
-// what a rule could have masked (a letter or digit, no placeholder in it). Undefined otherwise.
+// what a rule could have masked (a letter or digit, no placeholder in it). 4 characters at least:
+// a picked value masks as a whole word all session, so a slip onto `a` or `the` would hide that
+// word everywhere. Undefined otherwise.
 const pickable = (s: string | undefined) => {
   const v = s?.trim()
-  return v && ALNUM.test(v) && !v.includes(OPEN) ? v : undefined
+  return v && v.length >= 4 && ALNUM.test(v) && !v.includes(OPEN) ? v : undefined
 }
 // Masks `value` from now on under SECRET, as a rule's match is. Only text recorded after this:
 // rows are masked as they are recorded (session.append), so the ones already sent keep it.
@@ -1042,8 +1044,8 @@ export const register: Register = (on, options) => {
 
   // The desktop's right-click menu on selected text: test it against the rules in the pane, or
   // mask it from now on. Sync and cheap, as the menu may open before a slow answer: the vault is
-  // read in the press. The selection is what the desktop drew, placeholders and all, so a value
-  // there is one Claude has seen; masking it keeps it out of what is recorded next.
+  // read in the press. A selection in the transcript is what the desktop drew, placeholders and
+  // all, so a value there has been recorded; masking it keeps it out of what is recorded next.
   on('ui.render', { component: 'ContextMenu' }, ($, e, next) => {
     const sel = e.props.selection?.text
     if (!sel?.trim()) return next(e)
@@ -1123,7 +1125,8 @@ export const register: Register = (on, options) => {
       </Button>
     )
     // On the terminal hotkeys answer only while the pane holds the keyboard: the row cursor and the
-    // key line show then, a hint to click otherwise. Elsewhere the key line's buttons are pressed.
+    // key line show then, a hint to click otherwise. Mobile and VS Code press the key line's buttons;
+    // the desktop draws none (desk, above).
     const focused = e.surface !== 'terminal' || e.props.isFocused === true
     // a tab's keys as one line at its foot, so no row carries a key prefix that moves its switch
     const arrows = e.surface === 'terminal'
@@ -1194,9 +1197,9 @@ export const register: Register = (on, options) => {
     const help = kept.help === true
     const tip = (text: string) => help && para(text)
     // a term at normal weight in a 16-column field, its meaning dim beside it, wrapping in its column
-    const row = (k: string, d: string) => (
+    const row = (k: string, d: string) => desk ? <Box key={k}><Text wrap="wrap">{k} <Text dimColor>{d}</Text></Text></Box> : (
       <Box key={k}>
-        {desk ? <Box flexShrink={0} width={16}><Text>{k}</Text></Box> : <Box flexShrink={0}><Text>{`  ${k.padEnd(14)}`}</Text></Box>}
+        <Box flexShrink={0}><Text>{`  ${k.padEnd(14)}`}</Text></Box>
         <Box flexShrink={1}><Text dimColor wrap="wrap">{d}</Text></Box>
       </Box>
     )
@@ -1248,7 +1251,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column" marginBottom={1}>
             {section('sec-how', 'How redact works')}
             {para(`redact swaps what your rules match for placeholders like ${notation('API_KEY')} before Claude sees it. Claude's tools still get the real value. Real values stay in a file on this machine.`, 'ink')}
-            {para('To start, turn on a rule in Rules (r) and paste a sample under Test to check it. Values show up here once something matches.', 'ink')}
+            {para(`To start, turn on a rule in Rules${desk ? '' : ' (r)'} and paste a sample under Test to check it. Values show up here once something matches.`, 'ink')}
           </Box>
         )}
         {/* keyed on no rule, as a fresh install has env files on and may hold values from them */}

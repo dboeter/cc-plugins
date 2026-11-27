@@ -80,7 +80,7 @@ Other apps show rule text masked like any other text. The mobile app has no inpu
 
 - **Widget**: minimized, the pane shows a glance: whether redact is on, how many values are masked, and how many rules are on. It has no buttons and shows no value or rule text.
 - **Beside the message box**: a chip reads `● redact` in green while something masks, and `⚠ redact off` (or what is broken) as a warning. It is the terminal's status line for the desktop app, which has none. It takes no clicks, so open the pane with `/redact`.
-- **Right-click on selected text**: `Test in redact` opens the pane on Rules with the selection as the Test sample. `Mask with redact` masks that exact text as `⟦SECRET_n⟧` from now on, as if a rule had matched it. Rows already sent to Claude keep it, as rows are masked when they are recorded. It is not offered for a selection with a placeholder in it, or with no letter or digit.
+- **Right-click on selected text**: `Test in redact` opens the pane on Rules with the selection as the Test sample. `Mask with redact` masks that exact text as `⟦SECRET_n⟧` from now on, as if a rule had matched it. Rows already sent to Claude keep it, as rows are masked when they are recorded. It is not offered for a selection under 4 characters, with a placeholder in it, or with no letter or digit: a picked value masks as a whole word all session, so a slip onto `the` would hide that word everywhere.
 
 From the prompt, `/redact test <text>`, `/redact add <rule>`, `/redact remove <n|name>`, `/redact on <n|name>`, `/redact off <n|name>` and `/redact env on|off` answer in a toast. Name a rule by its number, its `name` or its pattern. If a `/redact` line reaches the conversation anyway, redact empties its arguments in every row sent to Claude.
 

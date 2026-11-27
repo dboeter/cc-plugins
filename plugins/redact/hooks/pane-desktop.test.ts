@@ -44,6 +44,16 @@ test('desktop: no row cursor, no key line and no key hints; each row keeps its o
   expect(await texts(m)).not.toContain('› ')
 })
 
+test('desktop: help names no key either, on either tab', async ($, on) => {
+  world(on, TWO, { [RULES]: file(EXAMPLES) })
+  const m = await mount($, { surface: 'desktop' })
+  await m.press({ key: 'help' })
+  for (const tab of ['tab-session', 'tab-rules']) {
+    await m.press({ key: tab })
+    expect((await texts(m)).filter(t => /↑↓|click the pane|\([a-z]\)|[Pp]ress [a-z]\b/.test(t))).toEqual([])
+  }
+})
+
 test('desktop: the status says what masks without a key to press', async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) })
   const m = await mount($, { surface: 'desktop' })
@@ -124,9 +134,9 @@ test('menu: a value already masked is not masked twice', async ($, on) => {
   expect(toasts.at(-1)).toMatch(/already masked/)
 })
 
-test('menu: no mask row for a placeholder, a selection with one, or one with no letter or digit', async ($, on) => {
+test('menu: no mask row for a placeholder, a selection with one, one with no letter or digit, or one under 4 characters', async ($, on) => {
   world(on, TWO)
-  for (const text of [ph('API_KEY'), `key ${ph('API_KEY')} and more`, '...', '  '])
+  for (const text of [ph('API_KEY'), `key ${ph('API_KEY')} and more`, '...', '  ', 'the', ' a '])
     expect(await (await menu($, { selection: { text } })).find({ key: 'redact-mask' })).toBeUndefined()
 })
 
