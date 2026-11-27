@@ -95,6 +95,7 @@ const read = (line: string): Rule => {
   return r
 }
 // The pane's new rule form: the one-line form's parts, one control each. `min` as typed.
+// A switch left alone is undefined, so what a pasted line sets stands; set, it wins either way.
 type Draft = { pattern: string; name: string; min: string; i?: boolean; strong?: boolean; prose?: boolean }
 const DRAFT: Draft = { pattern: '', name: '', min: '' }
 // a name as a label (Employee ID → EMPLOYEE_ID), SECRET when none can start with a letter
@@ -109,9 +110,10 @@ const fromDraft = (d: Draft): Rule => {
   const r = read(d.pattern.trim())
   const name = d.name.trim(), min = d.min.trim()
   if (name) { r.name = name; r.replacement = toLabel(name) }
-  if (d.i) r.ignoreCase = true
-  if (d.strong) r.strong = true
-  if (d.prose) r.prose = true
+  for (const [k, o] of [['i', 'ignoreCase'], ['strong', 'strong'], ['prose', 'prose']] as const) {
+    if (d[k] === true) r[o] = true
+    else if (d[k] === false) delete r[o]
+  }
   if (min && !/^\d+$/.test(min)) throw new Error('min length is not a whole number')
   if (min) r.min = Number(min)
   spec(r)
@@ -1166,7 +1168,7 @@ export const register: Register = (on, options) => {
       return { as, why: no, found: n ? `masks ${count(n, 'value')} in your test sample` : 'masks nothing in your test sample' }
     }
     const opt = (key: string, set: boolean | undefined, text: string, flip: () => void) => (
-      <Button key={key} label={text} plain onPress={flip}><Text color={set ? "green" : undefined} dimColor={!set}>{set ? "●" : "○"}</Text> {text}</Button>
+      <Button key={key} label={`${text} ${set ? 'on' : 'off'}`} plain onPress={flip}><Text color={set ? "green" : undefined} dimColor={!set}>{set ? "●" : "○"}</Text> {text}</Button>
     )
     const field = (label: string, input: unknown) => (
       <Box columnGap={1}><Box width={9} flexShrink={0}><Text dimColor>{label}</Text></Box><Box flexGrow={1} flexShrink={1}>{input as any}</Box></Box>
@@ -1175,6 +1177,10 @@ export const register: Register = (on, options) => {
       if (!Input) return <Text dimColor>{'  add one with /redact add LABEL: regex'}</Text>
       if (!draft) return <Box paddingLeft={2}><Button key="new-rule" label="new rule" hotkey="a" plain dimColor onPress={() => { disarm(); setDraft({ ...DRAFT }); focusOn('add') }} /></Box>
       const c = check(draft)
+      // each switch as the rule would have it: set in the form, else as a pasted line has it
+      let pasted: Rule | undefined
+      try { pasted = read(draft.pattern.trim()) } catch {}
+      const sw = { i: draft.i ?? !!pasted?.ignoreCase, strong: draft.strong ?? !!pasted?.strong, prose: draft.prose ?? !!pasted?.prose }
       return (
         <Box flexDirection="column" paddingLeft={2} marginTop={1}>
           {field('pattern', <Input key="add" value={draft.pattern} placeholder={String.raw`a regex, like \be\d{6}\b`} submitLabel="add" autoFocus onInput={v => edit({ pattern: v })} onSubmit={v => { edit({ pattern: v }); return submitDraft('pattern') }} />)}
@@ -1182,9 +1188,9 @@ export const register: Register = (on, options) => {
           {field('name', <Input key="new-name" value={draft.name} placeholder="like Employee ID (optional)" submitLabel="add" onInput={v => edit({ name: v })} onSubmit={v => { edit({ name: v }); return submitDraft('name') }} />)}
           <Box paddingLeft={10}><Text dimColor>masks as {notation(c.as)}</Text></Box>
           <Box paddingLeft={10} columnGap={2} flexWrap="wrap">
-            {opt('new-i', draft.i, 'ignore case', () => edit({ i: !draft.i }))}
-            {opt('new-strong', draft.strong, 'mixed characters only', () => edit({ strong: !draft.strong }))}
-            {opt('new-prose', draft.prose, 'skip prose', () => edit({ prose: !draft.prose }))}
+            {opt('new-i', sw.i, 'ignore case', () => edit({ i: !sw.i }))}
+            {opt('new-strong', sw.strong, 'mixed characters only', () => edit({ strong: !sw.strong }))}
+            {opt('new-prose', sw.prose, 'skip prose', () => edit({ prose: !sw.prose }))}
           </Box>
           {field('min', <Input key="new-min" value={draft.min} placeholder="shortest length to mask (optional)" submitLabel="add" onInput={v => edit({ min: v })} onSubmit={v => { edit({ min: v }); return submitDraft('min') }} />)}
           {help && <Box flexDirection="column" marginTop={1}>

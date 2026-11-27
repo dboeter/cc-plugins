@@ -247,6 +247,19 @@ test('a pasted one-line rule still reads; a typed name and switches win over it'
   expect(rulesOfFile(files).at(-1)).toEqual({ name: 'Mine', pattern: 'zz_[0-9]+', replacement: 'MINE', enabled: true, ignoreCase: true })
 })
 
+test('a switch shows what a pasted line sets, and turning it off takes the option off', async ($, on) => {
+  const { files } = world(on, {}, { [RULES]: file(BARE) })
+  const m = await rulesTab($)
+  await m.press({ key: 'new-rule' })
+  await m.input({ key: 'add', text: String.raw`ACME strong prose: acme_\w+`, kind: 'change' })
+  const state = async () => (await Promise.all(['new-i', 'new-strong', 'new-prose'].map(k => m.find({ key: k })))).map(b => b?.props.label)
+  expect(await state()).toEqual(['ignore case off', 'mixed characters only on', 'skip prose on'])
+  await m.press({ key: 'new-strong' })
+  expect(await state()).toEqual(['ignore case off', 'mixed characters only off', 'skip prose on'])
+  await m.input({ key: 'add', text: String.raw`ACME strong prose: acme_\w+`, kind: 'submit' })
+  expect(rulesOfFile(files).at(-1)).toEqual({ pattern: String.raw`acme_\w+`, replacement: 'ACME', enabled: true, prose: true })
+})
+
 test('the form counts what the pattern matches in the test sample', async ($, on) => {
   world(on, {}, { [RULES]: file(BARE) })
   const m = await rulesTab($)
