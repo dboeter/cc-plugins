@@ -937,8 +937,10 @@ export const register: Register = (on, options) => {
     const ruleCount = lit + fromSettings.length
     const envOn = kept.envOn !== false
     const masking = [ruleCount ? `what ${count(ruleCount, 'rule')} ${ruleCount === 1 ? 'matches' : 'match'}` : '', envOn ? 'env file values' : ''].filter(Boolean)
+    // A fresh install has env files on and no rule: say so, so the green line does not read as
+    // everything covered.
     const status = masking.length
-      ? <Text color="green" wrap="wrap">● On: masking {masking.join(', and ')}</Text>
+      ? <Text color="green" wrap="wrap">● On: masking {masking.join(', and ')}{ruleCount ? '' : ' only. No rule is on yet (r).'}</Text>
       : <Text color="warning" wrap="wrap">○ Off: no rule is on. Turn one on in Rules (r).</Text>
     // The draw switch's two states, the one drawn now bracketed and bold, the other dim and padded to
     // the same width, so a flip moves nothing. It switches the transcript, not this pane: named so.
@@ -985,28 +987,31 @@ export const register: Register = (on, options) => {
     ].filter(Boolean), 'j/k move, x forget',
     vault.length > 1 && <Button key="forget-all" label="forget all" plain dimColor onPress={async () => redraw(await forgetAll($, kept))} />)
     // what the left and right columns mean, said once above them and in the empty states
-    const contract = `Claude sees the placeholder (${notation('LABEL')}); commands Claude runs get the real value.`
+    // "tools", not "commands": WebFetch, WebSearch and MCP tools get the real value too (README)
+    const contract = `Claude sees the placeholder (${notation('LABEL')}); Claude's tools get the real value.`
     const sessionTab = () => (
       <Box flexDirection="column">
-        {vault.length === 0 && !masking.length && (
-          // first run: what redact is, then the steps to turn it on, as the Guide's Getting started has them
-          <Box flexDirection="column" gap={1}>
-            {para(`redact swaps secrets for placeholders like ${notation('API_KEY')} before Claude sees them. Commands Claude runs still get the real value.`, 'ink')}
+        {ruleCount === 0 && (
+          // First run, keyed on no rule (a fresh install has env files on, and may have values from
+          // them): what redact is, then the steps to turn a rule on, as Help's Getting started has them.
+          <Box flexDirection="column" gap={1} marginBottom={vault.length ? 1 : 0}>
+            {para(`redact swaps secrets for placeholders like ${notation('API_KEY')} before Claude sees them. Claude's tools still get the real value.`, 'ink')}
             <Box flexDirection="column">
               {para('To start:', 'ink')}
-              {para('1. Press r for Rules, then turn on an example or add a rule of your own.')}
-              {para('2. Paste sample text under Test there to see what gets masked.')}
+              {para('1. Open Rules (r) and turn on an example, or add a rule of your own.')}
+              {para('2. Paste sample text under Test, on that tab, to see what gets masked.')}
               {para('3. Values masked in this session then show up here.')}
             </Box>
           </Box>
         )}
-        {vault.length === 0 && masking.length > 0 && (
+        {vault.length === 0 && ruleCount > 0 && (
           <Box flexDirection="column">
             {para('Nothing masked yet. Values your rules match show up here once Claude would have seen them.', 'ink')}
             {para(contract)}
           </Box>
         )}
-        {vault.length > 0 && <Box marginBottom={1}>{para(contract)}</Box>}
+        {/* the intro above already says it while no rule is on */}
+        {vault.length > 0 && ruleCount > 0 && <Box marginBottom={1}>{para(contract)}</Box>}
         {[...groups].map(([by, xs]) => (
           <Box key={`by-${by}`} flexDirection="column">
             {section(`src-${by}`, offTerminal(by).replace(/\r\n|\r|\n/g, '⏎'))}
@@ -1136,7 +1141,7 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" gap={1}>
           <Box flexDirection="column">
             {section('sec-how', 'What redact does')}
-            {para(`Before anything reaches Claude, redact swaps each value your rules match for a placeholder like ${notation('API_KEY')}. When Claude runs a command, the real value goes back in, so the command still works. Real values are kept on this machine only.`, 'ink')}
+            {para(`Before anything reaches Claude, redact swaps each value your rules match for a placeholder like ${notation('API_KEY')}. When Claude uses a tool, the real value goes back in, so commands, edits and web calls still work. Real values are stored on this machine.`, 'ink')}
           </Box>
           <Box flexDirection="column">
             {section('sec-start', 'Getting started')}

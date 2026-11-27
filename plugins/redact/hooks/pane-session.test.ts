@@ -1,5 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import { DAY, RULES, file, mount, world } from './pane-helpers'
+import { EXAMPLES } from './redact'
 
 // The pane's Session tab: one line per vault entry under its source, the row cursor, and its empty states.
 // Fixtures split as in redact.test.ts, so no literal is secret-shaped.
@@ -103,9 +104,9 @@ test('a value with no recorded rule sits under rule unknown', async ($, on) => {
   expect(await (await mount($)).find({ text: /^rule unknown$/ })).toBeDefined()
 })
 
-test('empty, the tab says what Claude sees and what commands get', async ($, on) => {
-  world(on)
-  expect(await (await mount($)).find({ text: /^Claude sees the placeholder \(⟦LABEL_n⟧\); commands Claude runs get the real value\.$/ })).toBeDefined()
+test('empty with a rule on, the tab says what Claude sees and what its tools get', async ($, on) => {
+  world(on, {}, { [RULES]: file([{ pattern: 'zz_[0-9]+', replacement: 'ZZ' }]) })
+  expect(await (await mount($)).find({ text: /^Claude sees the placeholder \(⟦LABEL_n⟧\); Claude's tools get the real value\.$/ })).toBeDefined()
 })
 
 test('empty, with no file rule, no settings pattern and env files off: what redact is, then the steps to start', async ($, on) => {
@@ -114,8 +115,8 @@ test('empty, with no file rule, no settings pattern and env files off: what reda
   expect(await m.find({ text: /^redact swaps secrets for placeholders like ⟦API_KEY_n⟧ before Claude sees them/ })).toBeDefined()
   const steps = (await m.findAll({ type: 'Text', text: /^[123]\. / })).map((x: any) => x.text)
   expect(steps).toEqual([
-    '1. Press r for Rules, then turn on an example or add a rule of your own.',
-    '2. Paste sample text under Test there to see what gets masked.',
+    '1. Open Rules (r) and turn on an example, or add a rule of your own.',
+    '2. Paste sample text under Test, on that tab, to see what gets masked.',
     '3. Values masked in this session then show up here.',
   ])
 })
@@ -136,9 +137,9 @@ test('empty, with a file rule on: nothing masked yet', async ($, on) => {
   expect(await yet($)).toEqual([true, false])
 })
 
-test('empty, with env files on: nothing masked yet', async ($, on) => {
+test('empty, with env files on but no rule: the steps to start, not nothing masked yet', async ($, on) => {
   world(on, {}, { [RULES]: file([]) })
-  expect(await yet($)).toEqual([true, false])
+  expect(await yet($)).toEqual([false, true])
 })
 
 test('a source with a line break draws in its header as ⏎', async ($, on) => {
@@ -166,4 +167,27 @@ for (const surface of ['mobile', 'desktop'] as const)
 test('the terminal shows a rule\'s text as written', async ($, on) => {
   world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: LIT }, by: { [ph('SECRET')]: `rule: ${LIT}` } } })
   expect(await (await mount($)).find({ text: new RegExp(`^rule: ${LIT}$`) })).toBeDefined()
+})
+
+// A fresh install: the two examples off, env files on (no envFiles key), as a new user meets it.
+test('fresh install, nothing masked yet: what redact is and the steps to start, the status saying no rule is on', async ($, on) => {
+  world(on, {}, { [RULES]: file(EXAMPLES) })
+  const m = await mount($)
+  expect(await m.find({ text: /^To start:$/ })).toBeDefined()
+  expect(await m.find({ text: /^1\. Open Rules \(r\) and turn on an example, or add a rule of your own\.$/ })).toBeDefined()
+  expect((await m.findAll({ type: 'Text' })).find((t: any) => /^[●○] /.test(t.text))?.text).toBe('● On: masking env file values only. No rule is on yet (r).')
+})
+
+test('fresh install with env values seeded: the values, and the steps to start still above them', async ($, on) => {
+  world(on, TWO, { [RULES]: file(EXAMPLES) })
+  const m = await mount($)
+  expect(await m.find({ text: /^To start:$/ })).toBeDefined()
+  expect(await m.find({ type: 'Button', props: { label: ph('API_KEY') } })).toBeDefined()
+})
+
+test('the lines that say where real values go name tools, not commands', async ($, on) => {
+  world(on, {}, { [RULES]: file(EXAMPLES) })
+  const m = await mount($)
+  expect(await m.find({ text: /^redact swaps secrets for placeholders like ⟦API_KEY_n⟧ before Claude sees them\. Claude's tools still get the real value\.$/ })).toBeDefined()
+  expect(await m.find({ text: /commands Claude runs/i })).toBeUndefined()
 })

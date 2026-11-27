@@ -36,13 +36,11 @@ test('with no rule on and the env files off, the status line says it is off and 
   expect(top.props).toMatchObject({ color: 'warning', wrap: 'wrap' })
 })
 
-test('with no rule on but the env files on, the status line says on, no warning', async ($, on) => {
+test('with no rule on but the env files on, the status line says on, and that no rule is on yet', async ($, on) => {
   world(on, {}, { [RULES]: file(EXAMPLES) })
-  const m = await mount($)
-  const top = await statusText(m)
-  expect(top.text).toBe('● On: masking env file values')
+  const top = await statusText(await mount($))
+  expect(top.text).toBe('● On: masking env file values only. No rule is on yet (r).')
   expect(top.props).toMatchObject({ color: 'green' })
-  expect(await m.find({ text: /no rule is on/ })).toBeUndefined()
 })
 
 test('rules turned on that all fail to read count as none on: the status line warns, the marker counts them', async ($, on) => {
