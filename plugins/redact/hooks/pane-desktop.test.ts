@@ -233,3 +233,35 @@ test('chip: a broken rules file says so as a warning', async ($, on) => {
   world(on, {}, { [RULES]: '{ not json' })
   expect((await (await chip($, 'desktop')).find({ type: 'Text', text: /rules broken/ }))?.props.color).toBe('warning')
 })
+
+// ---- Round 3: no value the vault holds is drawn off the terminal, however it stands in a sample
+
+const testOn = async ($: any, on: any, sample: string, entries: Record<string, unknown> = TWO) => {
+  world(on, entries, { [RULES]: file(EXAMPLES, { envFiles: false }) })
+  on('ui.open', () => ({ value: { isPlaced: true } }) as any)
+  await (await menu($, { selection: { text: sample } })).press({ key: 'redact-test' })
+  const m = await mount($, { surface: 'desktop' })
+  return { m, all: (await texts(m)).join('\n'), field: (await m.find({ key: 'test' }))?.props.value }
+}
+
+test('a held value inside a word: hidden in the field and the preview, and a warning that Claude gets it as is', async ($, on) => {
+  const { all, field } = await testOn($, on, `tok_${PASS}`)
+  expect(field).toBe('')
+  expect(all).not.toContain(PASS)
+  expect(all).toContain(`Claude gets: tok_${ph('SECRET')}`)
+  expect(all).toMatch(/Claude gets it as it is/)
+})
+
+test('a held placeholder beside its raw value: the new match still counts', async ($, on) => {
+  const { all } = await testOn($, on, `${ph('SECRET')} then ${PASS}`)
+  expect(all).toContain('1 matched')
+})
+
+test('a control character inside a held value is drawn as a mark, never joining the value', async ($, on) => {
+  const V = 'demo' + '-4242x'
+  const held = { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: V } } }
+  const { all, field } = await testOn($, on, 'demo\u0000-4242x', held)
+  expect(all).not.toContain(V)
+  expect(field ?? '').not.toContain(V)
+  expect(all).toContain('demo�-4242x')
+})
