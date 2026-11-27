@@ -250,7 +250,32 @@ test('the form counts what the pattern matches in the test sample', async ($, on
   await m.input({ key: 'test', text: 'ids e123456 and e654321', kind: 'submit' })
   await m.press({ key: 'new-rule' })
   await m.input({ key: 'add', text: String.raw`\be\d{6}\b`, kind: 'change' })
-  expect(await m.find({ text: /^ *2 matches in your test sample$/ })).toBeDefined()
+  expect(await m.find({ text: /^ *masks 2 values in your test sample$/ })).toBeDefined()
+})
+
+test('the count follows the switches: it counts what the rule would mask, not what the regex matches', async ($, on) => {
+  world(on, {}, { [RULES]: file(BARE) })
+  const m = await rulesTab($)
+  await m.input({ key: 'test', text: 'ids tok_aaaaaaaa and tok_a1b2c3d4', kind: 'submit' })
+  await m.press({ key: 'new-rule' })
+  await m.input({ key: 'add', text: String.raw`tok_(?<v>\w+)`, kind: 'change' })
+  expect(await m.find({ text: /^ *masks 2 values in your test sample$/ })).toBeDefined()
+  await m.press({ key: 'new-strong' })
+  expect(await m.find({ text: /^ *masks 1 value in your test sample$/ })).toBeDefined()
+})
+
+test('a duplicate rule or a min length that is no number keeps the form open with its text', async ($, on) => {
+  const { files } = world(on, {}, { [RULES]: file(BARE) })
+  const m = await rulesTab($)
+  await m.press({ key: 'new-rule' })
+  await m.input({ key: 'new-name', text: 'First', kind: 'change' }) // its label FIRST, as rule 1 has
+  await m.input({ key: 'add', text: 'first_[0-9]+', kind: 'submit' })
+  expect(await m.find({ text: /^already there, as rule 1$/ })).toBeDefined()
+  expect((await m.find({ key: 'add' }))?.props.value).toBe('first_[0-9]+')
+  await m.input({ key: 'new-min', text: 'six', kind: 'change' })
+  await m.input({ key: 'add', text: 'zz_[0-9]+', kind: 'submit' })
+  expect(await m.find({ text: /^not added: min length is not a whole number$/ })).toBeDefined()
+  expect(JSON.parse(files.get(RULES)!).rules).toHaveLength(1)
 })
 
 test('a name with no letter to start a label masks as SECRET; cancel closes the form and drops the draft', async ($, on) => {

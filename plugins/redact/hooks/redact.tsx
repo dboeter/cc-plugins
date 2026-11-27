@@ -1142,8 +1142,11 @@ export const register: Register = (on, options) => {
       try { r = d.pattern.trim() ? fromDraft(d) : undefined } catch (err) { why = err instanceof SyntaxError ? `not a valid regex: ${err.message.replace(/^Invalid regular expression: \/.*\/[a-z]*: /, '')}` : (err as Error).message }
       const as = r?.replacement ?? (d.name.trim() ? toLabel(d.name) : 'SECRET')
       if (why || !r || !sample) return { as, why, found: '' }
-      const n = [...sample.matchAll(new RegExp(spec(r).src, spec(r).flags))].length
-      return { as, why, found: n ? `${count(n, 'match').replace('matchs', 'matches')} in your test sample` : 'no match in your test sample' }
+      // masked as the Test section masks, so min, mixed only, skip prose and a v group count
+      const tried = fresh()
+      mask(sample, tried, compile([r], 'rule'))
+      const n = masked(tried).length
+      return { as, why, found: n ? `masks ${count(n, 'value')} in your test sample` : 'masks nothing in your test sample' }
     }
     const opt = (key: string, set: boolean | undefined, text: string, flip: () => void) => (
       <Button key={key} label={text} plain onPress={flip}><Text color={set ? "green" : undefined} dimColor={!set}>{set ? "●" : "○"}</Text> {text}</Button>
@@ -1169,7 +1172,7 @@ export const register: Register = (on, options) => {
           {field('min', <Input key="new-min" value={draft.min} placeholder="shortest length to mask (optional)" submitLabel="add" onInput={v => edit({ min: v })} onSubmit={v => { edit({ min: v }); return submitDraft() }} />)}
           {help && <Box flexDirection="column" marginTop={1}>
             {row('ignore case', 'matches upper and lower case alike')}
-            {row('mixed only', 'masks only values of 8+ characters that mix letters, digits or symbols')}
+            {row('mixed characters only', 'masks only values of 8+ characters that mix letters, digits or symbols')}
             {row('skip prose', 'leaves "key: some words" alone, so headings and notes stay readable')}
             {row('min', 'masks only values this long or longer that are not all lowercase')}
           </Box>}
