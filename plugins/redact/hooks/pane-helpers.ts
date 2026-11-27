@@ -12,7 +12,7 @@ export const file = (rules: unknown[], rest: object = {}) => JSON.stringify({ ru
 export const world = (on: any, entries: Record<string, unknown> = {}, given: Record<string, string> = {}, cwd = '/p') => {
   const store = new Map(Object.entries(entries))
   const files = new Map(Object.entries(given))
-  mock.clock(on, { now: 40 * DAY })
+  const clock = mock.clock(on, { now: 40 * DAY })
   on('session.id', () => ({ value: 's1' }))
   on('session.cwd', () => ({ value: cwd }))
   on('store.get', (_$: any, e: any) => ({ value: store.get(e.key) }))
@@ -23,9 +23,16 @@ export const world = (on: any, entries: Record<string, unknown> = {}, given: Rec
   on('fs.exists', (_$: any, e: any) => ({ value: files.has(e.path) }))
   on('fs.read', (_$: any, e: any) => { if (!files.has(e.path)) throw new Error(`ENOENT ${e.path}`); return { value: files.get(e.path) } })
   on('fs.write', (_$: any, e: any) => { files.set(e.path, e.text); return { value: undefined } })
+  // core's answer to a focus move, which the kit has no engine beneath to give
+  on('ui.focus', () => ({}))
   on('fs.stat', (_$: any, e: any) => ({ value: { kind: 'file', size: files.get(e.path)?.length ?? 0, mtimeMs: 0, isLink: false, realPath: e.path } }))
-  return { store, files }
+  return { store, files, clock }
 }
+
+// The pane's focus ring landing on the element keyed `key`, as the arrows or Tab move it. The kit
+// has no ring, so this raises the event the engine would.
+export const ring = ($: any, key: string) =>
+  $.ui.focus({ requestId: 'redact', key, component: 'Pane', element: key, origin: { kind: 'person' } })
 
 export const PROPS = { title: 'redact', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 30 } } as any
 export const mount = ($: any, { surface = 'terminal', bodyColumns = 80, isFocused = true } = {}) =>

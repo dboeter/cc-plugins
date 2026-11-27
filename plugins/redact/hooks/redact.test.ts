@@ -287,19 +287,26 @@ test('a pattern from the options is masked too', { options: { patterns: ['acme_[
 
 test('a pattern that does not compile is skipped and named in the status line, the rest stay on', { options: { patterns: ['(', 'ACME: acme_[a-z0-9]{8}'] } }, async ($, on) => {
   const { entered } = world(on)
-  const statuses = statusLine(on)
   expect(await entered($, `id ${ACME} ok`)).toBe(`id ${ph('ACME')} ok`)
-  expect(statuses.at(-1)).toBe('1 masked · skipped pattern #1 (/redact show)')
+  expect(await light($)).toBe('⚠ redact: skipped pattern #1 (/redact show)')
 })
 
-// the status lines the plugin set, in order
+// the status lines the plugin pinned, in order: none, as the engine draws them as warnings
 const statusLine = (on: any) => {
   const lines: (string | undefined)[] = []
   on('ui.status', (_$: any, e: any) => { lines.push(e.text); return { value: undefined } as any })
   return lines
 }
+const STATUS = { text: null, isManaged: false, isWorking: false, maxRows: 5, columns: 80 }
+// the indicator under the prompt as drawn, with a statusLine command's output `text` above it
+const light = async ($: any, props: object = {}) => {
+  const m = await $.ui.mount({ plugin: 'redact', surface: 'terminal', component: 'StatusLine', requestId: 'status', props: { ...STATUS, ...props } })
+  const t = (await m.find({ type: 'Text', text: /redact/ }))?.text
+  await m.unmount()
+  return t
+}
 
-test('a new rules file holds the two examples, off: nothing is masked, and the status line says so', async ($, on) => {
+test('a new rules file holds the two examples, off: no rule masks, env files alone do, and the indicator is on', async ($, on) => {
   const { files, entered } = world(on)
   const statuses = statusLine(on)
   const toasts = toasted(on)
@@ -309,26 +316,42 @@ test('a new rules file holds the two examples, off: nothing is masked, and the s
   expect(EXAMPLES.map(r => r.enabled)).toEqual([false, false])
   expect(JSON.parse(files.get(RULES)!)).toEqual({ rules: EXAMPLES })
   expect(await entered($, `GITHUB_TOKEN=${GH} ${MAIL}`)).toBe(`GITHUB_TOKEN=${GH} ${MAIL}`)
-  expect(statuses).toEqual(['0 masked · no rules on'])
+  expect(await light($)).toBe('● redact')
+  expect(statuses.filter(Boolean)).toEqual([])
   await $.command.run({ command: 'redact', args: `test ${MAIL}` } as any)
   expect(toasts.at(-1)).toBe('redact: no rule matched: none is on')
   const m = await mount($)
   await m.press({ key: 'tab-rules' })
   expect(await m.find({ text: /0 of 2 on/ })).toBeDefined()
-  expect(await m.find({ text: /^1\. Example: vendor tokens/ })).toBeDefined()
+  expect(await m.find({ text: /^1\. Example: API keys and tokens/ })).toBeDefined()
   expect(await m.find({ text: /^2\. Example: email addresses$/ })).toBeDefined()
   expect(await m.find({ text: / → ⟦EMAIL_n⟧/ })).toBeDefined()
   expect(await m.find({ text: /○ off/ })).toBeDefined()
 })
 
-test('the status line counts what this session masked', async ($, on) => {
-  const { entered } = world(on, {}, BOTH)
-  const statuses = statusLine(on)
+test('the indicator under the prompt: a green dot while anything masks, a yellow warning when nothing does', async ($, on) => {
+  const { entered, files } = world(on, {}, BOTH)
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await entered($, `GITHUB_TOKEN=${GH} and ${MAIL}`)
+  expect(await light($)).toBe('● redact')
+  const m = await $.ui.mount({ plugin: 'redact', surface: 'terminal', component: 'StatusLine', requestId: 'status', props: STATUS })
+  expect((await m.find({ type: 'Text', text: /^●$/ }))?.props.color).toBe('green')
+  await m.unmount()
+  files.set(RULES, JSON.stringify({ rules: JSON.parse(files.get(RULES)!).rules.map((r: any) => ({ ...r, enabled: false })), envFiles: false }))
   await entered($, 'nothing here')
-  expect(statuses).toEqual(['0 masked', '2 masked'])
+  expect(await light($)).toBe('⚠ redact off')
+  const n = await $.ui.mount({ plugin: 'redact', surface: 'terminal', component: 'StatusLine', requestId: 'status', props: STATUS })
+  expect((await n.find({ type: 'Text', text: /^⚠ redact/ }))?.props.color).toBe('warning')
+})
+
+test("the indicator goes under a statusLine command's output, and gives way when it fills the rows", async ($, on) => {
+  world(on, {}, BOTH)
+  on('ui.render', { component: 'StatusLine' }, ($$: any, e: any) => { const { Text } = $$.ui.resolve(e); return h(Text, {}, e.props.text ?? '') as any })
+  const m = await $.ui.mount({ plugin: 'redact', surface: 'terminal', component: 'StatusLine', requestId: 'status', props: { ...STATUS, text: 'hud' } })
+  expect((await m.findAll({ type: 'Text' })).map((t: any) => t.text).filter((t: string) => t === 'hud' || t === '● redact')).toEqual(['hud', '● redact'])
+  await m.unmount()
+  expect(await light($, { text: 'a\nb', maxRows: 2 })).toBeUndefined()
 })
 
 test('a masking failure that drops context, system prompt sections or a reminder is toasted', async ($, on) => {
@@ -367,17 +390,17 @@ test('/redact add keeps a rule, on, that masks from now on; /redact remove drops
   const opened: any[] = []
   on('ui.open', (_$: any, e: any) => { opened.push(e); return { value: { isPlaced: true } } as any })
   const run = runner($, toasted(on))
-  expect(await run('add ACME: acme_[a-z0-9]{8}')).toContain('added as #3')
-  expect(await run('add x_[0-9]+')).toBe('added as #4: it masks from now on, mid-turn too')
+  expect(await run('add ACME: acme_[a-z0-9]{8}')).toContain('added as rule 3')
+  expect(await run('add x_[0-9]+')).toBe('added as rule 4')
   expect(rulesOf(files).slice(2)).toEqual([
     { pattern: 'acme_[a-z0-9]{8}', replacement: 'ACME', enabled: true }, { pattern: 'x_[0-9]+', replacement: 'SECRET', enabled: true }])
   expect(await entered($, `id ${ACME} ok`)).toBe(`id ${ph('ACME')} ok`)
-  expect(await run('add ACME: acme_[a-z0-9]{8}')).toBe('already there, as #3')
+  expect(await run('add ACME: acme_[a-z0-9]{8}')).toBe('already there, as rule 3')
   expect(await run('add (')).toContain('not added')
   expect(await run('add X bogus: x')).toBe('not added: unknown option bogus')
   expect(await run('remove 5')).toContain('no such rule')
-  expect(await run('remove 3')).toBe('removed #3')
-  expect(await run('remove x_[0-9]+')).toBe('removed #3')
+  expect(await run('remove 3')).toBe('removed rule 3')
+  expect(await run('remove x_[0-9]+')).toBe('removed rule 3')
   expect(await run('remove x_[0-9]+')).toContain('no such rule')
   expect(rulesOf(files)).toEqual(EXAMPLES)
   expect(await run('show')).toBeUndefined()
@@ -390,12 +413,12 @@ test('a rule turns on and off, from the prompt by number or name, the pane or th
   const run = runner($, toasted(on))
   const other = 'bob' + '@example.com'
   expect(await entered($, `mail ${MAIL}`)).toBe(`mail ${MAIL}`)
-  expect(await run('on 2')).toBe('#2 on: from now on, mid-turn too')
+  expect(await run('on 2')).toBe('rule 2 on')
   expect(rulesOf(files)[1]).toEqual({ ...EXAMPLES[1], enabled: true })
   expect(await entered($, `mail ${MAIL}`)).toBe(`mail ${ph('EMAIL')}`)
-  expect(await run('on 2')).toBe('already on: #2')
+  expect(await run('on 2')).toBe('already on: rule 2')
   expect(await run('off nope')).toContain('no such rule')
-  expect(await run('off Example: email addresses')).toBe('#2 off: from now on, mid-turn too')
+  expect(await run('off Example: email addresses')).toBe('rule 2 off')
   expect(await entered($, `mail ${other}`)).toBe(`mail ${other}`)
   const m = await mount($)
   await m.press({ key: 'tab-rules' })
@@ -424,7 +447,7 @@ test('a rules file that does not parse keeps the last rules read, says so, and i
   expect(await entered($, `key ${GH}`)).toBe(`key ${ph('API_KEY')}`)
   files.set(RULES, '{ broken')
   expect(await entered($, `mail ${MAIL}`)).toBe(`mail ${ph('EMAIL')}`)
-  expect(statuses.at(-1)).toBe('2 masked · redact-rules.json is no JSON object with a rules list, last rules kept (/redact rules)')
+  expect(await light($)).toBe('⚠ redact: rules file broken (/redact rules)')
   expect(await run('add x_[0-9]+')).toContain('not saved')
   expect(files.get(RULES)).toBe('{ broken')
   expect(await (await mount($)).find({ text: /⚠ 1 rule invalid/ })).toBeDefined()
@@ -459,10 +482,13 @@ test('the pane lists every rule by its replacement, and adds and removes one', a
   await m.press({ key: 'tab-rules' })
   expect(await m.find({ text: /1\. first_/ })).toBeDefined()
   expect(await m.find({ text: / → ⟦FIRST_n⟧/ })).toBeDefined()
+  await m.press({ key: 'new-rule' })
   await m.input({ key: 'add', text: 'acme_[a-z0-9]{8}', kind: 'submit' })
   expect(rulesOf(files)).toEqual([{ pattern: 'first_[0-9]+', replacement: 'FIRST', enabled: true }, { pattern: 'acme_[a-z0-9]{8}', replacement: 'SECRET', enabled: true }])
-  expect(await m.find({ text: /added as #2/ })).toBeDefined()
-  expect(await m.find({ text: /in ~\/\.claude\/redact-rules\.json/ })).toBeDefined()
+  expect(await m.find({ text: /added as rule 2/ })).toBeDefined()
+  await m.press({ key: 'help' })
+  expect(await m.find({ text: /Saved in ~\/\.claude\/redact-rules\.json/ })).toBeDefined()
+  await m.press({ key: 'help' })
   await m.press({ key: 'remove-0' })
   expect(rulesOf(files)).toHaveLength(2) // the first press only arms it
   expect(await m.find({ text: /press ✗ again to remove rule 1/ })).toBeDefined()
@@ -480,7 +506,7 @@ test('the pane lists what this session masked, the whole value on the terminal o
   expect(await m.find({ text: /^rule unknown$/ })).toBeDefined()
   await m.press({ key: `forget-${ph('API_KEY')}` })
   expect((store.get('vault:s1') as any)).toMatchObject({ n: { API_KEY: 1 }, ph: {} })
-  expect(await m.find({ text: /forgot .*refused/ })).toBeDefined()
+  expect(await m.find({ text: /forgot .*no longer use/ })).toBeDefined()
   const r: any = await $.tool.call({ tool: 'Bash', command: `echo ${ph('API_KEY')}` })
   expect(r.deny).toContain(ph('API_KEY'))
   const remote = await mount($, 'mobile')
@@ -492,7 +518,7 @@ test('the pane names the rule that masked each value; the model reads it masked 
   const session = mock.session(on)
   await entered($, `GITHUB_TOKEN=${GH} id ${ACME}`)
   expect((store.get('vault:s1') as any).by).toEqual({
-    [ph('API_KEY')]: expect.stringMatching(/^rule: Example: vendor tokens/), [ph('SECRET')]: 'rule: acme_[a-z0-9]{8}' })
+    [ph('API_KEY')]: expect.stringMatching(/^rule: Example: API keys and tokens/), [ph('SECRET')]: 'rule: acme_[a-z0-9]{8}' })
   const m = await mount($)
   expect(await m.find({ text: new RegExp(`^ +${ACME}$`) })).toBeDefined()
   expect(await m.find({ text: /^rule: acme_/ })).toBeDefined()
@@ -505,7 +531,6 @@ test('the pane names the rule that masked each value; the model reads it masked 
 
 test('the pane toggles the terminal to draw placeholders, as the model reads them', async ($, on) => {
   world(on, HOLDS_GH)
-  const statuses = statusLine(on)
   const drawn: string[] = []
   on('ui.render', { component: 'AssistantMessage' }, ($$: any, e: any) => {
     drawn.push(e.props.text)
@@ -517,7 +542,7 @@ test('the pane toggles the terminal to draw placeholders, as the model reads the
   const m = await mount($)
   await m.press({ key: 'raw' })
   await draw()
-  expect(statuses.at(-1)).toContain('drawn as the model reads it')
+  expect(await light($)).toBe("● redact · Claude's view")
   await m.press({ key: 'raw' })
   await draw()
   // the toggle redraws what is mounted, so the first message is drawn again with its value
@@ -536,11 +561,12 @@ test('/redact show clears the last note', async ($, on) => {
   on('ui.open', () => ({ value: { isPlaced: true } }) as any)
   const m = await mount($)
   await m.press({ key: 'tab-rules' })
+  await m.press({ key: 'new-rule' })
   await m.input({ key: 'add', text: 'acme_[a-z0-9]{8}', kind: 'submit' })
-  expect(await m.find({ text: /added as #3/ })).toBeDefined()
+  expect(await m.find({ text: /added as rule 3/ })).toBeDefined()
   await $.command.run({ command: 'redact', args: 'show' } as any)
   await m.unmount()
-  expect(await (await mount($)).find({ text: /added as #/ })).toBeUndefined()
+  expect(await (await mount($)).find({ text: /added as rule/ })).toBeUndefined()
 })
 
 test('a settings pattern that does not compile is marked; mobile, with no field, points to /redact add', { options: { patterns: ['('] } }, async ($, on) => {
@@ -549,6 +575,7 @@ test('a settings pattern that does not compile is marked; mobile, with no field,
   expect(await m.find({ text: /⚠ 1 rule invalid/ })).toBeDefined()
   await m.press({ key: 'tab-rules' })
   expect(await m.find({ key: 'add' })).toBeUndefined()
+  expect(await m.find({ key: 'new-rule' })).toBeUndefined()
   expect(await m.find({ text: /\/redact add/ })).toBeDefined()
 })
 
@@ -624,23 +651,23 @@ test('the pane opens on Session, a long value cut to its ends until revealed, an
   const pem = `-----BEGIN RSA ${KEY}\nMIIEowIBAAKCAQEA\nabc+/=`
   const { store } = world(on, { 'vault:s1': { at: 39 * DAY, n: { API_KEY: 1, PRIVATE_KEY: 1 }, ph: { [ph('API_KEY')]: GH, [ph('PRIVATE_KEY')]: pem } } })
   const m = await mount($)
-  expect(await m.find({ key: 'cdown' })).toBeDefined()
+  expect(await m.find({ key: 'cur-forget' })).toBeDefined()
   expect(await m.find({ type: 'Text', text: /^Rules$/ })).toBeUndefined()
   expect(await m.find({ text: /-----B…c\+\/= \(3 lines, \d+ chars\)/ })).toBeDefined()
   expect(await m.find({ text: /MIIEow/ })).toBeUndefined()
-  await m.press({ key: 'cdown' })
-  await m.press({ key: `reveal-${ph('PRIVATE_KEY')}` })
+  await m.press({ key: `pick-${ph('PRIVATE_KEY')}` })
+  await m.press({ key: 'cur-reveal' })
   expect(await m.find({ text: /MIIEow/ })).toBeDefined()
-  await m.press({ key: `reveal-${ph('PRIVATE_KEY')}` })
+  await m.press({ key: 'cur-reveal' })
   expect(await m.find({ text: /MIIEow/ })).toBeUndefined()
   await m.press({ key: `pick-${ph('API_KEY')}` })
-  expect(await m.find({ key: `reveal-${ph('API_KEY')}` })).toBeUndefined()
+  expect(await m.find({ key: 'cur-reveal' })).toBeUndefined()
   await m.press({ key: 'forget-all' })
   expect(store.get('vault:s1')).toMatchObject({ n: { API_KEY: 1, PRIVATE_KEY: 1 }, ph: {} })
   expect(await m.find({ text: /forgot 2/ })).toBeDefined()
 })
 
-test('tabs switch between Session, Rules and Guide, and test previews masking on submit or /redact test without saving', async ($, on) => {
+test('tabs switch between Session and Rules, h shows help, and test previews masking on submit or /redact test without saving', async ($, on) => {
   const { store } = world(on, {}, { [RULES]: file([...ON, { pattern: 'acme_[a-z0-9]{8}', replacement: 'SECRET' }]) })
   on('ui.open', () => ({ value: { isPlaced: true } }) as any)
   const toasts = toasted(on)
@@ -649,18 +676,20 @@ test('tabs switch between Session, Rules and Guide, and test previews masking on
   const m = await mount($)
   expect(await m.find({ text: /^Test$/ })).toBeDefined()
   expect(await m.find({ text: /^Rules$/ })).toBeDefined()
-  expect(await m.find({ text: new RegExp(`→ id ${ph('SECRET')} ok`) })).toBeDefined()
-  expect(await m.find({ text: /masked by rule: acme_/ })).toBeDefined()
+  expect(await m.find({ text: new RegExp(`^Claude gets: id ${ph('SECRET')} ok$`) })).toBeDefined()
+  expect(await m.find({ text: /· by rule: acme_/ })).toBeDefined()
   await m.press({ key: 'clear-test' })
-  expect(await m.find({ text: new RegExp(`→ id ${ph('SECRET')} ok`) })).toBeUndefined()
+  expect(await m.find({ text: /^Claude gets/ })).toBeUndefined()
   await m.input({ key: 'test', text: `key ${GH}`, kind: 'submit' })
-  expect(await m.find({ text: new RegExp(`→ key ${ph('API_KEY')}`) })).toBeDefined()
+  expect(await m.find({ text: new RegExp(`^Claude gets: key ${ph('API_KEY')}`) })).toBeDefined()
   expect(store.get('vault:s1')).toBeUndefined()
-  await m.press({ key: 'tab-help' })
-  expect(await m.find({ text: /^Rule format$/ })).toBeDefined()
-  expect(await m.find({ text: /^Where real values go$/ })).toBeDefined()
+  await m.press({ key: 'help' })
+  expect(await m.find({ text: /^Writing a rule$/ })).toBeDefined()
   await m.press({ key: 'tab-session' })
-  expect(await m.find({ text: /nothing masked yet/ })).toBeDefined()
+  expect(await m.find({ text: /^Good to know$/ })).toBeDefined()
+  await m.press({ key: 'help' })
+  expect(await m.find({ text: /^Good to know$/ })).toBeUndefined()
+  expect(await m.find({ text: /^Nothing masked yet\.$/ })).toBeDefined()
 })
 
 test('desktop keeps the placeholders: the pane shows lengths and has no draw toggle', async ($, on) => {
@@ -724,7 +753,7 @@ test('a session starts with the secret-shaped values of the env files where it s
   const vault = store.get('vault:s1') as any
   expect(vault.ph).toEqual({ [ph('GITHUB_TOKEN')]: GH, [ph('DB_PASS' + 'WORD')]: ACME })
   expect(vault.by[ph('GITHUB_TOKEN')]).toBe('.env: GITHUB_TOKEN')
-  expect(toasts).toEqual(['redact: 2 values from the env files here masked (/redact show)'])
+  expect(toasts).toEqual(['redact: masked 2 values from .env files (/redact)'])
   expect(await entered($, `use ${GH} on port 3000, debug true`)).toBe(`use ${ph('GITHUB_TOKEN')} on port 3000, debug true`)
   // a second start (a --resume) keeps the placeholders and says nothing
   await $.session.start({ cwd: '/p', surface: 'terminal', isInteractive: true })
@@ -770,7 +799,7 @@ test('envFiles: false in the rules file turns env seeding off; /redact env on tu
   expect(await entered($, `id ${ACME}`)).toBe(`id ${ACME}`)
   expect((store.get('vault:s1') as any)?.ph ?? {}).toEqual({})
   await $.command.run({ command: 'redact', args: 'env on' } as any)
-  expect(toasts.at(-1)).toBe('redact: env files on: read from the next prompt on')
+  expect(toasts.at(-1)).toBe('redact: env files on, from the next prompt')
   expect(JSON.parse(files.get(RULES)!)).toEqual({ envFiles: true, rules: ON })
   expect(await entered($, `id ${ACME}`)).toBe(`id ${ph('A_KEY')}`)
   await $.command.run({ command: 'redact', args: 'env off' } as any)

@@ -1,5 +1,6 @@
 import { test, expect } from 'claude-code/testing'
-import { DAY, RULES, file, mount, world } from './pane-helpers'
+import { DAY, RULES, file, mount, ring, world } from './pane-helpers'
+import { EXAMPLES } from './redact'
 
 // The pane's Session tab: one line per vault entry under its source, the row cursor, and its empty states.
 // Fixtures split as in redact.test.ts, so no literal is secret-shaped.
@@ -18,6 +19,9 @@ const THREE = { 'vault:s1': { at: 39 * DAY, n: { EMAIL: 2, API_KEY: 1 }, ph: { [
 // a row as drawn: its Texts with the placeholder Button's label in place
 const drawn = (el: any): string[] => kids(el).flatMap(c => typeof c === 'string' ? [c] : (c as any)?.type === 'Button' ? [(c as any).props.label] : c && typeof c === 'object' ? drawn(c) : [])
 const line = async (m: any, p: string) => drawn(await m.find({ key: p })).join('')
+// the placeholder of the row the cursor (›) is on
+const at = async (m: any) => { for (const b of await m.findAll({ type: 'Button' })) { const k: string = b.props.key; if (k?.startsWith('pick-') && (await line(m, k.slice(5))).startsWith('›')) return k.slice(5) } }
+const hotkeys = async (m: any) => Object.fromEntries((await m.findAll({ type: 'Button' })).filter((x: any) => x.props.hotkey && !/^tab-|^raw$|^help$/.test(x.props.key)).map((x: any) => [x.props.hotkey, x.props.key]))
 const actions = async (m: any) => (await m.findAll({ type: 'Button' })).map((b: any) => b.props.key).filter((k: string) => /^(forget|reveal)-⟦/.test(k))
 
 test('values sit under a header naming what masked them, a source once, in the vault\'s order', async ($, on) => {
@@ -38,35 +42,36 @@ test('placeholders are padded to the widest, so every value starts in one column
   expect(other.indexOf('ghp_')).toBe(first.indexOf('@') - 1)
 })
 
-test('the cursor starts on the first row, the only one with actions; j and k move it, x on the key line forgets its value', async ($, on) => {
+test('the cursor follows the focus ring as the arrows move it; x on the key line forgets its row; no j or k', async ($, on) => {
   const { store } = world(on, THREE)
   const m = await mount($)
-  expect([(await m.find({ key: 'cdown' }))?.props.hotkey, (await m.find({ key: 'cup' }))?.props.hotkey]).toEqual(['j', 'k'])
-  expect(await actions(m)).toEqual([`forget-${ph('EMAIL')}`])
-  expect((await m.find({ key: `forget-${ph('EMAIL')}` }))?.props.hotkey).toBeUndefined() // no key prefix on a row
-  expect((await m.find({ key: 'cur-forget' }))?.props.hotkey).toBe('x')
-  await m.press({ key: 'cdown' })
-  expect(await actions(m)).toEqual([`forget-${ph('EMAIL', 2)}`])
-  await m.press({ key: 'cdown' })
-  await m.press({ key: 'cdown' }) // past the last row it stays there
-  expect(await actions(m)).toEqual([`forget-${ph('API_KEY')}`])
-  await m.press({ key: 'cup' })
+  expect(await at(m)).toBe(ph('EMAIL'))
+  expect((await m.find({ key: `pick-${ph('EMAIL')}` }))?.props.autoFocus).toBe(true)
+  expect(await hotkeys(m)).toEqual({ x: 'cur-forget' })
+  // every row draws the same stops, so the arrows walk them in a fixed order
+  expect(await actions(m)).toEqual([`forget-${ph('EMAIL')}`, `forget-${ph('EMAIL', 2)}`, `forget-${ph('API_KEY')}`])
+  await ring($, 'tab-rules') // a stop that is no row leaves the cursor where it was
+  expect(await at(m)).toBe(ph('EMAIL'))
+  await ring($, `pick-${ph('API_KEY')}`)
+  expect(await at(m)).toBe(ph('API_KEY'))
+  await ring($, `forget-${ph('EMAIL', 2)}`) // a row's ✗ is on its row too
+  expect(await at(m)).toBe(ph('EMAIL', 2))
+  await ring($, 'forget-all') // the key line's forget all is no row: x still forgets the row you were on
+  expect(await at(m)).toBe(ph('EMAIL', 2))
   await m.press({ key: 'cur-forget' })
   expect(Object.keys((store.get('vault:s1') as any).ph)).toEqual([ph('EMAIL'), ph('API_KEY')])
-  // the cursor goes on to the next row
-  expect(await actions(m)).toEqual([`forget-${ph('API_KEY')}`])
-  expect(await m.find({ text: /forgot .*refused/ })).toBeDefined()
+  expect(await at(m)).toBe(ph('API_KEY')) // the cursor goes on to the next row
+  expect(await m.find({ text: /forgot .*no longer use/ })).toBeDefined()
 })
 
 test('clicking a placeholder puts the cursor on its row', async ($, on) => {
   world(on, THREE)
   const m = await mount($)
   await m.press({ key: `pick-${ph('API_KEY')}` })
-  expect(await actions(m)).toEqual([`forget-${ph('API_KEY')}`])
   expect((await line(m, ph('API_KEY'))).startsWith('›')).toBe(true)
 })
 
-test('on a narrow pane the value truncates; the placeholder and the cursor\'s actions do not shrink', async ($, on) => {
+test('on a narrow pane the value truncates; the placeholder and the row\'s ✗ do not shrink', async ($, on) => {
   const KEY = 'PRIV' + 'ATE KEY-----'
   world(on, { 'vault:s1': { at: 39 * DAY, n: { PRIVATE_KEY: 1 }, ph: { [ph('PRIVATE_KEY')]: `-----BEGIN RSA ${KEY}\nMIIEowIBAAKCAQEA\nabc+/=` }, by: { [ph('PRIVATE_KEY')]: 'env file: .env' } } })
   const m = await mount($, { bodyColumns: 30 })
@@ -75,7 +80,7 @@ test('on a narrow pane the value truncates; the placeholder and the cursor\'s ac
   const [, pick, value] = kids(left) as any[]
   expect([pick.props.flexShrink, value.props.flexShrink]).toEqual([0, 1])
   expect(kids(value)[0]).toMatchObject({ type: 'Text', props: { wrap: 'truncate-end' } })
-  expect([acts.props.flexShrink, keys(acts)]).toEqual([0, [`reveal-${ph('PRIVATE_KEY')}`, `forget-${ph('PRIVATE_KEY')}`]])
+  expect([acts.props.flexShrink, keys(acts)]).toEqual([0, [`forget-${ph('PRIVATE_KEY')}`]])
 })
 
 test('a multi-line value stays on its line, cut or revealed with v', async ($, on) => {
@@ -103,20 +108,29 @@ test('a value with no recorded rule sits under rule unknown', async ($, on) => {
   expect(await (await mount($)).find({ text: /^rule unknown$/ })).toBeDefined()
 })
 
-test('empty, the tab says what the model will see', async ($, on) => {
-  world(on)
-  expect(await (await mount($)).find({ text: /^the model will see ⟦LABEL_n⟧ · your tools get the real value/ })).toBeDefined()
+test('empty with no rule, help off: one line that says what to press', async ($, on) => {
+  world(on, {}, { [RULES]: file([], { envFiles: false }) })
+  const m = await mount($)
+  expect(await m.find({ text: 'No rules on yet. Press r to turn one on, or h for help.' })).toBeDefined()
+  expect(await m.find({ text: /^How redact works$/ })).toBeUndefined()
 })
 
-test('empty, with no file rule, no settings pattern and env files off: no rule is on', async ($, on) => {
+test('h shows what redact does and how to start, and Good to know, on the Session tab', async ($, on) => {
   world(on, {}, { [RULES]: file([], { envFiles: false }) })
-  expect(await (await mount($)).find({ text: /nothing masked: no rule is on \(r\)/ })).toBeDefined()
+  const m = await mount($)
+  await m.press({ key: 'help' })
+  expect((await m.find({ key: 'help' }))?.props.label).toBe('hide help')
+  expect(await m.find({ text: /^How redact works$/ })).toBeDefined()
+  expect(await m.find({ text: /^redact swaps what your rules match for placeholders like ⟦API_KEY_n⟧ before Claude sees it\. Claude's tools still get the real value\./ })).toBeDefined()
+  expect(await m.find({ text: /^To start, turn on a rule in Rules \(r\)/ })).toBeDefined()
+  expect(await m.find({ text: /^Good to know$/ })).toBeDefined()
+  expect(await m.find({ text: /No rules on yet/ })).toBeUndefined()
 })
 
 // empty with one thing that masks: nothing masked yet
 const yet = async ($: any) => {
   const m = await mount($)
-  return [!!(await m.find({ text: /nothing masked yet/ })), !!(await m.find({ text: /no rule is on/ }))]
+  return [!!(await m.find({ text: /^Nothing masked yet\.$/ })), !!(await m.find({ text: /No rules on yet/ }))]
 }
 
 test('empty, with a settings pattern: nothing masked yet', { options: { patterns: ['zz_[0-9]+'] } }, async ($, on) => {
@@ -129,9 +143,9 @@ test('empty, with a file rule on: nothing masked yet', async ($, on) => {
   expect(await yet($)).toEqual([true, false])
 })
 
-test('empty, with env files on: nothing masked yet', async ($, on) => {
+test('empty, with env files on but no rule: what to press, not nothing masked yet', async ($, on) => {
   world(on, {}, { [RULES]: file([]) })
-  expect(await yet($)).toEqual([true, false])
+  expect(await yet($)).toEqual([false, true])
 })
 
 test('a source with a line break draws in its header as ⏎', async ($, on) => {
@@ -159,4 +173,27 @@ for (const surface of ['mobile', 'desktop'] as const)
 test('the terminal shows a rule\'s text as written', async ($, on) => {
   world(on, { 'vault:s1': { at: 39 * DAY, n: { SECRET: 1 }, ph: { [ph('SECRET')]: LIT }, by: { [ph('SECRET')]: `rule: ${LIT}` } } })
   expect(await (await mount($)).find({ text: new RegExp(`^rule: ${LIT}$`) })).toBeDefined()
+})
+
+// A fresh install: the two examples off, env files on (no envFiles key), as a new user meets it.
+test('fresh install: the status says env files alone mask, and the tab says what to press', async ($, on) => {
+  world(on, {}, { [RULES]: file(EXAMPLES) })
+  const m = await mount($)
+  expect(await m.find({ text: /^No rules on yet\./ })).toBeDefined()
+  expect((await m.findAll({ type: 'Text' })).find((t: any) => /^[●○] /.test(t.text))?.text).toBe('● On: env files only, no rules (r)')
+})
+
+test('fresh install with env values seeded: the values, with what to press above them', async ($, on) => {
+  world(on, TWO, { [RULES]: file(EXAMPLES) })
+  const m = await mount($)
+  expect(await m.find({ text: /^No rules on yet\./ })).toBeDefined()
+  expect(await m.find({ type: 'Button', props: { label: ph('API_KEY') } })).toBeDefined()
+})
+
+test('the help lines that say where real values go name tools, not commands', async ($, on) => {
+  world(on, {}, { [RULES]: file(EXAMPLES) })
+  const m = await mount($)
+  await m.press({ key: 'help' })
+  expect(await m.find({ text: /Claude's tools still get the real value/ })).toBeDefined()
+  expect(await m.find({ text: /commands Claude runs/i })).toBeUndefined()
 })
