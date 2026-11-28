@@ -946,6 +946,8 @@ test('isEnvSecret leaves benign config values readable while still masking secre
   // benign values that pass strong() but should stay readable
   for (const [k, v] of [
     ['API_URL', 'http://localhost:3000'],
+    ['LOCAL_PATH_URL', 'http://localhost:3000/my-app'],
+    ['INTERNAL_URL', 'http://api.internal:8080/my-service'],
     ['NEXTAUTH_URL', 'http://localhost:3000'],
     ['KEYCLOAK_URL', 'https://sso.example.com/v1'],
     ['JWT_ISSUER', 'https://auth.example.com'],
@@ -993,6 +995,8 @@ test('isEnvSecret leaves benign config values readable while still masking secre
     ['ZAPIER_URL', 'https://hooks.zapier.com/hooks/catch/1234567/abcdefg/'],
     ['ZAPIER_HOOK_URL', 'https://hooks.zapier.com/v1/notify'],
     ['NTFY_URL', 'https://ntfy.sh/mysecrettopic42'],
+    ['NTFY_WORD_URL', 'https://ntfy.sh/private-alerts'],
+    ['FEED_URL', 'https://example.com/my-secret-feed'],
     ['PING_URL', 'https://example.com/ping/a1b2c3d4e5f'],
     ['S3_ENDPOINT', s3Key],
     ['LAMBDA_URL', 'https://a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6.lambda-url.us-east-1.on.aws/'],

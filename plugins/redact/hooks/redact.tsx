@@ -603,18 +603,24 @@ const isSafeHost = (host: string, allowSingleLabel: boolean) => {
 // Known web/db schemes only (excludes s3:// etc. where the authority may be a key id).
 const URL_PARTS = /^(https?|wss?|postgres(?:ql)?|mysql|mariadb|mongodb|redis|rediss|amqps?):\/\/([^/?#@:\s]+|\[[0-9a-fA-F:]+\])(?::(\d{1,5}))?(\/[^?#\s]*)?$/
 const DB_SCHEME = /^(?:postgres(?:ql)?|mysql|mariadb|mongodb|redis|rediss|amqps?)$/
-// Ordinary URL path segment: pure lowercase words (no mixed letters+digits, except v1/v2), short single/small numbers (< 5 digits).
-const SAFE_URL_SEG = /^(?:v\d{1,2}|[a-z][a-z_-]{0,14}|\d{1,4})$/
+const isLocalHost = (host: string) =>
+  host === 'localhost' || /^127\./.test(host) || host === '0.0.0.0' || host === '[::1]' || /\.(?:local|localhost|internal)$/.test(host)
+// For local/private hosts and database schemes, ordinary short lowercase segments (e.g. /myapp_dev, /0) are safe.
+// For public web/ws hosts, only generic API route segments pass so capability paths like /private-alerts stay masked.
+const LOCAL_URL_SEG = /^(?:v\d{1,2}|[a-z][a-z_-]{0,14}|\d{1,4})$/
+const PUBLIC_URL_SEG = /^(?:v\d{1,2}|api|graphql|gql|rpc|trpc|rest|ws|wss|hmr|auth|oauth|oauth2|oidc|sso|health|healthz|ready|readyz|status|metrics|docs|swagger|openapi)$/
 const CAPABILITY_SEG = /^(?:hooks?|webhooks?|catch|callback|callbacks)$/
 const isBenignUrl = (v: string) => {
   const m = URL_PARTS.exec(v)
   if (!m) return false
   const [, scheme = '', host = '', , path = ''] = m
-  if (!isSafeHost(host, DB_SCHEME.test(scheme))) return false
+  const isDb = DB_SCHEME.test(scheme)
+  if (!isSafeHost(host, isDb)) return false
   if (!path || path === '/') return true
   const segs = path.replace(/^\/+|\/+$/g, '').split('/')
   if (segs.length > 3) return false
-  return segs.every(s => SAFE_URL_SEG.test(s) && !CAPABILITY_SEG.test(s))
+  if (isDb || isLocalHost(host)) return segs.every(s => LOCAL_URL_SEG.test(s) && !CAPABILITY_SEG.test(s))
+  return segs.every(s => PUBLIC_URL_SEG.test(s))
 }
 // IPv4, bracketed IPv6, localhost[:port], or lowercase safe-label dotted host:port (mandatory port avoids dotted tokens like SG.xxx.yyy).
 const PLAIN_ADDR = /^(?:(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?|\[[0-9a-fA-F:]+\](?::\d{1,5})?|localhost(?::\d{1,5})?|([a-z0-9-]+(?:\.[a-z0-9-]+)+):\d{1,5})$/
