@@ -4,7 +4,7 @@
 
 `claude-code` · `observability` · `event-stream` · `plugin-development`
 
-The raw record of a session: every event that crosses Claude Code, in the order it happened, with its full payload written to disk. It names who raised each one: you, the model, the engine, settings hooks or a plugin. Use it when you need to know exactly what was sent and returned, or to see what a plugin does behind your back. It is built for plugin authors: the raw stream, with full payloads.
+The raw record of a session: every event that crosses Claude Code, in the order it happened, with its full payload written to disk. It names who raised each one: you, the model, the engine, settings hooks or a plugin. Use it, as a plugin author or anyone else, when you need to know exactly what was sent and returned, or to see what a plugin does behind your back.
 
 [agent-log](../agent-log) is the interpreted view of the same session: turns, timings and who decided each call. The two work as a pair, agent-log to find the moment and event-log to read what actually crossed.
 

@@ -13,9 +13,9 @@
   <code>claude-code</code> · <code>observability</code> · <code>context-window</code> · <code>hooks</code> · <code>secrets</code> · <code>tui</code>
 </p>
 
-Claude Code tells you what it did. It is much quieter about why a turn took 40 seconds, which hook let a command through, what is eating your context window, or whether the tests it ran still hold after its last edit. These plugins put that on screen, in panes that stay out of the way until you open them.
+Claude Code tells you what it did. It is much quieter about why a turn took 40 seconds, which hook let a command through, what is eating your context window, or whether the tests it ran still hold after its last edit. These plugins put that on screen: panes you open when you want them, and a single line above the prompt when something needs you.
 
-One more does the opposite job: [redact](plugins/redact) keeps your API keys out of what the model reads, while the tools it calls still get the real values.
+One more does the opposite job: [redact](plugins/redact) hides what your rules match, plus the secrets in your `.env` files, from the model, while the tools it calls still get the real values.
 
 ## Install
 
@@ -49,11 +49,11 @@ The raw record behind agent-log: every event in the session, who raised it, and 
 ### Keep secrets out of the model
 
 **[redact](plugins/redact)** · `/redact`\
-Swaps what your rules match for numbered placeholders before the model sees it, and puts the real value back in tool calls and your terminal. It fails closed. Env-file values are masked from the first request; everything else waits until you turn a rule on, because no rule is on by default. It is a pattern list, not a guarantee: read [what it does not protect against](plugins/redact/README.md) and [HARDENING.md](plugins/redact/HARDENING.md) before you rely on it.
+Swaps what your rules match for numbered placeholders before the model sees it, and puts the real value back in tool calls and your terminal. It fails closed. Secret-looking values in the starting folder's env files are masked from the first request; everything else waits until you turn a rule on, because no rule is on by default. It is a pattern list, not a guarantee: read [what it does not protect against](plugins/redact/README.md) and [HARDENING.md](plugins/redact/HARDENING.md) before you rely on it.
 
 ## Develop
 
-Adding a plugin: put it in `plugins/<name>/` and add `{ "name": "<name>", "source": "./plugins/<name>" }` to the marketplace's `plugins`.
+Adding a plugin: put it in `plugins/<name>/` and add `{ "name": "<name>", "source": "./plugins/<name>" }` to the marketplace's `plugins`, then bump the plugin count badge above.
 
 Every plugin is typed against one copy of Claude Code's plugin API, `plugins/types/claude-code.d.ts` (its first line names the Claude Code version), through `plugins/tsconfig.json`:
 
