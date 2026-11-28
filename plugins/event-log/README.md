@@ -1,6 +1,10 @@
 # event-log
 
-The raw record of a session: every event that crosses Claude Code, in the order it happened, with its full payload written to disk. It names who raised each one: you, the model, the engine, settings hooks or a plugin. Use it when you need to know exactly what was sent and returned, or to see what a plugin does behind your back.
+[![version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fdboeter%2Fcc-plugins%2Fmain%2Fplugins%2Fevent-log%2F.claude-plugin%2Fplugin.json&query=%24.version&label=version&color=d97757)](.claude-plugin/plugin.json) [![MIT license](https://img.shields.io/badge/license-MIT-8fb573)](../../LICENSE) [![part of cc-plugins](https://img.shields.io/badge/part_of-cc--plugins-3a2e26)](../../README.md)
+
+`claude-code` · `observability` · `event-stream` · `plugin-development`
+
+The raw record of a session: every event that crosses Claude Code, in the order it happened, with its full payload written to disk. It names who raised each one: you, the model, the engine, settings hooks or a plugin. Use it, as a plugin author or anyone else, when you need to know exactly what was sent and returned, or to see what a plugin does behind your back.
 
 [agent-log](../agent-log) is the interpreted view of the same session: turns, timings and who decided each call. The two work as a pair, agent-log to find the moment and event-log to read what actually crossed.
 

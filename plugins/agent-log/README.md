@@ -1,5 +1,9 @@
 # agent-log
 
+[![version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fdboeter%2Fcc-plugins%2Fmain%2Fplugins%2Fagent-log%2F.claude-plugin%2Fplugin.json&query=%24.version&label=version&color=d97757)](.claude-plugin/plugin.json) [![MIT license](https://img.shields.io/badge/license-MIT-8fb573)](../../LICENSE) [![part of cc-plugins](https://img.shields.io/badge/part_of-cc--plugins-3a2e26)](../../README.md)
+
+`claude-code` · `observability` · `latency` · `hooks` · `permissions`
+
 Why was that turn slow, and who allowed that call? A live pane that splits each turn's time across the model (time to first token, thinking), tools, hooks and waiting on you, read from Claude Code's own model stream, and who decided each call: you, a hook or the classifier.
 
 ```

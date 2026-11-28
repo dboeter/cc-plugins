@@ -1,5 +1,9 @@
 # session-pane
 
+[![version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fdboeter%2Fcc-plugins%2Fmain%2Fplugins%2Fsession-pane%2F.claude-plugin%2Fplugin.json&query=%24.version&label=version&color=d97757)](.claude-plugin/plugin.json) [![MIT license](https://img.shields.io/badge/license-MIT-8fb573)](../../LICENSE) [![part of cc-plugins](https://img.shields.io/badge/part_of-cc--plugins-3a2e26)](../../README.md)
+
+`claude-code` · `checks` · `tests` · `diffs` · `context-window`
+
 Tells you when Claude's checks no longer hold: tests that failed, tests that passed before Claude edited again, or code changed with no check run at all. One press reruns the stale ones. It says so in a line above the prompt, without opening anything.
 
 `/session-pane` opens the full pane:

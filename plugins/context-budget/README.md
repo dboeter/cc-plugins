@@ -1,5 +1,9 @@
 # context-budget
 
+[![version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fdboeter%2Fcc-plugins%2Fmain%2Fplugins%2Fcontext-budget%2F.claude-plugin%2Fplugin.json&query=%24.version&label=version&color=d97757)](.claude-plugin/plugin.json) [![MIT license](https://img.shields.io/badge/license-MIT-8fb573)](../../LICENSE) [![part of cc-plugins](https://img.shields.io/badge/part_of-cc--plugins-3a2e26)](../../README.md)
+
+`claude-code` · `context-window` · `auto-compact` · `beginners`
+
 A pane that explains the context window to people new to Claude Code: how much room is left before auto-compact, what fills it, what each part is, what every request carries, and how it grows turn by turn.
 
 - **Room left**: the free space before auto-compact and where it starts, the room left in the whole window, and how much of what is used is the conversation. The room before auto-compact turns yellow under a quarter of the window and red under a tenth.

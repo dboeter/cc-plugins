@@ -1,5 +1,9 @@
 # redact
 
+[![version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fdboeter%2Fcc-plugins%2Fmain%2Fplugins%2Fredact%2F.claude-plugin%2Fplugin.json&query=%24.version&label=version&color=d97757)](.claude-plugin/plugin.json) [![MIT license](https://img.shields.io/badge/license-MIT-8fb573)](../../LICENSE) [![part of cc-plugins](https://img.shields.io/badge/part_of-cc--plugins-3a2e26)](../../README.md)
+
+`claude-code` · `secrets` · `privacy` · `dotenv` · `security`
+
 Swaps what your rules match for numbered placeholders before the model sees it, from the first request on, and puts the real values back where they run. No rule is on by default: your rules file starts with two examples, API keys and tokens (`sk-`, `ghp_`, `AKIA`, `xoxb-`, JWTs and more) and email addresses, both off. Turn them on, add your own, give each its replacement label, and switch any rule on or off, from `/redact` or by editing the file. It is a pattern list, not a guarantee.
 
 **Protects against**
