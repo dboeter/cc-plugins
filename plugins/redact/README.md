@@ -129,6 +129,8 @@ More can be set in the `patterns` option, as one-line rules, always on and run a
 - **Context shifts**: a value is put back as it was captured. One taken from a JSON string, escapes and all, and written into a file of another format is written as captured.
 - **Placeholder-shaped text**: text of a placeholder's shape that a file already holds reads as one when the vault holds its number, and is restored to that value on write. One the vault does not hold reads escaped, so writing it back gives the literal text. A file that already holds the escaped form loses its `!` on write.
 
+Known gaps still to close are in the [roadmap](ROADMAP.md).
+
 ## Harden it
 
 Permission rules and a managed-settings entry hold where the plugin's own guard can't: see [HARDENING.md](HARDENING.md).
