@@ -386,3 +386,10 @@ test('/redact test with an unreadable vault names no part of the store\'s error'
   await $.command.run({ command: 'redact', args: 'test some text' } as any)
   expect(toasts.at(-1)).toBe('redact: not tested, the vault could not be read')
 })
+
+test('with a vault that cannot be read, turning env files on when already on is not done', async ($, on) => {
+  world(on, {}, { [RULES]: file(EXAMPLES) }, '/p', undefined, 'unreadable')
+  const toasts = toasted(on)
+  await $.command.run({ command: 'redact', args: 'env on' } as any)
+  expect(toasts.at(-1)).toMatch(/^redact: not done, but its reply is not shown/)
+})

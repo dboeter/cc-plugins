@@ -415,7 +415,7 @@ const remove = async ($: EngineInterface, k: Kept, ref: string) => {
   return await save($, k, rules => rules.filter((_, j) => j !== i)) ?? `removed rule ${i + 1}`
 }
 // the refusal prefixes of turn, add, remove and save's replies, which the pane's note draws as a warning
-const REFUSED = /^(not added|not saved|nothing added|already|no such)/
+const REFUSED = /^(not added|not saved|nothing added|already|no such|env files already)/
 
 // /redact's reply to its arguments, undefined for the pane. It answers in a toast, never as text:
 // a command's output row is one the model reads, and none of /redact is its business
