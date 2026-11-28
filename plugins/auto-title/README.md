@@ -1,5 +1,9 @@
 # auto-title
 
+[![version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fdboeter%2Fcc-plugins%2Fmain%2Fplugins%2Fauto-title%2F.claude-plugin%2Fplugin.json&query=%24.version&label=version&color=d97757)](.claude-plugin/plugin.json) [![MIT license](https://img.shields.io/badge/license-MIT-8fb573)](../../LICENSE) [![part of cc-plugins](https://img.shields.io/badge/part_of-cc--plugins-3a2e26)](../../README.md)
+
+`claude-code` · `session-title` · `haiku`
+
 Names the current Claude Code session from your first prompt, so the session list shows what each one was about.
 
 - **When**: on the first prompt you type after a fresh start, `/clear`, or `/compact`. Slash commands and resumed sessions don't count.

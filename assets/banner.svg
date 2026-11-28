@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-label="cc-plugins: panes and hooks for Claude Code">
+
+  <rect width="1280" height="320" rx="18" fill="#1a1411"/>
+  <rect x="64" y="70" width="56" height="6" rx="3" fill="#e8875b"/>
+
+  <text x="64" y="150" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="64" font-weight="700" fill="#f5ece4">cc-plugins</text>
+  <text x="64" y="192" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="22" fill="#d9c9bb">Panes and hooks for Claude Code</text>
+  <text x="64" y="236" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="17" fill="#9c8b7e">where the turn's time went · what fills the context</text>
+  <text x="64" y="262" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="17" fill="#9c8b7e">which checks went stale · secrets kept from the model</text>
+
+  <!-- A pane in the style of agent-log; rows lifted from plugins/agent-log/README.md -->
+  <g transform="translate(700 52)">
+    <rect width="520" height="216" rx="10" fill="#0f0c0a" stroke="#3a2e26"/>
+    <circle cx="20" cy="18" r="5" fill="#e06c5b"/>
+    <circle cx="38" cy="18" r="5" fill="#d4a373"/>
+    <circle cx="56" cy="18" r="5" fill="#8fb573"/>
+    <text x="80" y="23" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="14" fill="#7d6e63">/agentlog</text>
+
+    <text x="20" y="62" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="14" fill="#cbbcb0">#1 · tools 17.2s · model 12.3s</text>
+    <text x="500" y="62" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="14" fill="#cbbcb0" text-anchor="end">39.6s</text>
+
+    <text x="20" y="92" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="14" fill="#d4a373">╭── context-mode</text>
+    <text x="20" y="114" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="14" fill="#7d6e63">│   Waiting for you</text>
+    <text x="500" y="114" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="14" fill="#7d6e63" text-anchor="end">4.2s</text>
+    <text x="20" y="136" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="14" fill="#cbbcb0">╰ Run the tests</text>
+    <text x="500" y="136" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="14" fill="#e06c5b" text-anchor="end">✗ 18.4s</text>
+
+    <text x="20" y="166" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="14" fill="#d4a373">╭── guard</text>
+    <text x="20" y="188" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="14" fill="#cbbcb0">╰ Clean the build output</text>
+    <text x="500" y="188" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="14" fill="#e06c5b" text-anchor="end">⊘ denied</text>
+  </g>
+</svg>
