@@ -268,6 +268,17 @@ test("auto mode's classifier never gets a held value: such a call goes to the pe
   expect(asked).toBe(1)
 })
 
+test("a vault that can't be read sends every judged call to the person, never to the classifier", async ($, on) => {
+  on('session.id', () => ({ value: 's1' }))
+  on('store.get', () => { throw new Error('store down') })
+  let asked = 0
+  on('tool.judge', async () => { asked++; return { decision: 'allow' } as any })
+  const r: any = await $.tool.judge({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 't1' } as any)
+  expect(r.decision).toBe('ask')
+  expect(r.reason).toContain('failed')
+  expect(asked).toBe(0)
+})
+
 test('a placeholder the vault does not hold refuses the call and tells the person; its escape writes the literal', async ($, on) => {
   world(on, HOLDS_GH)
   const toasts = toasted(on)
