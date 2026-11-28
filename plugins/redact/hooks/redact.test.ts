@@ -247,6 +247,27 @@ test('a tool gets the real values back in its input, nested ones too, remote too
   expect(ran.map(e => e.command ?? e.body?.headers[0] ?? e.url)).toEqual([`gh auth login --with-token <<< ${GH}`, `Authorization: token ${GH}`, `https://h/?k=${GH}`])
 })
 
+test("a field a tool hands to a model or a search provider keeps its placeholders: WebFetch's prompt, WebSearch's query", async ($, on) => {
+  world(on, HOLDS_GH)
+  const ran: any[] = []
+  on('tool.call', async (_$: any, e: any) => { ran.push(e); return { result: {} } as any })
+  await $.tool.call({ tool: 'WebFetch', url: `https://h/?k=${ph('API_KEY')}`, prompt: `find ${ph('API_KEY')}` } as any)
+  await $.tool.call({ tool: 'WebSearch', query: `leaked ${ph('API_KEY')}` } as any)
+  expect(ran.map(e => [e.url, e.prompt ?? e.query])).toEqual([[`https://h/?k=${GH}`, `find ${ph('API_KEY')}`], [undefined, `leaked ${ph('API_KEY')}`]])
+})
+
+test("auto mode's classifier never gets a held value: such a call goes to the person; one without goes to the classifier", async ($, on) => {
+  world(on, HOLDS_GH)
+  let asked = 0
+  on('tool.judge', async () => { asked++; return { decision: 'allow' } as any })
+  const held: any = await $.tool.judge({ tool: 'Bash', input: { command: `gh auth login --with-token <<< ${GH}` }, tool_use_id: 't1' } as any)
+  expect(held.decision).toBe('ask')
+  expect(asked).toBe(0)
+  const plain: any = await $.tool.judge({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 't2' } as any)
+  expect(plain.decision).toBe('allow')
+  expect(asked).toBe(1)
+})
+
 test('a placeholder the vault does not hold refuses the call and tells the person; its escape writes the literal', async ($, on) => {
   world(on, HOLDS_GH)
   const toasts = toasted(on)
