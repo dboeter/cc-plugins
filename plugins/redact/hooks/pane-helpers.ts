@@ -8,15 +8,16 @@ export const RULES = '/h/.claude/redact-rules.json'
 export const file = (rules: unknown[], rest: object = {}) => JSON.stringify({ rules, ...rest }, null, 2) + '\n'
 
 // One session, a clock, a store of `entries` and files of `given`, HOME at /h, and the session's
-// folder at `cwd`.
-export const world = (on: any, entries: Record<string, unknown> = {}, given: Record<string, string> = {}, cwd = '/p') => {
+// folder at `cwd`. `failSet`: every store write throws it, as a full disk would; `failGet`: every
+// store read throws it.
+export const world = (on: any, entries: Record<string, unknown> = {}, given: Record<string, string> = {}, cwd = '/p', failSet?: string, failGet?: string) => {
   const store = new Map(Object.entries(entries))
   const files = new Map(Object.entries(given))
   const clock = mock.clock(on, { now: 40 * DAY })
   on('session.id', () => ({ value: 's1' }))
   on('session.cwd', () => ({ value: cwd }))
-  on('store.get', (_$: any, e: any) => ({ value: store.get(e.key) }))
-  on('store.set', (_$: any, e: any) => { store.set(e.key, e.value); return { value: undefined } })
+  on('store.get', (_$: any, e: any) => { if (failGet) throw new Error(failGet); return { value: store.get(e.key) } })
+  on('store.set', (_$: any, e: any) => { if (failSet) throw new Error(failSet); store.set(e.key, e.value); return { value: undefined } })
   on('store.delete', (_$: any, e: any) => { store.delete(e.key); return { value: undefined } })
   on('store.keys', () => ({ value: [...store.keys()] }))
   on('env.get', (_$: any, e: any) => ({ value: e.name === 'HOME' ? '/h' : undefined }))
