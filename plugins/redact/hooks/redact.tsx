@@ -8,8 +8,10 @@ import type { EngineInterface, Register } from 'claude-code'
 // its placeholder for the whole session, its subagents and a --resume.
 // Every tool call gets the real values back in its input before it runs, a remote tool's too
 // (WebFetch, WebSearch, MCP): the person chose an uninterrupted workflow over blocking those,
-// knowing that a page telling the model to put a placeholder in a URL gets the value sent. The
-// permission check, which runs beneath this hook, sees the real values too. The terminal draws
+// knowing that a page telling the model to put a placeholder in a URL gets the value sent. Fields
+// a tool hands to a model or a search provider keep the placeholders (MODEL_FIELDS). The
+// permission check, which runs beneath this hook, sees the real values too, so auto mode's
+// classifier is skipped for a call that carries one: the person is asked. The terminal draws
 // them back, unless the pane's toggle shows them as the model reads them; a remote surface keeps
 // the placeholders.
 // Fails closed: a masking hook that throws or outruns its budget withholds what it masks (the
@@ -209,6 +211,10 @@ export const mask = (s: string, h: Held, patterns: readonly Pattern[]) => {
 // collects the placeholders the vault does not hold.
 export const restore = (s: string, h: Held, missing?: Set<string>) =>
   s.includes(OPEN) ? s.replace(PH_OR_ESC, (p, esc: string, body: string) => esc ? OPEN + body : h.v.ph[p] ?? (missing?.add(p), p)) : s
+
+// A tool's fields that go to a model (WebFetch's prompt, to the model that reads the page) or a
+// search provider (WebSearch's query): neither needs a real value, so restore leaves them masked.
+const MODEL_FIELDS: Record<string, readonly string[]> = { WebFetch: ['prompt'], WebSearch: ['query'] }
 
 // `f` over every string in a value; the same value back where nothing changed.
 const deep = (v: unknown, f: (s: string) => string): unknown => {
@@ -1026,7 +1032,9 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const h = await hold($, kept)
     const missing = new Set<string>()
-    const input = deep(e, s => restore(s, h, missing)) as typeof e
+    const masked = MODEL_FIELDS[e.tool] ?? []
+    const input = Object.fromEntries(Object.entries(e).map(([k, x]) =>
+      [k, masked.includes(k) ? x : deep(x, s => restore(s, h, missing))])) as typeof e
     if (missing.size) {
       const names = [...missing].join(', ')
       const isNo = missing.size > 1 ? 'are no placeholders' : 'is no placeholder'
@@ -1045,6 +1053,16 @@ export const register: Register = (on, options) => {
       ? `${e.tool} ran, but its output is withheld: the redact plugin failed after it (${next.error.kind}).`
       : `${e.tool} did not run: the redact plugin failed before it (${next.error.kind}).`,
   }))
+
+  // Auto mode's classifier is a model request, and tool.call restored the values before it: its
+  // input is pinned here, so a call that carries a held value goes to the person instead (a deny
+  // where nobody can be asked). Failing, it asks too.
+  on('tool.judge', async ($, e, next) => {
+    const values = [...(await hold($, kept)).byValue.keys()]
+    let carries = false
+    deep(e.input, s => { carries ||= values.some(v => s.includes(v)); return s })
+    return carries ? { decision: 'ask', reason: 'redact: this call carries a value it masks, so auto mode\'s classifier does not see it.' } : next(e)
+  }).catch(() => ({ decision: 'ask', reason: 'redact: checking this call for masked values failed.' }))
 
   // The terminal is this machine's; every other surface (the mobile app over Remote Control, the
   // desktop app, VS Code) keeps the placeholders, so drawing never sends a value off the terminal. A
