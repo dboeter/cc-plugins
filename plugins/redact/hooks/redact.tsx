@@ -1136,7 +1136,8 @@ export const register: Register = (on, options) => {
     const maskIt = async () => {
       if (!value) return
       try { told($, `redact: ${await pin($, kept, value)}`) }
-      catch (err) { told($, `redact: not masked, the vault could not be read or saved (${(err as Error)?.message ?? err})`) }
+      // fixed words: the store's error could quote the vault it was given, the picked value too
+      catch { told($, 'redact: not masked, the vault could not be read or saved') }
     }
     return (
       <Box flexDirection="column">
@@ -1313,7 +1314,7 @@ export const register: Register = (on, options) => {
             </Button>
           </Box>
         )}
-        {note && <Text color={REFUSED.test(note) ? 'warning' : undefined} dimColor={!REFUSED.test(note)}>{note}</Text>}
+        {note && <Text color={REFUSED.test(note) ? 'warning' : undefined} dimColor={!REFUSED.test(note)}>{offTerminal(note)}</Text>}
       </Box>
     )
 

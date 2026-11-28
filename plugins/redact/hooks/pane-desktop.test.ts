@@ -206,7 +206,7 @@ test('menu: a pick the vault cannot save is taken out again, and the toast says 
   on('prompt.submit', (_$: any, e: any) => { sent = e.text; return { text: e.text } })
   await (await menu($, { selection: { text: PASS } })).press({ key: 'redact-mask' })
   // the kit reports a hook that throws as no implementation, so the reason's words are its own
-  expect(toasts.at(-1)).toMatch(/^redact: not masked, the vault could not be read or saved \(.+\)$/)
+  expect(toasts.at(-1)).toBe('redact: not masked, the vault could not be read or saved')
   expect(store.get('vault:s1')).toBeUndefined()
   // and a second press tries again rather than saying it is already masked
   await (await menu($, { selection: { text: PASS } })).press({ key: 'redact-mask' })
